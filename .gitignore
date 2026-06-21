@@ -216,3 +216,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# 生成物（ノートブック実行で再生成される）
+channel_network_visualization.png
+channel_network_interactive.html
+*.bak
