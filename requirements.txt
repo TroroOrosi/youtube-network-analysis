@@ -3,5 +3,8 @@ python-dotenv
 pandas
 networkx
 matplotlib
+scipy
 tqdm
 ipykernel
+japanize-matplotlib
+pyvis
