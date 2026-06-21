@@ -1,0 +1,7 @@
+google-api-python-client
+python-dotenv
+pandas
+networkx
+matplotlib
+tqdm
+ipykernel
