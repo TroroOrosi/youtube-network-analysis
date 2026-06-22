@@ -41,24 +41,51 @@ GRID = "#D9D9D9"
 
 
 def configure_fonts() -> str:
-    """Register Noto Sans CJK JP and apply a clean, Excel-like chart style.
+    """Register a Japanese-capable font and apply a clean, Excel-like chart style.
+
+    Font resolution order (first match wins):
+      1. System Noto Sans CJK JP (common on Linux CI/servers)
+      2. japanize-matplotlib bundled IPAexGothic (installed via requirements.txt)
+      3. DejaVu Sans fallback (no Japanese glyph support -- glyphs may appear as boxes)
 
     Returns the resolved font family name so callers can log what was used.
     """
-    candidates = [
+    family = "DejaVu Sans"
+
+    # 1. Try system Noto paths
+    noto_candidates = [
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
     ]
-    family = "DejaVu Sans"
-    for path in candidates:
+    for path in noto_candidates:
         if Path(path).exists():
             fm.fontManager.addfont(path)
-    # Prefer the JP face if matplotlib now knows about it.
     known = {f.name for f in fm.fontManager.ttflist}
     for name in ("Noto Sans CJK JP", "Noto Sans CJK SC", "Noto Serif CJK JP"):
         if name in known:
             family = name
             break
+
+    # 2. Fallback: japanize-matplotlib bundled IPAexGothic
+    if family == "DejaVu Sans":
+        try:
+            import japanize_matplotlib  # noqa: F401  (side-effect: registers font)
+            # After import the font is registered; find it by name.
+            fm.fontManager.__init__()  # refresh cache to pick up newly registered font
+            known = {f.name for f in fm.fontManager.ttflist}
+            for name in ("IPAexGothic", "IPAGothic", "IPA Gothic", "Noto Sans CJK JP"):
+                if name in known:
+                    family = name
+                    break
+            if family == "DejaVu Sans":
+                # japanize_matplotlib sets rcParams directly; honour that setting
+                current = plt.rcParams.get("font.family", ["DejaVu Sans"])
+                if isinstance(current, list) and current:
+                    family = current[0]
+                elif isinstance(current, str):
+                    family = current
+        except ImportError:
+            pass  # japanize-matplotlib not installed; fall through to DejaVu
 
     plt.rcParams.update({
         "font.family": family,
