@@ -5,18 +5,45 @@
 
 参考動画：[視聴者は普段どんなチャンネルを見ているのか？（データで語る棒人間）](https://www.youtube.com/watch?v=ec26DzgBKIU)
 
-> **プライバシー方針**：出力は集計のみ。個人単位の登録チャンネル一覧は保持せず、
+> **トランスクリプトが得られたため、動画の手法（Step 1/2/3）に沿って再現**している。
+> 以前の「最も近い再現」から、動画の手順への忠実な再現へ更新した。
+
+> **プライバシー・倫理**：出力は集計のみ。個人の特定や個人単位の性格・属性推定は行わない。
 > コメント投稿者IDは計算の中間データとしてのみ扱い、最終データは匿名化（`u0`,`u1`…）する。
+> SNS上の行動（Like・登録）から性格・属性が高精度で推測され得ることは
+> [Kosinski ら(2013)](https://www.pnas.org/doi/10.1073/pnas.1218772110) /
+> [Youyou ら(2015)](https://www.pnas.org/doi/10.1073/pnas.1418680112) が示しており、
+> 集計分析であっても扱いには配慮する。
 
-## 何をしているか
+## 動画手法の再現フロー
 
-1. 自チャンネルのコメント投稿者を「視聴者の代理」として収集
-2. 各投稿者の**公開**登録チャンネルから `(視聴者, チャンネル)` のエッジを構築（匿名化）
-3. 共通視聴者 ≥ 3 のチャンネル対を共起（共視聴）エッジとし、次数で重み付けした
+| 段階 | 動画での手法 | 本データでの再現 |
+|---|---|---|
+| **Step 1** | 自チャンネルに登録しているユーザーのリストを作成 | 公開登録を持つコメント投稿者 808 人を視聴者の代理として観測 |
+| **Step 2** | そのユーザーが登録する他チャンネルのリストを取得 | ユニーク登録先 106,568 チャンネル / エッジ 235,024 本 |
+| **Step 3** | 視聴者とチャンネルを線でつないだネットワークを構築・分析 | 共起ネットワーク ノード 14,694 / エッジ 226,516、Louvain で50クラスタ |
+
+**サンプリング**：動画では母集団約10万人から1,000人を無作為抽出（公開登録ONのユーザーのみ、
+非公開は除外し公開で補充）。本データのパネルは 808 人で 1,000 未満のため**全員を採用**し、
+再現性のため seed 固定（`seed=42`）のサンプル抽出関数も用意した（`scripts/analysis_common.py`
+の `subscriber_sample`）。観測された視聴者は全員が公開登録者であり、動画の前提と整合する。
+
+**動画で言及された数値（比較対象）**：1,000人サンプル / 約 99,000 チャンネル / 40万弱リンク。
+本データ実測（808人 / 106,568 チャンネル / 235,024 エッジ）と同じ文脈で `Video Method
+Reproduction` シートに併記している。
+
+## 分析の手順（詳細）
+
+1. **Step 1–2**：コメント投稿者を視聴者の代理とし、各投稿者の**公開**登録チャンネルから
+   `(視聴者, チャンネル)` の匿名2部グラフを構築
+2. **Step 3 (a)**：共通視聴者 ≥ 3 のチャンネル対を共起（共視聴）エッジとし、次数で重み付けした
    コサイン類似度を重みとする無向ネットワークへ射影
-4. Louvain でコミュニティ（系統クラスタ）を検出
-5. チャンネル規模で割り、中央値=1.0 に校正した**親和性 lift**（汎用人気と
-   自視聴者固有の親和性の分離）を算出
+3. **Step 3 (b)**：Louvain でコミュニティ（系統クラスタ）を検出
+4. **興味カテゴリ**：上位チャンネルをキーワード辞書で「ビジネス/投資・自己啓発・読書/教養・
+   科学/数学/テック・雑学/ミステリー・エンタメ/音楽・ニュース・美容/健康/生活」に分類
+5. **人気 ≠ 親和性**：人気（パネル浸透率）だけでは親和性は分からないという動画の注意点に基づき、
+   チャンネル規模で割り中央値=1.0 に校正した**親和性 lift** を算出（規模の割に過剰登録される
+   チャンネルを抽出）。外部の登録者数が無いチャンネルはデータ内のサイズ代理指標で補正する設計
 6. 非復元サブサンプリング + Adjusted Rand Index でクラスタ安定性を確認
 
 詳細な収集・分析の各ステージは `youtube_network_analysis.ipynb` にある。
@@ -38,40 +65,51 @@
 
 ```bash
 pip install -r requirements.txt          # 依存をインストール
-python scripts/generate_figures.py       # figures/ に Excel風チャートを生成
+python scripts/generate_figures.py       # figures/ に Excel風チャートを生成（9枚）
 python scripts/build_excel_report.py     # youtube_network_analysis_report.xlsx を生成
 ```
 
-- 生成物：
-  - `figures/01_top_channels.png` … 視聴者が他に見ているチャンネル Top20
-  - `figures/02_viewer_breadth.png` … 視聴者1人あたりの登録チャンネル数
-  - `figures/03_community_sizes.png` … コミュニティ規模 Top12
-  - `figures/04_affinity_lift.png` … 固有親和性 lift Top20
-  - `figures/05_penetration_vs_size.png` … 規模 vs 浸透率 散布図
-  - `figures/06_edge_strength.png` … 共起エッジ強度の分布
-  - `youtube_network_analysis_report.xlsx` … 10シートのサマリーワークブック
-    （Overview / Data Profile / Data Dictionary / Quality Checks / Summary Metrics /
-    Top Channels / Affinity Lift / Communities / Charts / Sources & Methodology）
+- 図（`figures/`）：
+  - `01_top_channels.png` … 視聴者が他に見ているチャンネル Top20
+  - `02_viewer_breadth.png` … 視聴者1人あたりの登録チャンネル数
+  - `03_community_sizes.png` … コミュニティ規模 Top12
+  - `04_affinity_lift.png` … 固有親和性 lift Top20
+  - `05_penetration_vs_size.png` … 規模 vs 浸透率 散布図
+  - `06_edge_strength.png` … 共起エッジ強度の分布
+  - `07_bipartite_overview.png` … 動画手法の構造（中心→視聴者→他チャンネル）
+  - `08_interest_categories.png` … 興味カテゴリ別の注目度
+  - `09_popularity_vs_affinity.png` … 人気 ≠ 親和性 散布図
+- `youtube_network_analysis_report.xlsx` … 14シートのサマリーワークブック
+  （Overview / Video Method Reproduction / Data Profile / Data Dictionary /
+  Quality Checks / Summary Metrics / Subscriber Sample / Top Channels /
+  Interest Categories / Affinity vs Popularity / Affinity Lift / Communities /
+  Charts / Sources & Methodology）
 
 図は日本語フォント（Noto Sans CJK JP）、色覚多様性に配慮した Okabe-Ito 配色、
 直接ラベル付き、3D・円グラフ不使用で統一している。
 
 ## 主要な発見（収集データより）
 
-- 視聴者の併用登録先は**自己啓発・ビジネス・教養系が上位**（両学長、本要約チャンネル、
-  NAKATA UNIVERSITY、PIVOT など）。最頻併用先はパネルの約 33% が登録。
+- 視聴者の併用登録先は**自己啓発・ビジネス・教養系が上位**（両学長 リベラルアーツ大学、
+  本要約チャンネル、NAKATA UNIVERSITY、PIVOT など）。最頻併用先はパネルの約 33% が登録。
+- 興味カテゴリ別では「自己啓発・学び」「ビジネス・投資・お金」「読書・教養」が中心。一方で
+  音楽/アート/生活など**多様なジャンルも一定割合**を占め、関心は単一ジャンルに偏らない。
 - 共視聴ネットワークは 5 つの大型クラスタ（各 2,400〜3,000 チャンネル）に分かれ、
   「ビジネス/自己啓発」「エンタメ/音楽」などの系統が分離している。
-- 親和性 lift（規模補正）では、大型チャンネルの汎用人気とは別に、規模の割に
-  自視聴者へ過剰登録される**ニッチで固有性の高いチャンネル**が浮かび上がる。
+- **人気 ≠ 親和性**：人気上位の大型チャンネルは規模相応（lift≈1）である一方、規模が小さく
+  人気順位は低いのに親和性 lift が高い「隠れた親和チャンネル」が存在する（`Affinity vs
+  Popularity` シート）。
 
 ## 限界
 
 - 視聴者の代理は「コメント投稿者かつ公開登録者」。登録を非公開にしている層は観測
   できず、母数は 808 人と小さい（**選択バイアス**あり）。
+- 本データのパネルは動画の 1,000 人サンプルより小さいため全パネルを採用した。動画の
+  母集団10万人・約9.9万チャンネル・40万弱リンクは参考比較値である。
 - YouTube Data/Analytics API には「視聴者が他に見るチャンネル」は含まれない。唯一の
   地上検証は YouTube Studio の「視聴者」タブ（オーナー権限・手動）。
+- 興味カテゴリはチャンネル名のキーワードに基づく推定分類であり、厳密なジャンル定義ではない。
 - 1人あたり登録チャンネル数のヒストグラムで 1,000 付近に山が出るのは、`subscriptions`
   API の取得上限（約1,000件）による打ち切りアーティファクトである。
 
-出典・方法論の参照先（URL付き）は Excel レポートの **Sources & Methodology** シート参照。
+出典・方法論・倫理の参照先（URL付き）は Excel レポートの **Sources & Methodology** シート参照。

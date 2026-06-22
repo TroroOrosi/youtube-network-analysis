@@ -8,16 +8,20 @@ Output: youtube_network_analysis_report.xlsx
 
 Sheets
 ------
-  Overview              project summary + headline findings
-  Data Profile          per-dataset row/column/null/dup profile
-  Data Dictionary       column-level descriptions
-  Quality Checks        automated PASS/WARN checks
-  Summary Metrics       single-number KPIs
-  Top Channels          "what viewers also watch" (video's headline question)
-  Affinity Lift         size-corrected audience-specific affinity
-  Communities           Louvain co-viewing clusters
-  Charts                embedded PNGs from figures/
-  Sources & Methodology external references with URLs
+  Overview                 project summary + headline findings
+  Video Method Reproduction Step 1/2/3 flow + video-vs-data comparison
+  Data Profile             per-dataset row/column/null/dup profile
+  Data Dictionary          column-level descriptions
+  Quality Checks           automated PASS/WARN checks
+  Summary Metrics          single-number KPIs
+  Subscriber Sample        seed-fixed Step-1 viewer sample + breadth
+  Top Channels             "what viewers also watch" (video's headline question)
+  Interest Categories      keyword genre breakdown (the video's interest view)
+  Affinity vs Popularity   "popularity != affinity" hidden-gem table
+  Affinity Lift            size-corrected audience-specific affinity
+  Communities              Louvain co-viewing clusters
+  Charts                   embedded PNGs from figures/
+  Sources & Methodology    external references (incl. personality research) + ethics
 """
 
 from __future__ import annotations
@@ -129,6 +133,11 @@ def sheet_overview(wb, data, kpis):
          "コメント投稿者の公開登録チャンネルから 視聴者×チャンネル の2部グラフを"
          "構築 → 共起（共視聴）ネットワークへ射影 → Louvain でコミュニティ抽出 → "
          "規模補正した親和性 lift を算出。出力は集計のみ（個人特定なし）。"),
+        ("動画手法の再現フロー",
+         "Step1) 自チャンネルの登録者リストを作成 → Step2) 彼らの登録する他チャンネルを取得 "
+         "→ Step3) 視聴者×チャンネルのネットワークを構築・分析。"
+         "トランスクリプトが得られたため、動画の手順に沿って再現した"
+         "（詳細は『Video Method Reproduction』シート）。"),
         ("", ""),
         ("主要な発見", ""),
         ("1. 観測パネル規模",
@@ -154,8 +163,12 @@ def sheet_overview(wb, data, kpis):
          "YouTube Data/Analytics API には『視聴者が他に見るチャンネル』は無い。"
          "唯一の地上検証は YouTube Studio『視聴者』タブ（オーナー権限・手動）。"),
         ("L3",
-         "動画のトランスクリプトはbot判定で取得不可。動画の具体的な数値手法は"
-         "公開メタデータからの推定であり、本分析は『最も近い再現』である。"),
+         "本データのパネルは動画の1,000人サンプルより小さく、全パネルを採用した。"
+         "動画の母集団10万人・約9.9万チャンネル・40万弱リンクは参考比較値として"
+         "『Video Method Reproduction』に併記。"),
+        ("L4",
+         "興味カテゴリはチャンネル名のキーワードに基づく推定分類で、"
+         "厳密なジャンル定義ではない。subscriptions API は1人約1,000件で打ち切られる。"),
     ]
     r = 4
     for label, val in rows:
@@ -346,10 +359,13 @@ def sheet_charts(wb):
     ws.sheet_view.showGridLines = False
     _title_block(ws, "チャート", "figures/ から埋め込み（再生成: scripts/generate_figures.py）")
     images = [
+        ("07_bipartite_overview.png", "動画手法の構造：自チャンネル→視聴者→他チャンネル"),
         ("01_top_channels.png", "視聴者が他に見ているチャンネル Top20"),
+        ("08_interest_categories.png", "興味カテゴリ別の注目度"),
+        ("09_popularity_vs_affinity.png", "人気 ≠ 親和性（浸透率 vs 規模補正 lift）"),
+        ("04_affinity_lift.png", "固有親和性 lift Top20"),
         ("02_viewer_breadth.png", "視聴者1人あたりの登録チャンネル数"),
         ("03_community_sizes.png", "コミュニティ規模 Top12"),
-        ("04_affinity_lift.png", "固有親和性 lift Top20"),
         ("05_penetration_vs_size.png", "規模 vs 浸透率 散布図"),
         ("06_edge_strength.png", "共起エッジ強度の分布"),
     ]
@@ -394,6 +410,15 @@ def sheet_sources(wb):
          "https://jfly.uni-koeln.de/color/"),
         ("Cosine similarity", "共起ベクトルの類似度（エッジ重み）",
          "https://en.wikipedia.org/wiki/Cosine_similarity"),
+        ("性格推定研究 (2013)",
+         "Kosinski, Stillwell & Graepel『Private traits and attributes are "
+         "predictable from digital records of human behavior』PNAS. "
+         "Facebook の Like から性格・属性が予測可能（動画で言及）",
+         "https://www.pnas.org/doi/10.1073/pnas.1218772110"),
+        ("性格推定研究 (2015)",
+         "Youyou, Kosinski & Stillwell『Computer-based personality judgments "
+         "are more accurate than those made by humans』PNAS",
+         "https://www.pnas.org/doi/10.1073/pnas.1418680112"),
     ]
     src = pd.DataFrame(rows, columns=["カテゴリ", "内容", "URL"])
     end = _write_df(ws, src, start_row=4)
@@ -403,18 +428,158 @@ def sheet_sources(wb):
         cell.hyperlink = cell.value
         cell.font = Font(color="0563C1", underline="single")
     methodology = (
-        "手法（要約）: (1) 自チャンネルのコメント投稿者を視聴者の代理として収集。"
-        "(2) 各投稿者の『公開』登録チャンネルを取得し 視聴者×チャンネル の2部グラフを構築（匿名化）。"
-        "(3) 共通視聴者≥3 のチャンネル対を共起エッジとし、次数で重み付けしたコサイン類似度を重みに射影。"
-        "(4) Louvain でコミュニティを検出。(5) チャンネル規模で割り、中央値=1.0 に校正した親和性 lift を算出。"
-        "(6) 非復元サブサンプリング＋ARI でクラスタ安定性を確認。出力は集計のみ・個人特定なし。"
+        "手法（動画の手順に沿った再現）: "
+        "Step1) 自チャンネルに登録しているユーザー（公開登録を持つコメント投稿者を代理）を収集。"
+        "Step2) 各ユーザーの『公開』登録チャンネルを取得し 視聴者×チャンネル の2部グラフを構築（匿名化）。"
+        "Step3) 視聴者とチャンネルを線でつないだネットワークを構築・分析。"
+        "サンプリング：動画は10万人から1,000人を無作為抽出（公開登録ONのみ、非公開は除外し公開で補充）。"
+        "本データのパネルは1,000人未満のため全員を採用し、seed固定のサンプル版も用意。"
+        "共起ネットワークは 共通視聴者≥3 のチャンネル対を次数重み付きコサイン類似度で射影し、"
+        "Louvain でコミュニティ検出。親和性 lift はチャンネル規模で割り中央値=1.0 に校正"
+        "（人気＝親和性ではない、という動画の注意点に対応）。"
+        "制約：『他に見るチャンネル』は YouTube Data/Analytics API に無く、地上検証は Studio『視聴者』タブのみ。"
+        "subscriptions API は1ユーザー約1,000件で打ち切られる。"
+    )
+    ethics = (
+        "プライバシー・倫理: 本分析は公開された登録情報のみを扱い、個人の特定や"
+        "個人単位の性格・属性の推定は行わない（出力は集計のみ）。"
+        "ただし SNS 上の行動（Like・登録など）から性格や属性が高い精度で推測され得ることは"
+        "上記 Kosinski ら(2013)・Youyou ら(2015) が示しており、集計であっても扱いには配慮する。"
+        "視聴者像はジャンル・系統という粗い粒度に留め、コメント投稿者IDは中間データとしてのみ"
+        "メモリ上で扱い最終出力では匿名化（u0, u1…）する。"
     )
     mr = end + 1
     ws.cell(row=mr, column=1, value="方法論ノート").font = Font(bold=True, color=NAVY)
     mc = ws.cell(row=mr + 1, column=1, value=methodology)
     mc.alignment = WRAP
     ws.merge_cells(start_row=mr + 1, start_column=1, end_row=mr + 6, end_column=3)
+    er = mr + 7
+    ws.cell(row=er, column=1, value="プライバシー・倫理").font = Font(bold=True, color=NAVY)
+    ec = ws.cell(row=er + 1, column=1, value=ethics)
+    ec.alignment = WRAP
+    ws.merge_cells(start_row=er + 1, start_column=1, end_row=er + 6, end_column=3)
     _autofit(ws, {1: 22, 2: 56, 3: 70})
+
+
+def sheet_video_method(wb, data, kpis):
+    ws = wb.create_sheet("Video Method Reproduction")
+    ws.sheet_view.showGridLines = False
+    _title_block(ws, "動画手法の再現フロー",
+                 "「視聴者は普段どんなチャンネルを見ているのか？」の手順を本データで再現")
+    ref = ac.VIDEO_REF
+    steps = [
+        ("Step 1", "自チャンネルに登録しているユーザー（視聴者）のリストを作成",
+         f"本データ：公開登録を持つコメント投稿者 {kpis['n_viewers']:,} 人を視聴者の代理として観測"),
+        ("Step 2", "そのユーザーたちが登録している他チャンネルのリストを取得",
+         f"本データ：ユニーク登録先 {kpis['n_channels']:,} チャンネル / エッジ {kpis['n_edges']:,} 本"),
+        ("Step 3", "視聴者とチャンネルを線でつないだ2部ネットワークを構築・分析",
+         f"本データ：共起ネットワーク ノード {kpis['n_net_nodes']:,} / エッジ {kpis['n_net_edges']:,}"),
+        ("サンプリング", "母集団から無作為抽出。公開登録設定ONのユーザーのみ採用、"
+         "非公開は除外し公開で補充",
+         f"本データのパネルは {kpis['n_viewers']:,} 人（動画の {ref['sample']:,} 人サンプル未満）。"
+         "全員が公開登録者のため公開のみで構成。seed=42 のサンプル版も用意"),
+        ("可視化", "中心チャンネル→視聴者→他チャンネルの構造を図示し、"
+         "登録リンクを多く集めるチャンネルをランキング",
+         "図07（2部ネットワーク概要）/ 図01（Top20）/ 図08（興味カテゴリ）"),
+        ("親和性", "人気ランキングだけでは親和性は分からない、という注意点に基づき"
+         "規模を考慮した親和性指標を算出",
+         "図09（人気 vs 親和性）/ 図04（lift Top20）。Affinity vs Popularity シート参照"),
+    ]
+    import pandas as pd
+    df = pd.DataFrame(steps, columns=["段階", "動画での手法", "本データでの再現"])
+    end = _write_df(ws, df, start_row=4)
+
+    # comparison table: video's stated figures vs our measured ones
+    cmp_row = end + 1
+    ws.cell(row=cmp_row, column=1,
+            value="動画で言及された数値 vs 本データ実測").font = Font(bold=True,
+                                                                color=NAVY, size=12)
+    cmp = pd.DataFrame([
+        ("サンプル視聴者数", f"{ref['sample']:,} 人（10万人から抽出）",
+         f"{kpis['n_viewers']:,} 人（全パネル）"),
+        ("チャンネル数", f"約 {ref['channels']:,}", f"{kpis['n_channels']:,}"),
+        ("リンク（エッジ）数", f"約 {ref['links']:,}", f"{kpis['n_edges']:,}"),
+    ], columns=["項目", "動画（参考値）", "本データ（実測）"])
+    _write_df(ws, cmp, start_row=cmp_row + 1, band=True)
+    _autofit(ws, {1: 16, 2: 52, 3: 52})
+
+
+def sheet_subscriber_sample(wb, data):
+    ws = wb.create_sheet("Subscriber Sample")
+    ws.sheet_view.showGridLines = False
+    _title_block(ws, "視聴者サンプル（Step 1）",
+                 f"seed={ac.VIDEO_SEED} 固定。動画の1,000人抽出を再現（パネルが小さい場合は全員）")
+    import pandas as pd
+    ea = data["edges_anon"]
+    sample = ac.subscriber_sample(ea)
+    breadth = sample.groupby("viewer")["channel_id"].nunique()
+    note = (f"観測パネル {ea['viewer'].nunique():,} 人 ≦ 動画サンプル {ac.VIDEO_SAMPLE_SIZE:,} 人 "
+            f"のため全員を採用。全員が公開登録者（非公開除外の前提を満たす）。"
+            f"1人あたり公開登録数：中央値 {int(breadth.median())} / 最大 {int(breadth.max())} "
+            f"（最大値1,000付近は subscriptions API の取得上限による打ち切り）。")
+    ws.cell(row=3, column=1, value=note).alignment = WRAP
+    ws.merge_cells("A3:H3")
+    ws.row_dimensions[3].height = 44
+
+    # per-viewer breadth table (anonymous ids only)
+    tbl = (breadth.sort_values(ascending=False).reset_index()
+           .rename(columns={"viewer": "視聴者ID（匿名）", "channel_id": "公開登録チャンネル数"}))
+    tbl.insert(0, "順位", range(1, len(tbl) + 1))
+    _write_df(ws, tbl, start_row=5, int_cols=("順位", "公開登録チャンネル数"))
+    _autofit(ws, {1: 8, 2: 20, 3: 20})
+
+
+def sheet_interest_categories(wb, data):
+    ws = wb.create_sheet("Interest Categories")
+    ws.sheet_view.showGridLines = False
+    _title_block(ws, "興味カテゴリ（ジャンル整理）",
+                 "Top150 チャンネルをキーワードで分類し、視聴者の興味関心を推定")
+    import pandas as pd
+    ib = ac.interest_breakdown(data["edges_anon"], top_n_channels=150)
+    ib = ib.rename(columns={
+        "category": "興味カテゴリ", "n_channels": "チャンネル数",
+        "viewer_links": "登録リンク数", "link_share": "リンク占有率"})
+    _write_df(ws, ib, start_row=4, int_cols=("チャンネル数", "登録リンク数"),
+              pct_cols=("リンク占有率",))
+    note = ("分類は『数学/科学/生物・株/お金・読書・ホラー/ミステリー・教養・ビジネス・"
+            "雑学』等の動画の興味例に対応するキーワード辞書による自動分類。"
+            "『その他・未分類』が一定割合あるのは、視聴者の関心が特定ジャンルに偏らず"
+            "多様（音楽/アート/映画/生活など）であることを示す。"
+            "カテゴリは channel タイトル文字列に基づく推定であり厳密な分類ではない。")
+    nr = 4 + len(ib) + 2
+    ws.cell(row=nr, column=1, value=note).alignment = WRAP
+    ws.merge_cells(start_row=nr, start_column=1, end_row=nr + 3, end_column=6)
+    _autofit(ws, {1: 26, 2: 12, 3: 14, 4: 12})
+
+
+def sheet_affinity_vs_popularity(wb, data):
+    ws = wb.create_sheet("Affinity vs Popularity")
+    ws.sheet_view.showGridLines = False
+    _title_block(ws, "人気 ≠ 親和性",
+                 "人気ランキングだけでは親和性は分からない（動画の注意点）を指標化")
+    import pandas as pd
+    avp = ac.affinity_vs_popularity(data["panel_overlap"])
+    # channels that are far more 'affine' than their popularity rank suggests
+    hidden_gems = avp.sort_values("rank_gap", ascending=False).head(25)
+    cols = ["channel", "sample_share", "popularity_rank", "affinity_lift",
+            "affinity_rank", "rank_gap", "total_subs"]
+    gems = hidden_gems[cols].rename(columns={
+        "channel": "チャンネル名", "sample_share": "パネル浸透率(人気)",
+        "popularity_rank": "人気順位", "affinity_lift": "親和性lift",
+        "affinity_rank": "親和性順位", "rank_gap": "順位差(人気-親和性)",
+        "total_subs": "総登録者数"})
+    note = ("『順位差』が大きい = 人気順位は低いのに親和性順位は高い、"
+            "つまり規模が小さいため目立たないが自視聴者には刺さっている"
+            "『隠れた親和チャンネル』。lift は チャンネル規模（総登録者数）で割って"
+            "中央値=1.0 に校正した値。外部の登録者数が無いチャンネルはデータ内の"
+            "サイズ代理指標で補正する設計（本データには Data API の登録者数あり）。")
+    ws.cell(row=3, column=1, value=note).alignment = WRAP
+    ws.merge_cells("A3:H3")
+    ws.row_dimensions[3].height = 56
+    _write_df(ws, gems, start_row=5,
+              int_cols=("人気順位", "親和性順位", "順位差(人気-親和性)", "総登録者数"),
+              pct_cols=("パネル浸透率(人気)",), float_cols=("親和性lift",))
+    _autofit(ws, {1: 40, 2: 16, 3: 10, 4: 12, 5: 10, 6: 18, 7: 14})
 
 
 def compute_kpis(data):
@@ -446,11 +611,15 @@ def main() -> str:
 
     wb = openpyxl.Workbook()
     sheet_overview(wb, data, kpis)
+    sheet_video_method(wb, data, kpis)
     sheet_data_profile(wb, data)
     sheet_data_dictionary(wb)
     sheet_quality(wb, data)
     sheet_summary_metrics(wb, kpis)
+    sheet_subscriber_sample(wb, data)
     sheet_top_channels(wb, data)
+    sheet_interest_categories(wb, data)
+    sheet_affinity_vs_popularity(wb, data)
     sheet_affinity(wb, data)
     sheet_communities(wb, data)
     sheet_charts(wb)

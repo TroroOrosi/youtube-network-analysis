@@ -147,3 +147,129 @@ def top_affinity(panel_overlap: pd.DataFrame, top_n: int = 20,
 
 def fmt_int(n: int) -> str:
     return f"{n:,}"
+
+
+# --- video-method reproduction ---------------------------------------------
+# The reference video sampled 1,000 subscribers from a ~100k population, keeping
+# only users whose subscription list is public.  Our collected panel is smaller,
+# so we expose both the full panel and a seed-fixed sample for reproducibility.
+VIDEO_SAMPLE_SIZE = 1000
+VIDEO_SEED = 42
+
+# Video's stated figures, used purely as a comparison baseline in the report.
+VIDEO_REF = {
+    "population": 100_000,
+    "sample": 1_000,
+    "channels": 99_000,
+    "links": 400_000,
+}
+
+
+def subscriber_sample(edges_anon: pd.DataFrame, n: int = VIDEO_SAMPLE_SIZE,
+                      seed: int = VIDEO_SEED) -> pd.DataFrame:
+    """Reproduce the video's Step 1 sampling of public-subscription viewers.
+
+    Every viewer in ``edges_anon`` already has a public subscription list (that
+    is how the edge was observed), matching the video's "public accounts only"
+    rule.  If the panel is smaller than ``n`` we return the full panel; the
+    caller reports the actual size against the video's 1,000.
+    """
+    viewers = edges_anon["viewer"].drop_duplicates()
+    if len(viewers) <= n:
+        return edges_anon.copy()
+    rng = np.random.default_rng(seed)
+    chosen = set(rng.choice(viewers.to_numpy(), size=n, replace=False))
+    return edges_anon[edges_anon["viewer"].isin(chosen)].copy()
+
+
+# Keyword -> interest category map.  The video sorts the audience's other
+# channels into interests like math, science, money, reading, horror, trivia,
+# business, culture.  We classify each channel title by Japanese/English
+# keywords; unmatched channels fall into "その他/未分類".
+CATEGORY_KEYWORDS: dict[str, list[str]] = {
+    "ビジネス・投資・お金": [
+        "ビジネス", "投資", "株", "お金", "マネー", "副業", "起業", "経営", "経済",
+        "リベラルアーツ", "両学長", "FX", "資産", "節約", "PIVOT", "NewsPicks",
+        "ホリエモン", "マコなり", "money", "business", "stock", "楽待", "不動産",
+    ],
+    "自己啓発・学び": [
+        "自己啓発", "学識", "学び", "名言", "心理", "メンタル", "DaiGo", "成功",
+        "習慣", "ライフハック", "モチベーション", "サロン", "セラピー", "中田",
+        "NAKATA", "UNIVERSITY", "大学", "勉強", "study",
+    ],
+    "読書・要約・教養": [
+        "本要約", "要約", "読書", "本", "書評", "教養", "リベラル", "哲学", "思想",
+        "歴史", "偉人", "book", "literature", "文学",
+    ],
+    "科学・数学・テクノロジー": [
+        "科学", "数学", "物理", "化学", "生物", "宇宙", "ゆっくり科学", "サイエンス",
+        "AI", "テック", "プログラ", "パソコン", "TAIKI", "ガジェット", "science",
+        "math", "tech", "エンジニア",
+    ],
+    "雑学・ミステリー・都市伝説": [
+        "雑学", "都市伝説", "ミステリー", "ホラー", "怖い", "Naokiman", "TOLAND",
+        "オカルト", "陰謀", "謎", "不思議", "パラノイア", "スピリチュアル", "神さま",
+        "未解決", "horror", "mystery",
+    ],
+    "エンタメ・音楽・芸能": [
+        "音楽", "MUSIC", "ミュージック", "歌", "ライブ", "THE FIRST TAKE", "芸能",
+        "コント", "お笑い", "芸人", "狩野英孝", "手越", "ROLAND", "映画", "アニメ",
+        "ドラマ", "アート", "art", "movie", "music", "ゲーム", "game",
+    ],
+    "ニュース・社会": [
+        "ニュース", "報道", "政治", "社会", "時事", "解説", "news", "ANN",
+        "ReHacQ", "リハック", "ABEMA", "アベプラ", "テレ東", "BIZ", "PRESIDENT",
+        "ReHack",
+    ],
+    "美容・健康・生活": [
+        "美容", "整体", "健康", "ダイエット", "筋トレ", "トレーニング", "腰痛",
+        "肩こり", "料理", "レシピ", "リュウジ", "暮らし", "ルーティン", "ライフ",
+        "beauty", "health", "cook", "Honami", "MAGGY",
+    ],
+}
+
+
+def categorize_channel(title: str) -> str:
+    """Assign an interest category to a channel by keyword match."""
+    if not isinstance(title, str):
+        return "その他・未分類"
+    for category, keywords in CATEGORY_KEYWORDS.items():
+        for kw in keywords:
+            if kw.lower() in title.lower():
+                return category
+    return "その他・未分類"
+
+
+def interest_breakdown(edges_anon: pd.DataFrame, top_n_channels: int = 300):
+    """Categorise the panel's most-subscribed channels into interest buckets.
+
+    Returns a DataFrame with one row per category: number of distinct channels
+    that fell into it among the top ``top_n_channels``, and the total subscriber
+    links those channels attract from the panel (a "share of attention" proxy).
+    """
+    top = audience_top_channels(edges_anon, top_n=top_n_channels).copy()
+    top["category"] = top["channel_title"].map(categorize_channel)
+    grp = top.groupby("category").agg(
+        n_channels=("channel_id", "nunique"),
+        viewer_links=("viewers", "sum"),
+    ).reset_index()
+    grp["link_share"] = grp["viewer_links"] / grp["viewer_links"].sum()
+    return grp.sort_values("viewer_links", ascending=False)
+
+
+def affinity_vs_popularity(panel_overlap: pd.DataFrame,
+                           min_commenters: int = 10) -> pd.DataFrame:
+    """Table contrasting raw popularity (panel share) with size-corrected lift.
+
+    Encodes the video's caveat that a popularity ranking alone does not reveal
+    audience-specific affinity.  ``affinity_lift`` here is the size correction:
+    panel share divided by the channel's share of total subscribers, calibrated
+    to a median of 1.0.  Because external subscriber counts are present in the
+    data we use them; the docstring of build_excel_report notes the fallback.
+    """
+    df = panel_overlap[panel_overlap["observed_commenters"] >= min_commenters].copy()
+    df = df.dropna(subset=["affinity_lift"])
+    df["popularity_rank"] = df["sample_share"].rank(ascending=False).astype(int)
+    df["affinity_rank"] = df["affinity_lift"].rank(ascending=False).astype(int)
+    df["rank_gap"] = df["popularity_rank"] - df["affinity_rank"]
+    return df
