@@ -61,32 +61,45 @@ Reproduction` シートに併記している。
 
 列ごとの定義は Excel レポートの **Data Dictionary** シート、または上記ノートブック参照。
 
-## レポートと図の再生成
+## 簡潔な結論（このデータから何が分かるか）
+
+1. **関心の中心**：視聴者の関心は**自己啓発・ビジネス・教養系に強い**（最頻併用先は
+   パネルの約 33% が登録）。
+2. **関心の広がり**：ただし単一ジャンルに偏らず、**音楽・生活・エンタメ・ニュース等にも
+   広がる多様な関心**を持つ。
+3. **人気 ≠ 親和性**：人気チャンネルと「自視聴者に親和性の高い」チャンネルは別物で、
+   **登録率の高さだけでは類似性・親和性は判断できない**（規模補正 lift で抽出）。
+4. **解釈上の限界**：この像は**公開登録者に限定**されるため、全視聴者の完全な代表ではない
+   （選択バイアスあり）。
+
+非専門家向けの短いまとめは Excel レポート先頭の **結論 (Executive Summary)** シートにある。
+
+## レポートの再生成
 
 ```bash
 pip install -r requirements.txt          # 依存をインストール
-python scripts/generate_figures.py       # figures/ に Excel風チャートを生成（9枚）
 python scripts/build_excel_report.py     # youtube_network_analysis_report.xlsx を生成
 ```
 
-- 図（`figures/`）：
-  - `01_top_channels.png` … 視聴者が他に見ているチャンネル Top20
-  - `02_viewer_breadth.png` … 視聴者1人あたりの登録チャンネル数
-  - `03_community_sizes.png` … コミュニティ規模 Top12
-  - `04_affinity_lift.png` … 固有親和性 lift Top20
-  - `05_penetration_vs_size.png` … 規模 vs 浸透率 散布図
-  - `06_edge_strength.png` … 共起エッジ強度の分布
-  - `07_bipartite_overview.png` … 動画手法の構造（中心→視聴者→他チャンネル）
-  - `08_interest_categories.png` … 興味カテゴリ別の注目度
-  - `09_popularity_vs_affinity.png` … 人気 ≠ 親和性 散布図
-- `youtube_network_analysis_report.xlsx` … 14シートのサマリーワークブック
-  （Overview / Video Method Reproduction / Data Profile / Data Dictionary /
-  Quality Checks / Summary Metrics / Subscriber Sample / Top Channels /
-  Interest Categories / Affinity vs Popularity / Affinity Lift / Communities /
-  Charts / Sources & Methodology）
+`youtube_network_analysis_report.xlsx` … 19シートのサマリーワークブック。
+**グラフはすべて Excel ネイティブのチャートオブジェクト**（openpyxl の BarChart /
+ScatterChart）で、PNG画像の埋め込みではない（Excel 内で編集可能）。各チャートシートには
+1〜2文の「読み取り」コメントを併記している。
 
-図は日本語フォント（Noto Sans CJK JP）、色覚多様性に配慮した Okabe-Ito 配色、
-直接ラベル付き、3D・円グラフ不使用で統一している。
+- **結論 (Executive Summary)** … 非専門家向けの短い結論（上記4点）
+- **Overview** … プロジェクト概要と主要発見
+- **Video Method Reproduction** … 動画 Step1/2/3 の再現と数値比較
+- **Chart - Top Channels** … ① 共通登録率 Top15（横棒・パネル浸透率）
+- **Chart - Categories** … ② 興味カテゴリ別の登録リンク数（横棒）
+- **Chart - Pop vs Affinity** … ③ 人気 vs 親和性 lift（散布図）
+- **Chart - Viewer Breadth** … ④ 視聴者あたり登録数の分布（縦棒・ビン集計）
+- **Chart - Video Compare** … ⑤ 動画 vs 本データの規模比較（縦棒・対数）
+- Data Profile / Data Dictionary / Quality Checks / Summary Metrics /
+  Subscriber Sample / Top Channels / Interest Categories /
+  Affinity vs Popularity / Affinity Lift / Communities / Sources & Methodology
+
+> 補助的に `python scripts/generate_figures.py` で `figures/` に PNG 版チャート（9枚）も
+> 生成できるが、レポート本体（xlsx）はネイティブチャートのみで完結し PNG を必要としない。
 
 ## 主要な発見（収集データより）
 

@@ -1,15 +1,25 @@
 """Build the Excel summary workbook for the YouTube audience-network analysis.
 
 Run:
-    python scripts/generate_figures.py     # produces figures/ first
-    python scripts/build_excel_report.py    # writes the workbook
+    python scripts/build_excel_report.py    # writes the workbook (self-contained)
+
+The workbook needs no PNG inputs -- every chart is drawn natively by Excel.
 
 Output: youtube_network_analysis_report.xlsx
 
+All charts are NATIVE Excel chart objects (openpyxl BarChart / ScatterChart),
+not embedded PNG images, so they stay editable inside Excel.
+
 Sheets
 ------
+  結論 (Executive Summary) plain-language conclusion for non-specialists
   Overview                 project summary + headline findings
   Video Method Reproduction Step 1/2/3 flow + video-vs-data comparison
+  Chart - Top Channels     ① common-subscription-rate top channels (native bar)
+  Chart - Categories       ② interest categories (native bar)
+  Chart - Pop vs Affinity  ③ popularity vs affinity lift (native scatter)
+  Chart - Viewer Breadth   ④ per-viewer subscription-count distribution (native bar)
+  Chart - Video Compare    ⑤ video-vs-data scale comparison (native bar, log)
   Data Profile             per-dataset row/column/null/dup profile
   Data Dictionary          column-level descriptions
   Quality Checks           automated PASS/WARN checks
@@ -20,7 +30,6 @@ Sheets
   Affinity vs Popularity   "popularity != affinity" hidden-gem table
   Affinity Lift            size-corrected audience-specific affinity
   Communities              Louvain co-viewing clusters
-  Charts                   embedded PNGs from figures/
   Sources & Methodology    external references (incl. personality research) + ethics
 """
 
@@ -29,10 +38,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 import openpyxl
-from openpyxl.drawing.image import Image as XLImage
+from openpyxl.chart import BarChart, Reference, ScatterChart, Series
+from openpyxl.chart.label import DataLabelList
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
-from openpyxl.utils.dataframe import dataframe_to_rows
 
 import analysis_common as ac
 
@@ -114,9 +123,80 @@ def _title_block(ws, title, subtitle=None):
 
 
 # --- sheet builders --------------------------------------------------------
-def sheet_overview(wb, data, kpis):
+def sheet_executive_summary(wb, data, kpis):
+    """Plain-language conclusion sheet ('結論') for non-specialists."""
     ws = wb.active
-    ws.title = "Overview"
+    ws.title = "結論 (Executive Summary)"
+    ws.sheet_view.showGridLines = False
+    _title_block(ws, "結論：このデータから何が分かるか",
+                 "非専門家向けの短いまとめ（詳細は各シート参照）")
+
+    lead = (
+        f"自チャンネルの視聴者 {kpis['n_viewers']:,} 人（公開登録を持つコメント投稿者）が"
+        f"他に登録している {kpis['n_channels']:,} チャンネルを集計・ネットワーク化した結果、"
+        "次の4点が分かった。出力はすべて集計で、個人の特定は行っていない。"
+    )
+    ws.cell(row=3, column=1, value=lead).alignment = WRAP
+    ws.merge_cells("A3:H3")
+    ws.row_dimensions[3].height = 44
+
+    conclusions = [
+        ("① 関心の中心",
+         "視聴者の関心は自己啓発・ビジネス・教養系に強い。",
+         f"最頻の併用登録先は「{kpis['top1_title']}」で、パネルの "
+         f"約 {kpis['top1_share']*100:.0f}% が登録。"
+         "（Chart - Top Channels / Top Channels シート）"),
+        ("② 関心の広がり",
+         "ただし単一ジャンルに偏らず、音楽・生活・エンタメ・ニュース等にも広がる多様な関心を持つ。",
+         "Top150 チャンネルの分類で約半数が単一カテゴリに収まらず、"
+         "多様性そのものが特徴。（Chart - Categories / Interest Categories シート）"),
+        ("③ 人気 ≠ 親和性",
+         "人気チャンネルと『自視聴者に親和性の高い』チャンネルは別物。"
+         "登録率の高さだけでは視聴者との類似性・親和性は判断できない。",
+         f"規模補正した親和性 lift は最大 {kpis['top_lift']:.0f}×。"
+         "大型チャンネルは規模相応（lift≈1）で、規模が小さく目立たないが"
+         "刺さっている『隠れた親和チャンネル』が存在する。"
+         "（Chart - Pop vs Affinity / Affinity vs Popularity シート）"),
+        ("④ 解釈上の限界",
+         "この像は公開登録者に限定されるため、全視聴者の完全な代表ではない。",
+         f"観測できたのは公開登録を持つ {kpis['n_viewers']:,} 人のみ"
+         "（登録を非公開にしている層は観測不可・選択バイアスあり）。"
+         "結論は傾向の把握に留め、断定は避ける。"),
+    ]
+    r = 5
+    for tag, headline, detail in conclusions:
+        tcell = ws.cell(row=r, column=1, value=tag)
+        tcell.font = Font(bold=True, color="FFFFFF", size=12)
+        tcell.fill = PatternFill("solid", fgColor=BLUE)
+        tcell.alignment = Alignment(horizontal="center", vertical="center",
+                                    wrap_text=True)
+        tcell.border = BORDER
+        hcell = ws.cell(row=r, column=2, value=headline)
+        hcell.font = Font(bold=True, size=11, color=NAVY)
+        hcell.alignment = WRAP
+        hcell.border = BORDER
+        ws.merge_cells(start_row=r, start_column=2, end_row=r, end_column=8)
+        ws.row_dimensions[r].height = 36
+        dcell = ws.cell(row=r + 1, column=2, value=detail)
+        dcell.alignment = WRAP
+        dcell.border = BORDER
+        ws.merge_cells(start_row=r + 1, start_column=2, end_row=r + 1,
+                       end_column=8)
+        ws.cell(row=r + 1, column=1).border = BORDER
+        ws.row_dimensions[r + 1].height = 46
+        r += 2
+
+    nav = ("読み方：グラフは『Chart -』で始まる5シート（① 共通登録率 / ② 興味カテゴリ / "
+           "③ 人気vs親和性 / ④ 登録数分布 / ⑤ 動画比較）。手法・倫理は "
+           "『Sources & Methodology』シート参照。")
+    ws.cell(row=r + 1, column=1, value=nav).alignment = WRAP
+    ws.cell(row=r + 1, column=1).font = Font(italic=True, color=GREY, size=10)
+    ws.merge_cells(start_row=r + 1, start_column=1, end_row=r + 2, end_column=8)
+    _autofit(ws, {1: 14, 2: 22, 3: 14, 4: 14, 5: 14, 6: 14, 7: 14, 8: 14})
+
+
+def sheet_overview(wb, data, kpis):
+    ws = wb.create_sheet("Overview")
     _title_block(ws, "YouTube オーディエンス・ネットワーク分析レポート",
                  "「視聴者は普段どんなチャンネルを見ているのか？」を集計データで再現")
     ws.sheet_view.showGridLines = False
@@ -354,36 +434,215 @@ def sheet_communities(wb, data):
     _autofit(ws, {1: 6, 2: 12, 3: 12, 4: 12, 5: 90})
 
 
-def sheet_charts(wb):
-    ws = wb.create_sheet("Charts")
+def _comment(ws, cell_ref, text):
+    """Write a 1-2 sentence read-out note in italic grey."""
+    c = ws[cell_ref]
+    c.value = text
+    c.font = Font(italic=True, color=GREY, size=10)
+    c.alignment = WRAP
+
+
+def _write_chart_data(ws, df, start_row, start_col=1, int_cols=(), pct_cols=(),
+                      float_cols=()):
+    """Write a compact data block (header + rows) used as a chart source."""
+    headers = list(df.columns)
+    for j, h in enumerate(headers):
+        cell = ws.cell(row=start_row, column=start_col + j, value=h)
+        cell.fill = HEADER_FILL
+        cell.font = WHITE_BOLD
+        cell.border = BORDER
+        cell.alignment = CENTER
+    for i, (_, row) in enumerate(df.iterrows(), start=1):
+        for j, h in enumerate(headers):
+            cell = ws.cell(row=start_row + i, column=start_col + j, value=row[h])
+            cell.border = BORDER
+            if i % 2 == 0:
+                cell.fill = BAND_FILL
+            if h in int_cols:
+                cell.number_format = "#,##0"
+            elif h in pct_cols:
+                cell.number_format = "0.0%"
+            elif h in float_cols:
+                cell.number_format = "0.00"
+    return start_row + len(df)  # last data row
+
+
+def sheet_chart_top_channels(wb, data):
+    ws = wb.create_sheet("Chart - Top Channels")
     ws.sheet_view.showGridLines = False
-    _title_block(ws, "チャート", "figures/ から埋め込み（再生成: scripts/generate_figures.py）")
-    images = [
-        ("07_bipartite_overview.png", "動画手法の構造：自チャンネル→視聴者→他チャンネル"),
-        ("01_top_channels.png", "視聴者が他に見ているチャンネル Top20"),
-        ("08_interest_categories.png", "興味カテゴリ別の注目度"),
-        ("09_popularity_vs_affinity.png", "人気 ≠ 親和性（浸透率 vs 規模補正 lift）"),
-        ("04_affinity_lift.png", "固有親和性 lift Top20"),
-        ("02_viewer_breadth.png", "視聴者1人あたりの登録チャンネル数"),
-        ("03_community_sizes.png", "コミュニティ規模 Top12"),
-        ("05_penetration_vs_size.png", "規模 vs 浸透率 散布図"),
-        ("06_edge_strength.png", "共起エッジ強度の分布"),
-    ]
-    row = 4
-    for fname, caption in images:
-        path = ac.FIGURES_DIR / fname
-        if not path.exists():
-            continue
-        cap = ws.cell(row=row, column=1, value=caption)
-        cap.font = Font(bold=True, size=12, color=NAVY)
-        img = XLImage(str(path))
-        # scale to a consistent width
-        scale = 720 / img.width
-        img.width = int(img.width * scale)
-        img.height = int(img.height * scale)
-        ws.add_image(img, f"A{row + 1}")
-        row += int(img.height / 18) + 4
-    ws.column_dimensions["A"].width = 110
+    _title_block(ws, "① 共通登録率 Top チャンネル",
+                 "視聴者が他に見ているチャンネル（パネル浸透率の高い順）")
+    _comment(ws, "A3",
+             "読み取り：自己啓発・ビジネス・教養系が上位を占める。"
+             "最上位チャンネルはパネルの約3割が登録している。")
+    ws.merge_cells("A3:H3")
+    top = ac.audience_top_channels(data["edges_anon"], top_n=15)
+    df = top[["channel_title", "panel_share"]].rename(
+        columns={"channel_title": "チャンネル", "panel_share": "パネル浸透率"})
+    last = _write_chart_data(ws, df, start_row=5, pct_cols=("パネル浸透率",))
+
+    chart = BarChart()
+    chart.type = "bar"
+    chart.title = "共通登録率 Top15（パネル浸透率）"
+    chart.y_axis.title = "パネル浸透率"
+    chart.x_axis.title = "チャンネル"
+    chart.height = 11
+    chart.width = 24
+    chart.legend = None
+    data_ref = Reference(ws, min_col=2, min_row=5, max_row=last)
+    cats = Reference(ws, min_col=1, min_row=6, max_row=last)
+    chart.add_data(data_ref, titles_from_data=True)
+    chart.set_categories(cats)
+    chart.dataLabels = DataLabelList()
+    chart.dataLabels.showVal = True
+    chart.dataLabels.numFmt = "0.0%"
+    ws.add_chart(chart, "D5")
+    _autofit(ws, {1: 38, 2: 14})
+
+
+def sheet_chart_categories(wb, data):
+    ws = wb.create_sheet("Chart - Categories")
+    ws.sheet_view.showGridLines = False
+    _title_block(ws, "② 興味カテゴリ別の構成",
+                 "Top150 チャンネルをキーワード分類した登録リンク数")
+    _comment(ws, "A3",
+             "読み取り：自己啓発・ビジネス・教養が中心だが、"
+             "音楽/生活/ニュース等にも広がり、関心は単一ジャンルに偏らない。")
+    ws.merge_cells("A3:H3")
+    ib = ac.interest_breakdown(data["edges_anon"], top_n_channels=150)
+    ib = ib[ib["category"] != "その他・未分類"].sort_values(
+        "viewer_links", ascending=False)
+    df = ib[["category", "viewer_links"]].rename(
+        columns={"category": "興味カテゴリ", "viewer_links": "登録リンク数"})
+    last = _write_chart_data(ws, df, start_row=5, int_cols=("登録リンク数",))
+
+    chart = BarChart()
+    chart.type = "bar"
+    chart.title = "興味カテゴリ別の登録リンク数"
+    chart.y_axis.title = "登録リンク数"
+    chart.x_axis.title = "興味カテゴリ"
+    chart.height = 10
+    chart.width = 22
+    chart.legend = None
+    data_ref = Reference(ws, min_col=2, min_row=5, max_row=last)
+    cats = Reference(ws, min_col=1, min_row=6, max_row=last)
+    chart.add_data(data_ref, titles_from_data=True)
+    chart.set_categories(cats)
+    chart.dataLabels = DataLabelList()
+    chart.dataLabels.showVal = True
+    ws.add_chart(chart, "D5")
+    _autofit(ws, {1: 26, 2: 14})
+
+
+def sheet_chart_pop_vs_affinity(wb, data):
+    ws = wb.create_sheet("Chart - Pop vs Affinity")
+    ws.sheet_view.showGridLines = False
+    _title_block(ws, "③ 人気 vs 親和性 lift",
+                 "横軸=パネル浸透率（人気）、縦軸=規模補正 lift（親和性）")
+    _comment(ws, "A3",
+             "読み取り：人気と親和性は別物。人気上位でも lift≈1（規模相応）の"
+             "チャンネルが多く、登録率だけでは類似性・親和性は判断できない。")
+    ws.merge_cells("A3:H3")
+    avp = ac.affinity_vs_popularity(data["panel_overlap"])
+    # cap extreme lifts for a readable axis, keep a representative spread
+    avp = avp.copy()
+    avp["lift_capped"] = avp["affinity_lift"].clip(upper=20)
+    df = avp[["sample_share", "lift_capped"]].rename(
+        columns={"sample_share": "パネル浸透率", "lift_capped": "親和性lift(上限20)"})
+    df = df.sort_values("パネル浸透率")
+    last = _write_chart_data(ws, df, start_row=5, pct_cols=("パネル浸透率",),
+                             float_cols=("親和性lift(上限20)",))
+
+    chart = ScatterChart()
+    chart.title = "人気（浸透率） vs 親和性 lift"
+    chart.x_axis.title = "パネル浸透率（人気）"
+    chart.y_axis.title = "親和性 lift（規模補正・上限20）"
+    chart.height = 12
+    chart.width = 22
+    chart.legend = None
+    xref = Reference(ws, min_col=1, min_row=6, max_row=last)
+    yref = Reference(ws, min_col=2, min_row=6, max_row=last)
+    series = Series(yref, xref, title="チャンネル")
+    series.marker.symbol = "circle"
+    series.marker.size = 4
+    series.graphicalProperties.line.noFill = True
+    chart.series.append(series)
+    # reference line at lift=1 would need a second series; note it in the comment
+    ws.add_chart(chart, "D5")
+    _comment(ws, "D4", "（参考線 lift=1 = 規模相応の人気。これより上が固有親和性が高い）")
+    _autofit(ws, {1: 16, 2: 18})
+
+
+def sheet_chart_viewer_breadth(wb, data):
+    ws = wb.create_sheet("Chart - Viewer Breadth")
+    ws.sheet_view.showGridLines = False
+    _title_block(ws, "④ 視聴者あたり登録チャンネル数の分布",
+                 "1人の視聴者が公開登録しているチャンネル数のビン集計")
+    _comment(ws, "A3",
+             "読み取り：少数登録の視聴者が多い一方、1,000付近の山は "
+             "subscriptions API の取得上限（約1,000件）による打ち切り。")
+    ws.merge_cells("A3:H3")
+    import numpy as np
+    import pandas as pd
+    breadth = ac.viewer_breadth(data["edges_anon"])
+    bins = list(range(0, 1101, 100))
+    labels = [f"{bins[i]}-{bins[i+1]-1}" for i in range(len(bins) - 1)]
+    cut = pd.cut(breadth, bins=bins, labels=labels, include_lowest=True)
+    counts = cut.value_counts().reindex(labels).fillna(0).astype(int)
+    df = pd.DataFrame({"登録数ビン": labels, "視聴者数": counts.values})
+    last = _write_chart_data(ws, df, start_row=5, int_cols=("視聴者数",))
+
+    chart = BarChart()
+    chart.type = "col"
+    chart.title = "視聴者あたり公開登録チャンネル数の分布"
+    chart.y_axis.title = "視聴者数（人）"
+    chart.x_axis.title = "公開登録チャンネル数（ビン）"
+    chart.height = 10
+    chart.width = 22
+    chart.legend = None
+    data_ref = Reference(ws, min_col=2, min_row=5, max_row=last)
+    cats = Reference(ws, min_col=1, min_row=6, max_row=last)
+    chart.add_data(data_ref, titles_from_data=True)
+    chart.set_categories(cats)
+    chart.dataLabels = DataLabelList()
+    chart.dataLabels.showVal = True
+    ws.add_chart(chart, "D5")
+    _autofit(ws, {1: 16, 2: 12})
+
+
+def sheet_chart_video_compare(wb, kpis):
+    ws = wb.create_sheet("Chart - Video Compare")
+    ws.sheet_view.showGridLines = False
+    _title_block(ws, "⑤ 動画手法との規模比較",
+                 "動画で言及された値と本データ実測値（対数スケール推奨）")
+    _comment(ws, "A3",
+             "読み取り：本データは動画と同じ桁感のネットワーク規模を再現。"
+             "視聴者サンプルは808人（動画は1,000人）とやや小さい。")
+    ws.merge_cells("A3:H3")
+    import pandas as pd
+    ref = ac.VIDEO_REF
+    df = pd.DataFrame({
+        "項目": ["サンプル視聴者数", "チャンネル数", "リンク（エッジ）数"],
+        "動画（参考値）": [ref["sample"], ref["channels"], ref["links"]],
+        "本データ（実測）": [kpis["n_viewers"], kpis["n_channels"], kpis["n_edges"]],
+    })
+    last = _write_chart_data(ws, df, start_row=5,
+                             int_cols=("動画（参考値）", "本データ（実測）"))
+
+    chart = BarChart()
+    chart.type = "col"
+    chart.title = "動画 vs 本データ（規模比較）"
+    chart.y_axis.title = "件数"
+    chart.x_axis.title = "項目"
+    chart.y_axis.scaling.logBase = 10  # wide range -> log scale for readability
+    chart.height = 10
+    chart.width = 20
+    data_ref = Reference(ws, min_col=2, min_row=5, max_col=3, max_row=last)
+    cats = Reference(ws, min_col=1, min_row=6, max_row=last)
+    chart.add_data(data_ref, titles_from_data=True)
+    chart.set_categories(cats)
+    ws.add_chart(chart, "E5")
+    _autofit(ws, {1: 18, 2: 16, 3: 16})
 
 
 def sheet_sources(wb):
@@ -480,10 +739,11 @@ def sheet_video_method(wb, data, kpis):
          "全員が公開登録者のため公開のみで構成。seed=42 のサンプル版も用意"),
         ("可視化", "中心チャンネル→視聴者→他チャンネルの構造を図示し、"
          "登録リンクを多く集めるチャンネルをランキング",
-         "図07（2部ネットワーク概要）/ 図01（Top20）/ 図08（興味カテゴリ）"),
+         "Chart - Top Channels（①Top15）/ Chart - Categories（②興味カテゴリ）シート"),
         ("親和性", "人気ランキングだけでは親和性は分からない、という注意点に基づき"
          "規模を考慮した親和性指標を算出",
-         "図09（人気 vs 親和性）/ 図04（lift Top20）。Affinity vs Popularity シート参照"),
+         "Chart - Pop vs Affinity（③人気vs親和性）/ Affinity Lift / "
+         "Affinity vs Popularity シート参照"),
     ]
     import pandas as pd
     df = pd.DataFrame(steps, columns=["段階", "動画での手法", "本データでの再現"])
@@ -610,8 +870,15 @@ def main() -> str:
     kpis = compute_kpis(data)
 
     wb = openpyxl.Workbook()
+    sheet_executive_summary(wb, data, kpis)
     sheet_overview(wb, data, kpis)
     sheet_video_method(wb, data, kpis)
+    # native Excel charts (no embedded PNGs) -- the visual story of the report
+    sheet_chart_top_channels(wb, data)
+    sheet_chart_categories(wb, data)
+    sheet_chart_pop_vs_affinity(wb, data)
+    sheet_chart_viewer_breadth(wb, data)
+    sheet_chart_video_compare(wb, kpis)
     sheet_data_profile(wb, data)
     sheet_data_dictionary(wb)
     sheet_quality(wb, data)
@@ -622,7 +889,6 @@ def main() -> str:
     sheet_affinity_vs_popularity(wb, data)
     sheet_affinity(wb, data)
     sheet_communities(wb, data)
-    sheet_charts(wb)
     sheet_sources(wb)
 
     out = ac.REPO_ROOT / "youtube_network_analysis_report.xlsx"
