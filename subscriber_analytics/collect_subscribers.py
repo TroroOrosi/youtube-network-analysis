@@ -39,29 +39,37 @@ REGISTRY_COLUMNS = [
 
 
 def fetch_subscriber_rows(youtube, snapshot_at: str):
-    """公開登録者を全ページ取得してスナップショット行にする。戻り値は (rows, APIページ数)。"""
+    """公開登録者を全ページ取得してスナップショット行にする。戻り値は (rows, APIページ数)。
+
+    mySubscribers=true は返却順が保証されず、返却上限を超えるチャンネルでは
+    直近の登録者を取りこぼし得る。そのため新しい順で返る myRecentSubscribers=true
+    を先に取得し、両方の結果を channel_id で重複排除して合算する
+    （--subscribed-within での「直近登録者」分析の取りこぼしを防ぐ）。
+    """
     resource = youtube.subscriptions()
-    request = resource.list(
-        part="subscriberSnippet,snippet",
-        mySubscribers=True,
-        maxResults=50,
-    )
-    rows, pages = [], 0
-    for response in common.iter_pages(resource, request):
-        pages += 1
-        for item in response.get("items", []):
-            sub = item.get("subscriberSnippet", {})
-            channel_id = sub.get("channelId", "")
-            if not channel_id:
-                continue
-            rows.append(
-                {
-                    "channel_id": channel_id,
-                    "title": sub.get("title", ""),
-                    "api_published_at": item.get("snippet", {}).get("publishedAt", ""),
-                    "snapshot_at": snapshot_at,
-                }
-            )
+    rows, pages, seen = [], 0, set()
+    for selector in ({"myRecentSubscribers": True}, {"mySubscribers": True}):
+        request = resource.list(
+            part="subscriberSnippet,snippet",
+            maxResults=50,
+            **selector,
+        )
+        for response in common.iter_pages(resource, request):
+            pages += 1
+            for item in response.get("items", []):
+                sub = item.get("subscriberSnippet", {})
+                channel_id = sub.get("channelId", "")
+                if not channel_id or channel_id in seen:
+                    continue
+                seen.add(channel_id)
+                rows.append(
+                    {
+                        "channel_id": channel_id,
+                        "title": sub.get("title", ""),
+                        "api_published_at": item.get("snippet", {}).get("publishedAt", ""),
+                        "snapshot_at": snapshot_at,
+                    }
+                )
     return rows, pages
 
 

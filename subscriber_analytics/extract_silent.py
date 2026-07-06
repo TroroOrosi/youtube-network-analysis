@@ -19,6 +19,12 @@ collect_subscribers.py が育てたレジストリと collect_comments.py のコ
 
 フィルタ指定なしで実行すると、全登録者を4象限セグメント付きで出力する。
 セグメント: 新規サイレント / 古参サイレント / 休眠（過去コメントあり・期間内なし）/ アクティブ
+
+解約済みの扱い: レジストリには過去に観測した全員が残るため、既定では
+「最新スナップショットに出現した人（=現役の公開登録者）」のみを対象にする。
+解約した可能性のある人も含めるには --include-unsubscribed を指定する
+（登録者数が API の返却上限を超えるチャンネルでは、現役でも最新スナップ
+ショットから漏れる場合があるため、その際もこのフラグが有用）。
 """
 
 from __future__ import annotations
@@ -178,6 +184,11 @@ def main() -> None:
     )
     parser.add_argument("--no-comment-within", help="直近この期間コメントしていない人（例: 90d）")
     parser.add_argument(
+        "--include-unsubscribed",
+        action="store_true",
+        help="最新スナップショットに出現しなかった人（解約の可能性あり）も対象に含める",
+    )
+    parser.add_argument(
         "--data-dir",
         type=Path,
         default=common.DATA_DIR,
@@ -190,6 +201,16 @@ def main() -> None:
     now = common.parse_ts(args.now) if args.now else common.utcnow()
 
     registry = load_registry(args.data_dir)
+
+    # 既定では最新スナップショットに出現した人（現役の公開登録者）のみを対象にする。
+    # レジストリには解約済みの人も last_seen_at が古いまま残るため。
+    excluded_unsubscribed = 0
+    latest_seen = registry["last_seen_at"].max() if len(registry) else ""
+    if not args.include_unsubscribed and latest_seen:
+        current = registry["last_seen_at"] == latest_seen
+        excluded_unsubscribed = int((~current).sum())
+        registry = registry[current]
+
     comment_stats, n_comment_files = load_comment_stats(args.data_dir)
     if n_comment_files == 0:
         print(
@@ -208,7 +229,13 @@ def main() -> None:
     )
     common.atomic_write_csv(format_output(filtered), out_path)
 
-    print(f"=== セグメント集計（レジストリ全体 {len(table)} 人 / 基準時刻 {common.format_ts(now)}） ===")
+    scope = "現役登録者" if not args.include_unsubscribed else "レジストリ全体"
+    print(f"=== セグメント集計（{scope} {len(table)} 人 / 基準時刻 {common.format_ts(now)}） ===")
+    if excluded_unsubscribed:
+        print(
+            f"  ※最新スナップショット（{latest_seen}）に出現しなかった {excluded_unsubscribed} 人"
+            "（解約の可能性）を除外済み。含めるには --include-unsubscribed"
+        )
     for name in (SEG_NEW_SILENT, SEG_OLD_SILENT, SEG_DORMANT, SEG_ACTIVE):
         print(f"  {name}: {int((table['segment'] == name).sum())} 人")
     if applied:

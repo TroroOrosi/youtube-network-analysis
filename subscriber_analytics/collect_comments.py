@@ -1,7 +1,14 @@
-"""自チャンネル全動画のコメント収集 CLI（APIキーで動作、OAuth 不要）。
+"""自チャンネル全動画のコメント収集 CLI。
 
 チャンネルの uploads プレイリストから全動画を列挙し、動画ごとにコメントを
 data/comments/<video_id>.csv へ保存する。
+
+認証は次の順で決まる:
+  1. --use-oauth 指定時は常に OAuth（オーナー権限。非公開・限定公開の動画も対象）
+  2. --api-key 未指定で OAuth トークン（collect_subscribers.py が保存）が
+     あれば自動で OAuth を使う。APIキーのみだと公開動画しか列挙されず、
+     非公開動画にしかコメントしていない人をサイレント誤判定し得るため
+  3. それ以外は APIキー（環境変数 YOUTUBE_API_KEY / --api-key）
 
 設計上のポイント:
   - トップレベルコメントに加えて**返信も必ず取得**する。commentThreads が同梱する
@@ -163,8 +170,6 @@ def run(youtube, channel_id: str, data_dir: Path, force: bool = False, max_video
     playlist_id = get_uploads_playlist(youtube, channel_id)
     videos, pages = list_uploaded_videos(youtube, playlist_id)
     pages += 1  # channels.list の分
-    if max_videos > 0:
-        videos = videos[:max_videos]
 
     cache_dir = common.comments_dir(data_dir)
     collected = skipped = disabled = total_comments = 0
@@ -174,6 +179,15 @@ def run(youtube, channel_id: str, data_dir: Path, force: bool = False, max_video
         if cache_file.exists() and not force:
             skipped += 1
             continue
+        # 上限はキャッシュ済みを除いた「新規収集数」に対して適用する。
+        # （全体リストを先頭で切ると、2回目以降の実行がキャッシュ済みの
+        #   同じ N 本だけを見て終わり、収集が先へ進まなくなるため）
+        if max_videos > 0 and collected >= max_videos:
+            print(
+                f"--max-videos {max_videos} に到達したため中断します。"
+                "再実行すると続きから収集します。"
+            )
+            break
         rows, video_pages, is_disabled = fetch_video_comments(youtube, video_id)
         pages += video_pages
         frame = pd.DataFrame(rows, columns=COMMENT_COLUMNS)
@@ -194,6 +208,19 @@ def run(youtube, channel_id: str, data_dir: Path, force: bool = False, max_video
         "comments": total_comments,
         "pages": pages,
     }
+
+
+def build_client(use_oauth: bool, api_key: str | None, data_dir: Path):
+    """認証クライアントを解決する（モジュール docstring の優先順位に従う）。"""
+    token_file = common.token_path(data_dir)
+    if use_oauth or (not api_key and token_file.exists()):
+        print("OAuth 認証で収集します（オーナー権限のため非公開・限定公開の動画も対象）")
+        return common.build_oauth_client(token_file=token_file)
+    print(
+        "APIキーで収集します（公開動画のみ対象。非公開・限定公開の動画も含める場合は"
+        "先に collect_subscribers.py を実行するか --use-oauth を指定）"
+    )
+    return common.build_api_key_client(api_key)
 
 
 def resolve_channel_id(args_channel_id: str | None, data_dir: Path) -> str:
@@ -223,15 +250,21 @@ def main() -> None:
     )
     parser.add_argument("--force", action="store_true", help="キャッシュ済みの動画も再取得する")
     parser.add_argument(
+        "--use-oauth",
+        action="store_true",
+        help="OAuth 認証で収集する（非公開・限定公開の動画も対象。トークンが無ければブラウザ認証）",
+    )
+    parser.add_argument(
         "--max-videos",
         type=int,
         default=0,
-        help="処理する動画数の上限（0=全動画。クォータを分割したい場合に使用）",
+        help="1回の実行で新規に収集する動画数の上限（0=無制限。キャッシュ済みは数えない。"
+        "クォータを複数日に分割したい場合に使用）",
     )
     args = parser.parse_args()
 
     channel_id = resolve_channel_id(args.channel_id, args.data_dir)
-    youtube = common.build_api_key_client(args.api_key)
+    youtube = build_client(args.use_oauth, args.api_key, args.data_dir)
     stats = run(youtube, channel_id, args.data_dir, force=args.force, max_videos=args.max_videos)
 
     print(
