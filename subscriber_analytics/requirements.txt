@@ -1,0 +1,5 @@
+# subscriber_analytics 用の依存（ルートの requirements.txt とは独立）
+google-api-python-client
+google-auth-oauthlib
+pandas
+python-dotenv

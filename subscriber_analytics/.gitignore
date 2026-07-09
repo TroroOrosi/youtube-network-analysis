@@ -1,0 +1,5 @@
+# 収集データ（実チャンネルIDを含む）と認証情報はコミット禁止
+data/
+output/
+client_secret*.json
+token.json
