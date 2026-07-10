@@ -48,6 +48,17 @@ pip install -r subscriber_analytics/requirements.txt
 
 ## 使い方
 
+CLI とノートブックのどちらでも実行できる（同じ関数を呼ぶため結果は同一で、データも共有される）。
+
+### ノートブックで実行する
+
+[`subscriber_analytics.ipynb`](subscriber_analytics.ipynb) を開き、セルを上から順に実行する
+（リポジトリルートの `youtube_network_analysis.ipynb` と同じ形式。前提条件は上記セットアップと同じ）。
+Stage 2 の `MAX_VIDEOS` / `FORCE` や Stage 3 の期間フィルタ（`SUBSCRIBED_WITHIN` など）は
+各セル冒頭の変数で指定する。
+
+### CLI で実行する
+
 ```bash
 # 1. 登録者スナップショット収集（初回はブラウザで OAuth 認証。週1などで定期実行を推奨）
 python subscriber_analytics/collect_subscribers.py
