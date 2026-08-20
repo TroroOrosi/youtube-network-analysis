@@ -221,3 +221,6 @@ __marimo__/
 channel_network_visualization.png
 channel_network_interactive.html
 *.bak
+
+# ローカル解析ツールキャッシュ（再生成可能）
+.repowise/
