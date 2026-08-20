@@ -72,9 +72,9 @@ rotation/revocation, logout, and logout-all.
 
 ## Checkpoint A: Session boundary
 
-- [ ] Tasks 1-2 are independently committed and pushed.
-- [ ] No dependency, framework, persistence, OAuth, or real data introduced.
-- [ ] Graph rebuild has no parser error and focused/full tests pass.
+- [x] Tasks 1-2 are independently committed and pushed.
+- [x] No dependency, framework, persistence, OAuth, or real data introduced.
+- [x] Graph rebuild has no parser error and focused/full tests pass.
 
 ## Task 3: Resolve one authorized workspace context
 

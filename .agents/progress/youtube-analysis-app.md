@@ -124,6 +124,35 @@ subscriptions, complete owner-scope comments are required by default, and no
 real OAuth/API/production-data run was performed. The repository still has no
 configured formatter, linter, type checker, or CI workflow.
 
+## Verified milestone: workspace-access session boundary
+
+Branch: `feature/multi-channel-analytics`
+Verified implementation HEAD: `72ff6a0`
+
+- `4b8f661` approves the workspace-access specification, implementation plan,
+  and six-task TDD checklist after the user's continue-to-completion direction.
+- `ec95d30` adds immutable/slotted access records, stable errors, redacted secret
+  wrappers, UTC validation, and the exact `OWNER`/`MEMBER` permission matrix.
+- `72ff6a0` adds verified-identity mapping and secure in-memory sessions with
+  one-time raw-secret issuance, SHA-256 digest-only retention, 30-minute idle
+  and 12-hour absolute expiry, revocation, logout-all, and suspension behavior.
+
+Verification evidence:
+
+- workspace-access suite: 16 tests passed (6 contract, 10 session/port);
+- subscriber analytics regression suite: 29 tests passed;
+- `python -m compileall -q workspace_access subscriber_analytics`: passed;
+- `git diff --check` and credential-value scan: passed;
+- graph rebuild: 53 new/changed nodes, 391 edges, no parser errors;
+- staged graph review found no affected existing flow. Static gaps were limited
+  to protocol/private helper attribution; production clock/token defaults now
+  have direct tests and all public session operations execute in behavior tests.
+
+No database, dependency, HTTP/cookie adapter, CSRF implementation, OAuth,
+authentication provider, credential, real user data, or production behavior was
+introduced. Next implementation slice is workspace creation/selection/context
+resolution, followed by membership and atomic last-owner safety.
+
 ## Decisions and constraints
 
 - OAuth scope remains `youtube.readonly`; no write/delete/upload permission.
@@ -157,19 +186,12 @@ before OAuth/token persistence.
 
 ## Current next steps
 
-1. Review `SPEC-workspace-access.md`, currently proposed for review. It defines
-   identity/session separation, single-workspace contexts, the `OWNER`/`MEMBER`
-   permission matrix, tenant-selection failure behavior, session/CSRF rules,
-   revocation, non-enumerating errors, and privacy/retention obligations.
-2. Do not write an implementation plan or introduce persistence, Web OAuth,
-   authentication providers, HTTP routes, or UI until that specification is
-   approved.
-3. After approval, plan and implement `workspace-access` with fixtures and
-   in-memory fakes only. Continue to `channel-data` after the isolation boundary
-   is verified, then threat-model `channel-connections` before hosted OAuth.
-
-No database, dependency, endpoint, authentication flow, credential, real user
-data, or production behavior was introduced while proposing the specification.
+1. Implement Task 3 workspace creation/list/context resolution with explicit
+   cross-workspace negative tests.
+2. Implement Task 4 membership commands, idempotency, authorization-revision
+   invalidation, and atomic last-owner concurrency protection.
+3. Complete privacy/audit lifecycle and final module review before specifying
+   `channel-data`; do not introduce persistence, Web OAuth, endpoints, or UI.
 
 Recommended next-phase skills: `spec-driven-development`,
 `security-and-hardening`, and `api-and-interface-design`. Use the code-review
