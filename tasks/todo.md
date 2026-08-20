@@ -84,18 +84,18 @@ workspace selections.
 
 **Acceptance criteria:**
 
-- [ ] Workspace creation atomically creates the first owner; accessible lists
+- [x] Workspace creation atomically creates the first owner; accessible lists
   include only current memberships with stable ordering.
-- [ ] Every successful context contains current role, permissions, session, and
+- [x] Every successful context contains current role, permissions, session, and
   authorization revision for exactly one workspace.
-- [ ] Missing and foreign selectors produce the same non-enumerating error and
+- [x] Missing and foreign selectors produce the same non-enumerating error and
   no client-supplied authority is trusted.
 
 **Verification:**
 
-- [ ] RED then GREEN: `python -m unittest workspace_access.tests.test_authorization -v`
-- [ ] Full workspace and analytics suites pass.
-- [ ] Cross-tenant negative runtime fixture, compile, and integrity checks pass.
+- [x] RED then GREEN: `python -m unittest workspace_access.tests.test_authorization -v`
+- [x] Full workspace and analytics suites pass.
+- [x] Cross-tenant negative runtime fixture, compile, and integrity checks pass.
 
 **Dependencies:** Task 2
 
