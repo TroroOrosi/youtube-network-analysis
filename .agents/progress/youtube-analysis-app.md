@@ -551,3 +551,84 @@ still unspecified and must be approved separately:
 
 The hosted Web/API and non-engineer UI slice also remains unspecified; its
 acceptance requirements are recorded in `SPEC-channel-connections.md`.
+
+## Verified milestone: execution broker and collection-jobs complete
+
+Branch: `feature/multi-channel-analytics`
+
+Date: 2026-08-21
+
+The user approved building the remaining capabilities, so the two contracts the
+progress record listed as prerequisites were specified and implemented, followed
+by the whole `collection-jobs` module.
+
+### channel-connections additions
+
+- `1db9697` specifies the execution authority and the brokered provider
+  operation interface.
+- `6fb1d72` implements them: a workspace-bound `ExecutionAuthority` that carries
+  no credential and expires at exactly 60 minutes, revoked by disconnect,
+  reported invalidation, and workspace deletion but not by credential rotation;
+  and `run_provider_operation`, which resolves the credential slot internally,
+  calls a `YouTubeDataGateway`, and returns only minimized subscriber, video, and
+  comment-author rows with an opaque page token and the reported quota cost.
+  An expired grant deletes the slot, publishes `REAUTH_REQUIRED`, revokes the
+  connection's authorities, and fails closed. Two error codes were added:
+  `AUTHORITY_NOT_FOUND_OR_EXPIRED` and `CONNECTION_REAUTH_REQUIRED`.
+
+### collection-jobs
+
+- `cbc24ca` approves `SPEC-collection-jobs.md` with the plan and six tasks.
+- `3842279` adds the contracts and subscriber execution.
+- `3fff6ce` adds quota, retries, and cancellation.
+- `ffd2904` adds owner-content execution across both phases.
+- `944fb88` adds schedules, reads, and bounded pagination.
+- `19574fa` adds tenant isolation, retention, cascade, integration, and README.
+
+Design decisions recorded here rather than re-derived later:
+
+1. Run kinds are `SUBSCRIBERS` and `OWNER_CONTENT`. Owner content publishes the
+   video inventory and finishes it before covering comments, because
+   `channel-data` binds coverage to the accepted inventory identifier.
+2. Each attempt uses its own `channel-data` collection id, so a retry never
+   collides with the previous attempt's idempotency records.
+3. `channel-data` accepts a failure code only on a `FAILED` finish, so a quota
+   stop finishes `PARTIAL` with no code while the run itself records
+   `QUOTA_EXHAUSTED`.
+4. Quota affordability is checked before each call with a conservative
+   reservation; the gateway's reported cost is then deducted.
+5. Provider page size is a service setting, defaulting to 50.
+6. Execution is synchronous and caller driven. No queue, worker, timer, or
+   scheduler daemon exists in this slice.
+
+Verification evidence:
+
+- collection-jobs suite: 82 tests passed;
+- channel-connections suite: 145 tests passed;
+- channel-data suite: 35 tests passed;
+- workspace-access suite: 40 tests passed;
+- subscriber analytics suite: 29 tests passed;
+- compile of all five packages, Notebook code cells, Markdown fences,
+  `git diff --check`, and a staged credential-shaped-value scan passed;
+- the end-to-end fixture drove provider rows through the broker into an accepted
+  `SilentAnalysisDataset` that `analytics-core` classified into `NEW_SILENT`,
+  `OLD_SILENT`, `DORMANT`, and `ACTIVE`;
+- a real `workspace_access` session, workspace, and resolved contexts drove the
+  connect-then-collect pipeline;
+- production functions are at most 74 lines.
+
+No dependency, network call, browser, database, queue, worker platform, real
+credential, or real channel data was introduced.
+
+### Next session
+
+Remaining capabilities in build order are `analysis-api` and `web-ui`.
+
+`analysis-api` can proceed the same way: a fixture-backed, standard-library
+vertical slice over `channel-data` and `analytics-core` with saved views,
+comparisons, and export contracts.
+
+`web-ui` cannot start without one explicit decision, because the approved
+specifications require asking first: which Web framework, HTTP/session stack,
+and dependency set to adopt. The non-engineer UI acceptance requirements are
+recorded in `SPEC-channel-connections.md`.
