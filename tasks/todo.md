@@ -93,19 +93,19 @@ provide a staged candidate.
 
 **Acceptance criteria:**
 
-- [ ] Only `IN_PROGRESS -> COMPLETE | PARTIAL | FAILED` is structurally valid;
+- [x] Only `IN_PROGRESS -> COMPLETE | PARTIAL | FAILED` is structurally valid;
   terminal replay is idempotent and other transitions fail without mutation.
-- [ ] Partial/failed attempts retain safe progress/failure codes and never erase
+- [x] Partial/failed attempts retain safe progress/failure codes and never erase
   prior success; `COMPLETE` without the exact staged candidate fails atomically.
-- [ ] Freshness/history require `collection.read`, order deterministically,
+- [x] Freshness/history require `collection.read`, order deterministically,
   and expose no provider exception, title, author, payload, or credential data.
 
 **Verification:**
 
-- [ ] RED then GREEN:
+- [x] RED then GREEN:
   `python -m unittest channel_data.tests.test_collection_state -v`
-- [ ] Full channel-data, workspace, and analytics suites pass.
-- [ ] Transition permutation/concurrency fixture, compile, and integrity checks
+- [x] Full channel-data, workspace, and analytics suites pass.
+- [x] Transition permutation/concurrency fixture, compile, and integrity checks
   pass.
 
 **Dependencies:** Task 2
