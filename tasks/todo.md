@@ -163,20 +163,20 @@ dataset loading.
 
 **Acceptance criteria:**
 
-- [ ] Inventory and per-video candidates remain invisible before finish;
+- [x] Inventory and per-video candidates remain invisible before finish;
   activity accepts positive aggregate rows or explicit empty coverage and never
   retains forbidden raw comment/name/reply fields.
-- [ ] Coverage is bound to the exact accepted inventory and reaches complete
+- [x] Coverage is bound to the exact accepted inventory and reaches complete
   only when every listed video, including empty/disabled videos, is covered.
-- [ ] Exact `COMPLETE` finish atomically promotes inventory/activity only with
+- [x] Exact `COMPLETE` finish atomically promotes inventory/activity only with
   complete coverage; silent loading requires `analysis.read` and fails with
   each stable reason for partial/public/old-inventory coverage.
 
 **Verification:**
 
-- [ ] RED then GREEN: `python -m unittest channel_data.tests.test_comments -v`
-- [ ] Full channel-data, workspace, and analytics suites pass.
-- [ ] Empty/disabled/stale/public/partial runtime fixtures, record-field
+- [x] RED then GREEN: `python -m unittest channel_data.tests.test_comments -v`
+- [x] Full channel-data, workspace, and analytics suites pass.
+- [x] Empty/disabled/stale/public/partial runtime fixtures, record-field
   allowlist, compile, and integrity checks pass.
 
 **Dependencies:** Task 4
@@ -192,9 +192,9 @@ dataset loading.
 
 ## Checkpoint B: Accepted analysis data
 
-- [ ] Tasks 3-5 are independently committed and pushed.
-- [ ] Partial/failed replacement cannot disturb the last accepted dataset.
-- [ ] Ready dataset evidence includes exact subscriber limitations and complete
+- [x] Tasks 3-5 are independently committed and pushed.
+- [x] Partial/failed replacement cannot disturb the last accepted dataset.
+- [x] Ready dataset evidence includes exact subscriber limitations and complete
   owner-video coverage for its accepted inventory.
 
 ## Task 6: Provide bounded deterministic pagination

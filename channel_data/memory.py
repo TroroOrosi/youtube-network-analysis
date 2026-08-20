@@ -6,9 +6,14 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from .models import (
     CollectionState,
+    CommentCoverage,
     SubscriberObservation,
     SubscriberRegistryEntry,
     SubscriberSnapshot,
+    Video,
+    VideoCommentActivity,
+    VideoCommentActivityInput,
+    VideoInventory,
 )
 
 
@@ -25,6 +30,21 @@ class IdempotencyRecord:
 class SubscriberCandidate:
     snapshot: SubscriberSnapshot
     observations: tuple[SubscriberObservation, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class VideoCandidate:
+    inventory: VideoInventory
+    videos: tuple[Video, ...]
+
+
+@dataclass(slots=True)
+class CommentCandidate:
+    inventory_id: str
+    replacements: dict[str, tuple[VideoCommentActivityInput, ...]] = field(
+        default_factory=dict
+    )
+    replaced_at: dict[str, datetime] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -44,5 +64,26 @@ class MemoryState:
         tuple[str, str, str], SubscriberRegistryEntry
     ] = field(default_factory=dict)
     accepted_subscriber_snapshot: dict[tuple[str, str], str] = field(
+        default_factory=dict
+    )
+    video_candidates: dict[tuple[str, str], VideoCandidate] = field(
+        default_factory=dict
+    )
+    video_inventories: dict[tuple[str, str, str], VideoInventory] = field(
+        default_factory=dict
+    )
+    videos: dict[tuple[str, str, str], tuple[Video, ...]] = field(
+        default_factory=dict
+    )
+    accepted_video_inventory: dict[tuple[str, str], str] = field(
+        default_factory=dict
+    )
+    comment_candidates: dict[tuple[str, str], CommentCandidate] = field(
+        default_factory=dict
+    )
+    comment_activity: dict[
+        tuple[str, str, str], tuple[VideoCommentActivity, ...]
+    ] = field(default_factory=dict)
+    comment_coverage: dict[tuple[str, str, str], CommentCoverage] = field(
         default_factory=dict
     )

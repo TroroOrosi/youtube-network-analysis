@@ -12,24 +12,40 @@ from typing import Any
 from workspace_access.models import Permission, WorkspaceContext
 
 from .errors import ChannelDataError, ErrorCode
-from .memory import IdempotencyRecord, MemoryState, SubscriberCandidate
+from .memory import (
+    CommentCandidate,
+    IdempotencyRecord,
+    MemoryState,
+    SubscriberCandidate,
+    VideoCandidate,
+)
 from .models import (
+    AuthorCommentActivity,
     ChannelDataFreshness,
+    CommentCoverage,
     CollectionFreshness,
     CollectionHistoryQuery,
     CollectionKind,
     CollectionState,
     CollectionStatus,
+    DatasetReadinessCode,
     FinishCollection,
     Page,
     PageRequest,
     PublishSubscriberSnapshot,
+    PublishVideoInventory,
+    ReplaceVideoCommentActivity,
+    SilentAnalysisDataset,
     StartCollection,
     SubscriberObservation,
     SubscriberRegistryEntry,
     SubscriberRegistryQuery,
     SubscriberSnapshot,
     SubscriberSnapshotQuery,
+    Video,
+    VideoCommentActivity,
+    VideoCoverageScope,
+    VideoInventory,
 )
 
 
@@ -63,6 +79,14 @@ def _canonical(value: Any) -> Any:
 def _fingerprint(value: object) -> str:
     encoded = repr(_canonical(value)).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _dataset_not_ready(reason: DatasetReadinessCode) -> ChannelDataError:
+    return ChannelDataError(
+        ErrorCode.DATASET_NOT_READY,
+        message="Silent analysis dataset is not ready",
+        reason_code=reason.value,
+    )
 
 
 class ChannelDataService:
@@ -126,6 +150,7 @@ class ChannelDataService:
             if command.status is CollectionStatus.COMPLETE:
                 if self._candidate_generation_id(current) is None:
                     raise _safe_error(ErrorCode.INVALID_COLLECTION_TRANSITION)
+                self._validate_candidate_finish(current, command)
 
             finished = CollectionState(
                 collection_id=current.collection_id,
@@ -230,6 +255,122 @@ class ChannelDataService:
             )
             return snapshot
 
+    def publish_video_inventory(
+        self,
+        context: WorkspaceContext,
+        command: PublishVideoInventory,
+    ) -> VideoInventory:
+        self._require(context, Permission.COLLECTION_RUN)
+        with self._lock:
+            replay = self._replay(context, "publish_video_inventory", command)
+            if replay is not None:
+                return replay
+            collection = self._active_collection(
+                context,
+                command.channel_id,
+                command.collection_id,
+                CollectionKind.VIDEOS,
+            )
+            candidate_key = (context.workspace_id, collection.collection_id)
+            if candidate_key in self._state.video_candidates:
+                raise _safe_error(ErrorCode.INVALID_COLLECTION_TRANSITION)
+            if any(
+                workspace_id == context.workspace_id
+                and inventory_id == command.inventory_id
+                for workspace_id, _, inventory_id in self._state.video_inventories
+            ) or any(
+                workspace_id == context.workspace_id
+                and candidate.inventory.inventory_id == command.inventory_id
+                for (workspace_id, _), candidate in self._state.video_candidates.items()
+            ):
+                raise _safe_error(ErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN)
+
+            inventory = VideoInventory(
+                inventory_id=command.inventory_id,
+                workspace_id=context.workspace_id,
+                channel_id=command.channel_id,
+                captured_at=command.captured_at,
+                coverage_scope=command.coverage_scope,
+                video_count=len(command.videos),
+            )
+            videos = tuple(
+                Video(
+                    workspace_id=context.workspace_id,
+                    channel_id=command.channel_id,
+                    inventory_id=command.inventory_id,
+                    video_id=row.video_id,
+                    title=row.title,
+                    published_at=row.published_at,
+                )
+                for row in command.videos
+            )
+            self._state.video_candidates[candidate_key] = VideoCandidate(
+                inventory,
+                videos,
+            )
+            self._remember(
+                context,
+                "publish_video_inventory",
+                command,
+                inventory,
+                command.captured_at,
+            )
+            return inventory
+
+    def replace_video_comment_activity(
+        self,
+        context: WorkspaceContext,
+        command: ReplaceVideoCommentActivity,
+    ) -> CommentCoverage:
+        self._require(context, Permission.COLLECTION_RUN)
+        with self._lock:
+            replay = self._replay(
+                context,
+                "replace_video_comment_activity",
+                command,
+            )
+            if replay is not None:
+                return replay
+            collection = self._active_collection(
+                context,
+                command.channel_id,
+                command.collection_id,
+                CollectionKind.COMMENTS,
+            )
+            channel_key = (context.workspace_id, command.channel_id)
+            if self._state.accepted_video_inventory.get(channel_key) != command.inventory_id:
+                raise _safe_error(ErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN)
+            inventory_key = (
+                context.workspace_id,
+                command.channel_id,
+                command.inventory_id,
+            )
+            inventory = self._state.video_inventories[inventory_key]
+            videos = self._state.videos[inventory_key]
+            if command.video_id not in {video.video_id for video in videos}:
+                raise _safe_error(ErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN)
+
+            candidate_key = (context.workspace_id, collection.collection_id)
+            candidate = self._state.comment_candidates.get(candidate_key)
+            if candidate is None:
+                candidate = CommentCandidate(command.inventory_id)
+                self._state.comment_candidates[candidate_key] = candidate
+            if candidate.inventory_id != command.inventory_id:
+                raise _safe_error(ErrorCode.INVALID_COLLECTION_TRANSITION)
+            if command.video_id in candidate.replacements:
+                raise _safe_error(ErrorCode.IDEMPOTENCY_CONFLICT)
+            candidate.replacements[command.video_id] = command.activity
+            candidate.replaced_at[command.video_id] = command.replaced_at
+            coverage = self._comment_candidate_coverage(inventory, candidate)
+            self._remember(
+                context,
+                "replace_video_comment_activity",
+                command,
+                coverage,
+                command.replaced_at,
+            )
+            return coverage
+
     def get_freshness(
         self,
         context: WorkspaceContext,
@@ -304,6 +445,74 @@ class ChannelDataService:
             rows.sort(key=lambda snapshot: snapshot.captured_at, reverse=True)
             return Page(tuple(rows[: page.limit]), None)
 
+    def load_silent_analysis_dataset(
+        self,
+        context: WorkspaceContext,
+        channel_id: str,
+    ) -> SilentAnalysisDataset:
+        self._require(context, Permission.ANALYSIS_READ)
+        SubscriberRegistryQuery(channel_id)
+        with self._lock:
+            channel_key = (context.workspace_id, channel_id)
+            snapshot_id = self._state.accepted_subscriber_snapshot.get(channel_key)
+            if snapshot_id is None:
+                raise _dataset_not_ready(DatasetReadinessCode.NO_SUBSCRIBER_SNAPSHOT)
+            inventory_id = self._state.accepted_video_inventory.get(channel_key)
+            if inventory_id is None:
+                raise _dataset_not_ready(DatasetReadinessCode.NO_VIDEO_INVENTORY)
+            snapshot = self._state.subscriber_snapshots[
+                (context.workspace_id, channel_id, snapshot_id)
+            ]
+            inventory_key = (context.workspace_id, channel_id, inventory_id)
+            inventory = self._state.video_inventories[inventory_key]
+            if inventory.coverage_scope is not VideoCoverageScope.OWNER_VIDEOS:
+                raise _dataset_not_ready(DatasetReadinessCode.PUBLIC_VIDEO_SCOPE_ONLY)
+            coverage = self._state.comment_coverage.get(inventory_key)
+            if (
+                coverage is None
+                or coverage.inventory_id != inventory_id
+                or coverage.coverage_scope is not VideoCoverageScope.OWNER_VIDEOS
+                or not coverage.is_complete
+            ):
+                raise _dataset_not_ready(DatasetReadinessCode.COMMENTS_INCOMPLETE)
+
+            author_totals: dict[str, tuple[int, datetime]] = {}
+            for row in self._state.comment_activity.get(inventory_key, ()):
+                count, last = author_totals.get(
+                    row.author_channel_id,
+                    (0, row.last_comment_at),
+                )
+                author_totals[row.author_channel_id] = (
+                    count + row.comment_count,
+                    max(last, row.last_comment_at),
+                )
+            author_activity = tuple(
+                AuthorCommentActivity(author_id, count, last)
+                for author_id, (count, last) in sorted(author_totals.items())
+            )
+            registry = tuple(
+                sorted(
+                    (
+                        entry
+                        for (workspace_id, row_channel_id, _), entry
+                        in self._state.subscriber_registry.items()
+                        if workspace_id == context.workspace_id
+                        and row_channel_id == channel_id
+                    ),
+                    key=lambda entry: entry.subscriber_channel_id,
+                )
+            )
+            return SilentAnalysisDataset(
+                subscriber_registry=registry,
+                author_activity=author_activity,
+                snapshot_id=snapshot.snapshot_id,
+                snapshot_captured_at=snapshot.captured_at,
+                inventory_id=inventory.inventory_id,
+                inventory_captured_at=inventory.captured_at,
+                subscriber_limitations=snapshot.limitations,
+                comment_coverage=coverage,
+            )
+
     def _collection_rows(
         self,
         workspace_id: str,
@@ -344,8 +553,50 @@ class ChannelDataService:
                 (state.workspace_id, state.collection_id)
             )
             return candidate.snapshot.snapshot_id if candidate is not None else None
-        # Video candidate stores are introduced by the next slice.
+        if state.kind is CollectionKind.VIDEOS:
+            candidate = self._state.video_candidates.get(
+                (state.workspace_id, state.collection_id)
+            )
+            return candidate.inventory.inventory_id if candidate is not None else None
+        if state.kind is CollectionKind.COMMENTS:
+            candidate = self._state.comment_candidates.get(
+                (state.workspace_id, state.collection_id)
+            )
+            if candidate is None:
+                return None
+            inventory = self._state.video_inventories.get(
+                (state.workspace_id, state.channel_id, candidate.inventory_id)
+            )
+            if inventory is None:
+                return None
+            coverage = self._comment_candidate_coverage(inventory, candidate)
+            return candidate.inventory_id if coverage.is_complete else None
         return None
+
+    def _validate_candidate_finish(
+        self,
+        state: CollectionState,
+        command: FinishCollection,
+    ) -> None:
+        expected = 0
+        if state.kind is CollectionKind.SUBSCRIBERS:
+            expected = self._state.subscriber_candidates[
+                (state.workspace_id, state.collection_id)
+            ].snapshot.observed_count
+        elif state.kind is CollectionKind.VIDEOS:
+            expected = self._state.video_candidates[
+                (state.workspace_id, state.collection_id)
+            ].inventory.video_count
+        elif state.kind is CollectionKind.COMMENTS:
+            candidate = self._state.comment_candidates[
+                (state.workspace_id, state.collection_id)
+            ]
+            inventory = self._state.video_inventories[
+                (state.workspace_id, state.channel_id, candidate.inventory_id)
+            ]
+            expected = inventory.video_count
+        if command.progress_current != expected or command.progress_total != expected:
+            raise _safe_error(ErrorCode.INVALID_COLLECTION_TRANSITION)
 
     def _active_collection(
         self,
@@ -362,6 +613,10 @@ class ChannelDataService:
         return collection
 
     def _promote_candidate(self, state: CollectionState) -> str:
+        if state.kind is CollectionKind.VIDEOS:
+            return self._promote_video_candidate(state)
+        if state.kind is CollectionKind.COMMENTS:
+            return self._promote_comment_candidate(state)
         if state.kind is not CollectionKind.SUBSCRIBERS:
             raise _safe_error(ErrorCode.INVALID_COLLECTION_TRANSITION)
         key = (state.workspace_id, state.collection_id)
@@ -429,6 +684,95 @@ class ChannelDataService:
                 (state.workspace_id, state.collection_id),
                 None,
             )
+        elif state.kind is CollectionKind.VIDEOS:
+            self._state.video_candidates.pop(
+                (state.workspace_id, state.collection_id),
+                None,
+            )
+        elif state.kind is CollectionKind.COMMENTS:
+            self._state.comment_candidates.pop(
+                (state.workspace_id, state.collection_id),
+                None,
+            )
+
+    @staticmethod
+    def _comment_candidate_coverage(
+        inventory: VideoInventory,
+        candidate: CommentCandidate,
+    ) -> CommentCoverage:
+        covered = len(candidate.replacements)
+        missing = inventory.video_count - covered
+        complete = missing == 0
+        completed_at = max(candidate.replaced_at.values()) if complete else None
+        return CommentCoverage(
+            inventory_id=inventory.inventory_id,
+            coverage_scope=inventory.coverage_scope,
+            videos_expected=inventory.video_count,
+            videos_covered=covered,
+            videos_missing=missing,
+            completed_at=completed_at,
+            is_complete=complete,
+        )
+
+    def _promote_video_candidate(self, state: CollectionState) -> str:
+        candidate_key = (state.workspace_id, state.collection_id)
+        candidate = self._state.video_candidates[candidate_key]
+        channel_key = (state.workspace_id, state.channel_id)
+        old_inventory_id = self._state.accepted_video_inventory.get(channel_key)
+        if old_inventory_id is not None:
+            old_key = (state.workspace_id, state.channel_id, old_inventory_id)
+            self._state.video_inventories.pop(old_key, None)
+            self._state.videos.pop(old_key, None)
+            self._state.comment_activity.pop(old_key, None)
+            self._state.comment_coverage.pop(old_key, None)
+        inventory_key = (
+            state.workspace_id,
+            state.channel_id,
+            candidate.inventory.inventory_id,
+        )
+        self._state.video_inventories[inventory_key] = candidate.inventory
+        self._state.videos[inventory_key] = candidate.videos
+        self._state.accepted_video_inventory[channel_key] = candidate.inventory.inventory_id
+        if candidate.inventory.video_count == 0:
+            self._state.comment_activity[inventory_key] = ()
+            self._state.comment_coverage[inventory_key] = CommentCoverage(
+                inventory_id=candidate.inventory.inventory_id,
+                coverage_scope=candidate.inventory.coverage_scope,
+                videos_expected=0,
+                videos_covered=0,
+                videos_missing=0,
+                completed_at=candidate.inventory.captured_at,
+                is_complete=True,
+            )
+        del self._state.video_candidates[candidate_key]
+        return candidate.inventory.inventory_id
+
+    def _promote_comment_candidate(self, state: CollectionState) -> str:
+        candidate_key = (state.workspace_id, state.collection_id)
+        candidate = self._state.comment_candidates[candidate_key]
+        inventory_key = (state.workspace_id, state.channel_id, candidate.inventory_id)
+        inventory = self._state.video_inventories[inventory_key]
+        rows = tuple(
+            VideoCommentActivity(
+                workspace_id=state.workspace_id,
+                channel_id=state.channel_id,
+                inventory_id=candidate.inventory_id,
+                video_id=video_id,
+                author_channel_id=row.author_channel_id,
+                comment_count=row.comment_count,
+                last_comment_at=row.last_comment_at,
+            )
+            for video_id in sorted(candidate.replacements)
+            for row in sorted(
+                candidate.replacements[video_id],
+                key=lambda item: item.author_channel_id,
+            )
+        )
+        coverage = self._comment_candidate_coverage(inventory, candidate)
+        self._state.comment_activity[inventory_key] = rows
+        self._state.comment_coverage[inventory_key] = coverage
+        del self._state.comment_candidates[candidate_key]
+        return candidate.inventory_id
 
     @staticmethod
     def _require(context: WorkspaceContext, permission: Permission) -> None:
