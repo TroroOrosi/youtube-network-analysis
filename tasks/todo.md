@@ -83,21 +83,21 @@ cutoff boundary, validation error, and deterministic ordering rule.
 
 **Acceptance criteria:**
 
-- [ ] Existing flags, `OUTPUT_COLUMNS`, Japanese segment labels, inclusive date
+- [x] Existing flags, `OUTPUT_COLUMNS`, Japanese segment labels, inclusive date
   behavior, and the public-subscription caveat remain compatible.
-- [ ] Comment collection coverage is validated before core invocation, so
+- [x] Comment collection coverage is validated before core invocation, so
   incomplete or API-key-only comments still fail closed by default.
-- [ ] A temporary fixture-backed CLI regression produces correct never-commented,
+- [x] A temporary fixture-backed CLI regression produces correct never-commented,
   no-comment-within, and new/old silent results without network or credentials.
 
 **Verification:**
 
-- [ ] RED then GREEN focused adapter tests in `test_analytics.py`.
-- [ ] Core: `python -m unittest subscriber_analytics.tests.test_analytics_core -v`
-- [ ] Full: `python -m unittest discover -s subscriber_analytics/tests -v`
-- [ ] Runtime: execute `extract_silent.main()` against a temporary fixture and
+- [x] RED then GREEN focused adapter tests in `test_analytics.py`.
+- [x] Core: `python -m unittest subscriber_analytics.tests.test_analytics_core -v`
+- [x] Full: `python -m unittest discover -s subscriber_analytics/tests -v`
+- [x] Runtime: execute `extract_silent.main()` against a temporary fixture and
   assert the generated ordered CSV.
-- [ ] Compile and integrity checks pass.
+- [x] Compile and integrity checks pass.
 
 **Dependencies:** Tasks 1-2, Checkpoint A
 
@@ -116,18 +116,18 @@ the same typed analysis entry point used by the CLI.
 
 **Acceptance criteria:**
 
-- [ ] Existing Notebook controls and Japanese display/output remain available,
+- [x] Existing Notebook controls and Japanese display/output remain available,
   including silent-period and never-commented selection.
-- [ ] Notebook code calls `analytics_core.analyze` and contains no independent
+- [x] Notebook code calls `analytics_core.analyze` and contains no independent
   segment or filter calculation.
-- [ ] Notebook JSON parses and every code cell compiles after the edit.
+- [x] Notebook JSON parses and every code cell compiles after the edit.
 
 **Verification:**
 
-- [ ] Notebook JSON/code-cell compile command from `tasks/plan.md` passes.
-- [ ] Full: `python -m unittest discover -s subscriber_analytics/tests -v`
-- [ ] Compile: `python -m compileall -q subscriber_analytics`
-- [ ] Integrity: `git diff --check`
+- [x] Notebook JSON/code-cell compile command from `tasks/plan.md` passes.
+- [x] Full: `python -m unittest discover -s subscriber_analytics/tests -v`
+- [x] Compile: `python -m compileall -q subscriber_analytics`
+- [x] Integrity: `git diff --check`
 
 **Dependencies:** Task 3
 
@@ -140,10 +140,10 @@ the same typed analysis entry point used by the CLI.
 
 ## Checkpoint B: Adapter integration
 
-- [ ] Tasks 3-4 acceptance criteria are all checked with evidence.
-- [ ] CLI fixture runtime and Notebook syntax verification pass.
-- [ ] Graph callers show CLI and Notebook both using `analytics_core.analyze`.
-- [ ] Adapter commits are pushed before cleanup starts.
+- [x] Tasks 3-4 acceptance criteria are all checked with evidence.
+- [x] CLI fixture runtime and Notebook syntax verification pass.
+- [x] Graph callers show CLI and Notebook both using `analytics_core.analyze`.
+- [x] Adapter commits are pushed before cleanup starts.
 
 ## Task 5: Remove superseded calculation paths
 
@@ -152,19 +152,19 @@ unreferenced, remove only those superseded paths.
 
 **Acceptance criteria:**
 
-- [ ] Graph queries confirm `build_table`, `add_segments`, `apply_filters`, and
+- [x] Graph queries confirm `build_table`, `add_segments`, `apply_filters`, and
   `format_output` have no remaining consumers before any deletion.
-- [ ] CLI and Notebook continue to use `analytics_core.analyze` after the old
+- [x] CLI and Notebook continue to use `analytics_core.analyze` after the old
   helpers are removed.
-- [ ] No collector, OAuth, dependency, CLI flag, CSV column, or unrelated
+- [x] No collector, OAuth, dependency, CLI flag, CSV column, or unrelated
   analysis behavior changes in this cleanup.
 
 **Verification:**
 
-- [ ] Core and full test suites pass.
-- [ ] Compile and Notebook code-cell checks pass.
-- [ ] `git diff --check` and secret-value scan pass.
-- [ ] Code-review graph rebuild completes with no parser errors.
+- [x] Core and full test suites pass.
+- [x] Compile and Notebook code-cell checks pass.
+- [x] `git diff --check` and secret-value scan pass.
+- [x] Code-review graph rebuild completes with no parser errors.
 
 **Dependencies:** Tasks 3-4, Checkpoint B
 
@@ -183,16 +183,16 @@ history.
 
 **Acceptance criteria:**
 
-- [ ] README explains that CLI and Notebook use the same core calculation.
-- [ ] Silent definitions, comment-coverage requirements, filter behavior, and
+- [x] README explains that CLI and Notebook use the same core calculation.
+- [x] Silent definitions, comment-coverage requirements, filter behavior, and
   the public-subscriptions limitation remain explicit.
-- [ ] Commands and examples match the verified current interface exactly.
+- [x] Commands and examples match the verified current interface exactly.
 
 **Verification:**
 
-- [ ] Compare every documented command/flag with the current argparse surface.
-- [ ] Full test, compile, Notebook code-cell, and `git diff --check` commands pass.
-- [ ] Secret-value scan finds no credentials or credential-like values.
+- [x] Compare every documented command/flag with the current argparse surface.
+- [x] Full test, compile, Notebook code-cell, and `git diff --check` commands pass.
+- [x] Secret-value scan finds no credentials or credential-like values.
 
 **Dependencies:** Task 5
 
@@ -209,18 +209,18 @@ continuation-critical evidence for the next hosted-app module.
 
 **Acceptance criteria:**
 
-- [ ] Correctness, simplicity, architecture, security, and performance review
+- [x] Correctness, simplicity, architecture, security, and performance review
   has no unresolved Critical or Required findings.
-- [ ] Every specification success criterion and project Definition of Done item
+- [x] Every specification success criterion and project Definition of Done item
   relevant to this module has verification evidence.
-- [ ] Progress record and task status identify exact commits, verification
+- [x] Progress record and task status identify exact commits, verification
   outcomes, remaining risks, and the next module without credentials or data.
 
 **Verification:**
 
-- [ ] Run graph `detect_changes`, `get_affected_flows`, and `tests_for` queries.
-- [ ] Run focused/core, full, compile, Notebook, integrity, and secret scans.
-- [ ] Confirm `git status --short --branch` contains only intended state.
+- [x] Run graph `detect_changes`, `get_affected_flows`, and `tests_for` queries.
+- [x] Run focused/core, full, compile, Notebook, integrity, and secret scans.
+- [x] Confirm `git status --short --branch` contains only intended state.
 
 **Dependencies:** Task 6
 
@@ -235,9 +235,9 @@ continuation-critical evidence for the next hosted-app module.
 
 ## Final checkpoint: analytics-core complete
 
-- [ ] All seven tasks and both intermediate checkpoints are complete.
-- [ ] `analytics-core` is the sole segment/filter implementation used by CLI and
+- [x] All seven tasks and both intermediate checkpoints are complete.
+- [x] `analytics-core` is the sole segment/filter implementation used by CLI and
   Notebook.
-- [ ] Silent-subscriber results are covered by golden and adapter regressions.
-- [ ] No real OAuth flow, API collection, or production data was used.
-- [ ] Feature branch is pushed and ready for human review before merge.
+- [x] Silent-subscriber results are covered by golden and adapter regressions.
+- [x] No real OAuth flow, API collection, or production data was used.
+- [x] Feature branch is pushed and ready for human review before merge.

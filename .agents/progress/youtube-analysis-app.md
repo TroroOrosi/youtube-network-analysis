@@ -79,6 +79,51 @@ Verification evidence at this checkpoint:
 No OAuth flow, YouTube API collection, production data, database, HTTP API, UI,
 or new dependency was used or added. CLI and Notebook migration remain pending.
 
+## Verified milestone: analytics-core complete
+
+Branch: `feature/multi-channel-analytics`
+
+Verified implementation HEAD: `253614eeb8c216f931412bdcbb5b983a96115213`
+
+Completed implementation and migration commits after Checkpoint A:
+
+- `2e9d382` routes the CLI through `analytics_core.analyze` and adds
+  fixture-backed CSV/silent-filter regressions.
+- `4ea6492` routes the Notebook through the same entry point and verifies every
+  code cell compiles without legacy calculation calls.
+- `6208729` removes the four superseded calculation helpers after graph queries
+  reported zero callers.
+- `253614e` documents the current shared-engine behavior, silent definitions,
+  coverage gate, filter boundaries, and public-only limitation.
+
+Final verification evidence:
+
+- focused analytics-core suite: 14 tests passed;
+- full subscriber analytics suite: 29 tests passed;
+- fixture-backed CLI runs covered default output, `--never-commented`, and
+  `--no-comment-within 90d` without network or credentials;
+- `python -m compileall -q subscriber_analytics`: passed;
+- Notebook JSON and every code cell: parsed and compiled;
+- `extract_silent.py --help`: matched the documented CLI flags;
+- `git diff --check` and credential-value scan: passed;
+- graph rebuilds completed without parser errors;
+- graph callers show CLI and Notebook using `analytics_core.analyze`; old
+  calculation helpers had zero callers before deletion;
+- graph change review found no affected registered flows. Its conservative
+  static test-gap warning does not resolve helper-mediated tests, while all 14
+  core behavior cases and 29 total tests executed successfully.
+
+Five-axis review verdict: no unresolved Critical or Required findings.
+Correctness is covered at UTC/filter boundaries and adapter fixtures; the core
+has no I/O or external dependencies; external CSV data is normalized before a
+strict typed boundary; analysis is linear plus deterministic sorting; no OAuth,
+collector, dependency, database, HTTP, or UI behavior changed.
+
+Remaining product constraints are intentional: YouTube exposes only public
+subscriptions, complete owner-scope comments are required by default, and no
+real OAuth/API/production-data run was performed. The repository still has no
+configured formatter, linter, type checker, or CI workflow.
+
 ## Decisions and constraints
 
 - OAuth scope remains `youtube.readonly`; no write/delete/upload permission.
@@ -112,13 +157,13 @@ before OAuth/token persistence.
 
 ## Current next steps
 
-1. Migrate `extract_silent.py` to `analytics_core.analyze` while preserving the
-   fail-closed comment-coverage gate, CLI flags, ordered CSV columns, and
-   Japanese labels.
-2. Add a fixture-backed CLI regression covering never-commented,
-   no-comment-within, and new/old silent output without credentials or network.
-3. Migrate the Notebook to the same core only after the CLI adapter checkpoint.
+1. Request human review of the pushed analytics-core branch before merge.
+2. Specify `workspace-access` tenant/session invariants as the next approved
+   capability-map module; do not introduce persistence or Web OAuth during that
+   specification step.
+3. Continue to `channel-data` only after workspace isolation boundaries are
+   approved, then threat-model `channel-connections` before any hosted OAuth.
 
-Continue with `incremental-implementation`, `test-driven-development`, and
-`git-workflow-and-versioning`; use the code-review graph before inspecting or
-removing legacy helper callers.
+Recommended next-phase skills: `spec-driven-development`,
+`security-and-hardening`, and `api-and-interface-design`. Use the code-review
+graph before codebase exploration.
