@@ -114,18 +114,18 @@ idempotency and atomic last-owner protection.
 
 **Acceptance criteria:**
 
-- [ ] Members cannot administer memberships; owners can grant, promote, demote,
+- [x] Members cannot administer memberships; owners can grant, promote, demote,
   revoke, and self-remove when not the last owner.
-- [ ] Same idempotency key/payload replays the result; a changed payload fails
+- [x] Same idempotency key/payload replays the result; a changed payload fails
   with `IDEMPOTENCY_CONFLICT`.
-- [ ] Serial and concurrent operations cannot leave a workspace with zero
+- [x] Serial and concurrent operations cannot leave a workspace with zero
   owners; role/revocation changes affect the next authorization call.
 
 **Verification:**
 
-- [ ] RED then GREEN: `python -m unittest workspace_access.tests.test_memberships -v`
-- [ ] Full workspace and analytics suites pass.
-- [ ] Two-thread invariant fixture, compile, and integrity checks pass.
+- [x] RED then GREEN: `python -m unittest workspace_access.tests.test_memberships -v`
+- [x] Full workspace and analytics suites pass.
+- [x] Two-thread invariant fixture, compile, and integrity checks pass.
 
 **Dependencies:** Task 3
 

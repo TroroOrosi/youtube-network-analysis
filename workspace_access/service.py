@@ -10,11 +10,14 @@ from threading import RLock
 from .models import (
     AccessSecret,
     AuthenticatedSession,
+    ChangeMembershipRole,
     CreateWorkspace,
     ErrorCode,
+    GrantMembership,
     IssuedSession,
     Membership,
     Permission,
+    RevokeMembership,
     Role,
     SessionEvidence,
     VerifiedIdentity,
@@ -54,6 +57,13 @@ class _SessionState:
     revoked_at: datetime | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _IdempotencyRecord:
+    operation: str
+    payload: tuple[str, ...]
+    result: Membership | None
+
+
 class WorkspaceAccessService:
     """Resolve verified identities into revocable server-side sessions."""
 
@@ -84,6 +94,9 @@ class WorkspaceAccessService:
         self._memberships_by_id: dict[str, Membership] = {}
         self._membership_id_by_pair: dict[tuple[str, str], str] = {}
         self._preferred_workspace_by_user: dict[str, str] = {}
+        self._idempotency_records: dict[
+            tuple[str, str], _IdempotencyRecord
+        ] = {}
 
     def __repr__(self) -> str:
         return (
@@ -302,6 +315,162 @@ class WorkspaceAccessService:
                 resolved_at=self._now(),
             )
 
+    def grant_membership(
+        self,
+        context: WorkspaceContext,
+        command: GrantMembership,
+    ) -> Membership:
+        self._validate_idempotency_key(command.idempotency_key)
+        self._validate_role(command.role)
+        with self._lock:
+            _, workspace, _ = self._authorize_context(
+                context,
+                Permission.MEMBERSHIP_MANAGE,
+            )
+            payload = (command.user_id, command.role.value)
+            found, replay = self._idempotency_replay(
+                workspace.workspace_id,
+                command.idempotency_key,
+                "grant_membership",
+                payload,
+            )
+            if found:
+                if replay is None:
+                    raise AssertionError("grant replay must contain a membership")
+                return replay
+            self._require_current_revision(context, workspace)
+
+            user = self._users_by_id.get(command.user_id)
+            if user is None or not user.enabled:
+                self._raise_membership_not_found_or_forbidden()
+            pair = (workspace.workspace_id, command.user_id)
+            if pair in self._membership_id_by_pair:
+                raise WorkspaceAccessError(
+                    ErrorCode.MEMBERSHIP_ALREADY_EXISTS,
+                    message="Membership already exists",
+                )
+            membership = Membership(
+                membership_id=self._token_source.new_id("membership"),
+                workspace_id=workspace.workspace_id,
+                user_id=command.user_id,
+                role=command.role,
+                created_at=self._now(),
+            )
+            self._memberships_by_id[membership.membership_id] = membership
+            self._membership_id_by_pair[pair] = membership.membership_id
+            self._bump_authorization_revision(workspace)
+            self._record_idempotency(
+                workspace.workspace_id,
+                command.idempotency_key,
+                "grant_membership",
+                payload,
+                membership,
+            )
+            return membership
+
+    def change_membership_role(
+        self,
+        context: WorkspaceContext,
+        command: ChangeMembershipRole,
+    ) -> Membership:
+        self._validate_idempotency_key(command.idempotency_key)
+        self._validate_role(command.role)
+        with self._lock:
+            _, workspace, _ = self._authorize_context(
+                context,
+                Permission.MEMBERSHIP_MANAGE,
+            )
+            payload = (command.membership_id, command.role.value)
+            found, replay = self._idempotency_replay(
+                workspace.workspace_id,
+                command.idempotency_key,
+                "change_membership_role",
+                payload,
+            )
+            if found:
+                if replay is None:
+                    raise AssertionError("role replay must contain a membership")
+                return replay
+            target = self._membership_target(
+                workspace.workspace_id,
+                command.membership_id,
+            )
+            if (
+                target.role is Role.OWNER
+                and command.role is not Role.OWNER
+                and self._owner_count(workspace.workspace_id) == 1
+            ):
+                self._raise_last_owner_required()
+            self._require_current_revision(context, workspace)
+
+            if target.role is command.role:
+                updated = target
+            else:
+                updated = Membership(
+                    membership_id=target.membership_id,
+                    workspace_id=target.workspace_id,
+                    user_id=target.user_id,
+                    role=command.role,
+                    created_at=target.created_at,
+                )
+                self._memberships_by_id[target.membership_id] = updated
+                self._bump_authorization_revision(workspace)
+            self._record_idempotency(
+                workspace.workspace_id,
+                command.idempotency_key,
+                "change_membership_role",
+                payload,
+                updated,
+            )
+            return updated
+
+    def revoke_membership(
+        self,
+        context: WorkspaceContext,
+        command: RevokeMembership,
+    ) -> None:
+        self._validate_idempotency_key(command.idempotency_key)
+        with self._lock:
+            _, workspace, _ = self._authorize_context(
+                context,
+                Permission.MEMBERSHIP_MANAGE,
+            )
+            payload = (command.membership_id,)
+            found, _ = self._idempotency_replay(
+                workspace.workspace_id,
+                command.idempotency_key,
+                "revoke_membership",
+                payload,
+            )
+            if found:
+                return
+            target = self._membership_target(
+                workspace.workspace_id,
+                command.membership_id,
+            )
+            if (
+                target.role is Role.OWNER
+                and self._owner_count(workspace.workspace_id) == 1
+            ):
+                self._raise_last_owner_required()
+            self._require_current_revision(context, workspace)
+
+            del self._memberships_by_id[target.membership_id]
+            del self._membership_id_by_pair[(target.workspace_id, target.user_id)]
+            if (
+                self._preferred_workspace_by_user.get(target.user_id)
+                == target.workspace_id
+            ):
+                del self._preferred_workspace_by_user[target.user_id]
+            self._bump_authorization_revision(workspace)
+            self._record_idempotency(
+                workspace.workspace_id,
+                command.idempotency_key,
+                "revoke_membership",
+                payload,
+                None,
+            )
+
     def logout(self, evidence: SessionEvidence) -> None:
         digest = self._digest(evidence.secret.reveal())
         with self._lock:
@@ -354,12 +523,19 @@ class WorkspaceAccessService:
         self,
         session: AuthenticatedSession,
     ) -> _SessionState:
-        digest = self._session_digest_by_id.get(session.session_id)
+        return self._active_session_by_id(session.session_id, session.user_id)
+
+    def _active_session_by_id(
+        self,
+        session_id: str,
+        user_id: str,
+    ) -> _SessionState:
+        digest = self._session_digest_by_id.get(session_id)
         state = self._sessions_by_digest.get(digest) if digest is not None else None
         now = self._now()
         if (
             state is None
-            or state.user_id != session.user_id
+            or state.user_id != user_id
             or state.revoked_at is not None
             or now >= state.idle_expires_at
             or now >= state.absolute_expires_at
@@ -369,6 +545,47 @@ class WorkspaceAccessService:
         if user is None or not user.enabled:
             self._raise_unauthenticated()
         return state
+
+    def _authorize_context(
+        self,
+        context: WorkspaceContext,
+        permission: Permission,
+    ) -> tuple[_SessionState, Workspace, Membership]:
+        state = self._active_session_by_id(context.session_id, context.user_id)
+        workspace = self._workspaces_by_id.get(context.workspace_id)
+        membership = self._memberships_by_id.get(context.membership_id)
+        if (
+            workspace is None
+            or membership is None
+            or membership.workspace_id != context.workspace_id
+            or membership.user_id != context.user_id
+            or self._membership_id_by_pair.get(
+                (context.workspace_id, context.user_id)
+            )
+            != context.membership_id
+        ):
+            raise WorkspaceAccessError(
+                ErrorCode.PERMISSION_DENIED,
+                message="Permission is required",
+            )
+        if permission not in permissions_for_role(membership.role):
+            raise WorkspaceAccessError(
+                ErrorCode.PERMISSION_DENIED,
+                message="Permission is required",
+                field="required_permission",
+            )
+        return state, workspace, membership
+
+    @staticmethod
+    def _require_current_revision(
+        context: WorkspaceContext,
+        workspace: Workspace,
+    ) -> None:
+        if context.authorization_revision != workspace.authorization_revision:
+            raise WorkspaceAccessError(
+                ErrorCode.PERMISSION_DENIED,
+                message="Authorization context is no longer current",
+            )
 
     def _authenticated_session(self, state: _SessionState) -> AuthenticatedSession:
         return AuthenticatedSession(
@@ -396,6 +613,65 @@ class WorkspaceAccessService:
             self._memberships_by_id.get(membership_id)
             if membership_id is not None
             else None
+        )
+
+    def _membership_target(
+        self,
+        workspace_id: str,
+        membership_id: str,
+    ) -> Membership:
+        membership = self._memberships_by_id.get(membership_id)
+        if membership is None or membership.workspace_id != workspace_id:
+            self._raise_membership_not_found_or_forbidden()
+        return membership
+
+    def _owner_count(self, workspace_id: str) -> int:
+        return sum(
+            membership.workspace_id == workspace_id
+            and membership.role is Role.OWNER
+            for membership in self._memberships_by_id.values()
+        )
+
+    def _bump_authorization_revision(self, workspace: Workspace) -> Workspace:
+        updated = Workspace(
+            workspace_id=workspace.workspace_id,
+            name=workspace.name,
+            created_at=workspace.created_at,
+            authorization_revision=workspace.authorization_revision + 1,
+        )
+        self._workspaces_by_id[workspace.workspace_id] = updated
+        return updated
+
+    def _idempotency_replay(
+        self,
+        workspace_id: str,
+        key: str,
+        operation: str,
+        payload: tuple[str, ...],
+    ) -> tuple[bool, Membership | None]:
+        record = self._idempotency_records.get((workspace_id, key))
+        if record is None:
+            return False, None
+        if record.operation != operation or record.payload != payload:
+            raise WorkspaceAccessError(
+                ErrorCode.IDEMPOTENCY_CONFLICT,
+                message="Idempotency key was reused with different input",
+                field="idempotency_key",
+            )
+        return True, record.result
+
+    def _record_idempotency(
+        self,
+        workspace_id: str,
+        key: str,
+        operation: str,
+        payload: tuple[str, ...],
+        result: Membership | None,
+    ) -> None:
+        self._idempotency_records[(workspace_id, key)] = _IdempotencyRecord(
+            operation=operation,
+            payload=payload,
+            result=result,
         )
 
     @staticmethod
@@ -474,6 +750,38 @@ class WorkspaceAccessService:
             message="Workspace was not found or is not accessible",
         )
 
+    @staticmethod
+    def _raise_membership_not_found_or_forbidden() -> None:
+        raise WorkspaceAccessError(
+            ErrorCode.MEMBERSHIP_NOT_FOUND_OR_FORBIDDEN,
+            message="Membership was not found or is not accessible",
+        )
+
+    @staticmethod
+    def _raise_last_owner_required() -> None:
+        raise WorkspaceAccessError(
+            ErrorCode.LAST_OWNER_REQUIRED,
+            message="Workspace must retain at least one owner",
+        )
+
+    @staticmethod
+    def _validate_idempotency_key(key: str) -> None:
+        if not isinstance(key, str) or not key.strip() or len(key) > 200:
+            raise WorkspaceAccessError(
+                ErrorCode.INVALID_INPUT,
+                message="Idempotency key is invalid",
+                field="idempotency_key",
+            )
+
+    @staticmethod
+    def _validate_role(role: Role) -> None:
+        if not isinstance(role, Role):
+            raise WorkspaceAccessError(
+                ErrorCode.INVALID_INPUT,
+                message="Role is invalid",
+                field="role",
+            )
+
     def _debug_session_digests(self) -> frozenset[str]:
         """Test-only view proving raw session values are not retained."""
 
@@ -489,3 +797,7 @@ class WorkspaceAccessService:
 
         with self._lock:
             self._preferred_workspace_by_user[user_id] = workspace_id
+
+    def _debug_owner_count(self, workspace_id: str) -> int:
+        with self._lock:
+            return self._owner_count(workspace_id)
