@@ -157,12 +157,19 @@ before OAuth/token persistence.
 
 ## Current next steps
 
-1. Request human review of the pushed analytics-core branch before merge.
-2. Specify `workspace-access` tenant/session invariants as the next approved
-   capability-map module; do not introduce persistence or Web OAuth during that
-   specification step.
-3. Continue to `channel-data` only after workspace isolation boundaries are
-   approved, then threat-model `channel-connections` before any hosted OAuth.
+1. Review `SPEC-workspace-access.md`, currently proposed for review. It defines
+   identity/session separation, single-workspace contexts, the `OWNER`/`MEMBER`
+   permission matrix, tenant-selection failure behavior, session/CSRF rules,
+   revocation, non-enumerating errors, and privacy/retention obligations.
+2. Do not write an implementation plan or introduce persistence, Web OAuth,
+   authentication providers, HTTP routes, or UI until that specification is
+   approved.
+3. After approval, plan and implement `workspace-access` with fixtures and
+   in-memory fakes only. Continue to `channel-data` after the isolation boundary
+   is verified, then threat-model `channel-connections` before hosted OAuth.
+
+No database, dependency, endpoint, authentication flow, credential, real user
+data, or production behavior was introduced while proposing the specification.
 
 Recommended next-phase skills: `spec-driven-development`,
 `security-and-hardening`, and `api-and-interface-design`. Use the code-review
