@@ -35,6 +35,7 @@ from .models import (
     AuthorizationOperation,
     AuthorizationStart,
     BeginAuthorization,
+    BeginReauthorization,
     CALLBACK_REPLAY_TTL,
     ChannelConnection,
     CompleteAuthorization,
@@ -177,6 +178,19 @@ class ChannelConnectionsService:
             target_connection_id=None,
             idempotency_key=command.idempotency_key,
         )
+
+    def begin_reauthorization(
+        self, context: WorkspaceContext, command: BeginReauthorization
+    ) -> AuthorizationStart:
+        _require(context, Permission.CHANNEL_MANAGE_CONNECTION)
+        with self._lock:
+            connection = self._connection(context.workspace_id, command.connection_id)
+            return self._begin(
+                context,
+                operation=AuthorizationOperation.REAUTHORIZE,
+                target_connection_id=connection.connection_id,
+                idempotency_key=command.idempotency_key,
+            )
 
     def complete_authorization(
         self, context: WorkspaceContext, command: CompleteAuthorization
@@ -462,6 +476,9 @@ class ChannelConnectionsService:
             self._consume_intent(intent)
             raise failure
 
+        if intent.operation is AuthorizationOperation.REAUTHORIZE:
+            return self._rotate(context, intent, grant, slot_id, now)
+
         active_key = (workspace_id, grant.provider.value, grant.provider_channel_id)
         if active_key in self._state.active_keys:
             self._revoke_slot(workspace_id, slot_id, now)
@@ -493,6 +510,59 @@ class ChannelConnectionsService:
             connection_id=connection_id,
         )
         return connection
+
+    def _rotate(
+        self,
+        context: WorkspaceContext,
+        intent: AuthorizationIntent,
+        grant: VerifiedProviderGrant,
+        slot_id: str,
+        now: datetime,
+    ) -> ChannelConnection:
+        workspace_id = context.workspace_id
+        target_id = intent.target_connection_id or ""
+        connection_key = _key(workspace_id, target_id)
+        current = self._state.connections.get(connection_key)
+        if current is None:
+            self._revoke_slot(workspace_id, slot_id, now)
+            self._consume_intent(intent)
+            raise _safe_error(ErrorCode.CONNECTION_NOT_FOUND_OR_FORBIDDEN)
+        if grant.provider_channel_id != current.provider_channel_id:
+            self._revoke_slot(workspace_id, slot_id, now)
+            self._consume_intent(intent)
+            raise _safe_error(ErrorCode.REAUTH_CHANNEL_MISMATCH)
+
+        previous_slot = self._state.credential_slots.get(connection_key)
+        rotated = ChannelConnection(
+            connection_id=current.connection_id,
+            workspace_id=workspace_id,
+            provider=current.provider,
+            provider_channel_id=current.provider_channel_id,
+            channel_title=grant.channel_title,
+            status=ConnectionStatus.ACTIVE,
+            connected_at=current.connected_at,
+            updated_at=now,
+        )
+        self._state.connections[connection_key] = rotated
+        self._state.credential_slots[connection_key] = slot_id
+        self._bump_revision(workspace_id)
+        self._consume_intent(intent)
+
+        if previous_slot is not None and previous_slot != slot_id:
+            try:
+                self._vault.delete(workspace_id, previous_slot)
+            except BaseException:
+                self._record_cleanup(
+                    workspace_id, "CREDENTIAL_SLOT_ORPHANED", previous_slot, now
+                )
+        self._record_audit(
+            context,
+            action=ConnectionAuditAction.CONNECTION_REAUTHORIZED,
+            occurred_at=now,
+            intent_id=intent.intent_id,
+            connection_id=rotated.connection_id,
+        )
+        return rotated
 
     def _verify_grant(
         self, grant: VerifiedProviderGrant, intent: AuthorizationIntent

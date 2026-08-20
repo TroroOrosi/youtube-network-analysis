@@ -11,6 +11,7 @@ from channel_connections.memory import (
 from channel_connections.models import (
     AuthorizationFailureReason,
     BeginAuthorization,
+    BeginReauthorization,
     ChannelConnection,
     ConnectionPageRequest,
     ConnectionProvider,
@@ -468,3 +469,109 @@ class ListConnectionsTests(ConnectionFixture):
                 self.owner, ConnectionPageRequest(cursor=page.next_cursor, limit=1)
             )
         self.assertEqual(raised.exception.code, "CURSOR_EXPIRED")
+
+
+class ReauthorizationTests(ConnectionFixture):
+    def setUp(self) -> None:
+        super().setUp()
+        self.connection = self.connect()
+        self.original_slot = self.vault.slot_ids("workspace-1")[0]
+        self.clock.advance(timedelta(hours=1))
+
+    def reauthorize(self, *, key: str = "reauth-1", callback_key: str = "cb-reauth-1"):
+        self.service.begin_reauthorization(
+            self.owner,
+            BeginReauthorization(
+                connection_id=self.connection.connection_id, idempotency_key=key
+            ),
+        )
+        return self.service.complete_authorization(
+            self.owner, callback(self.gateway, idempotency_key=callback_key)
+        )
+
+    def test_reauthorization_requires_manage_permission_and_an_own_connection(self) -> None:
+        member = context("workspace-1", Permission.CHANNEL_READ)
+        with self.assertRaises(ChannelConnectionsError) as denied:
+            self.service.begin_reauthorization(
+                member,
+                BeginReauthorization(
+                    connection_id=self.connection.connection_id, idempotency_key="r"
+                ),
+            )
+        self.assertEqual(denied.exception.code, "PERMISSION_DENIED")
+
+        for actor, connection_id in (
+            (self.owner, "connection_missing"),
+            (context("workspace-2"), self.connection.connection_id),
+        ):
+            with self.assertRaises(ChannelConnectionsError) as raised:
+                self.service.begin_reauthorization(
+                    actor,
+                    BeginReauthorization(
+                        connection_id=connection_id, idempotency_key="r"
+                    ),
+                )
+            self.assertEqual(raised.exception.code, "CONNECTION_NOT_FOUND_OR_FORBIDDEN")
+
+    def test_reauthorization_rotates_the_credential_slot_atomically(self) -> None:
+        rotated = self.reauthorize()
+
+        self.assertEqual(rotated.connection_id, self.connection.connection_id)
+        self.assertEqual(rotated.status, ConnectionStatus.ACTIVE)
+        self.assertEqual(rotated.connected_at, self.connection.connected_at)
+        self.assertEqual(rotated.updated_at, NOW + timedelta(hours=1))
+
+        slots = self.vault.slot_ids("workspace-1")
+        self.assertEqual(len(slots), 1)
+        self.assertNotEqual(slots[0], self.original_slot)
+        self.assertEqual(self.gateway.revocations, [])
+
+    def test_reauthorization_start_is_audited(self) -> None:
+        self.service.begin_reauthorization(
+            self.owner,
+            BeginReauthorization(
+                connection_id=self.connection.connection_id, idempotency_key="r"
+            ),
+        )
+
+        event = self.service._state.audit_events[-1]
+        self.assertEqual(event.action.value, "REAUTHORIZATION_STARTED")
+        self.assertEqual(event.connection_id, self.connection.connection_id)
+
+    def test_a_successful_rotation_is_audited(self) -> None:
+        self.reauthorize()
+
+        event = self.service._state.audit_events[-1]
+        self.assertEqual(event.action.value, "CONNECTION_REAUTHORIZED")
+        self.assertEqual(event.connection_id, self.connection.connection_id)
+
+    def test_a_different_channel_cannot_replace_the_credential(self) -> None:
+        self.gateway.grant = grant(provider_channel_id="UC_other_channel")
+
+        self.service.begin_reauthorization(
+            self.owner,
+            BeginReauthorization(
+                connection_id=self.connection.connection_id, idempotency_key="r"
+            ),
+        )
+        with self.assertRaises(ChannelConnectionsError) as raised:
+            self.service.complete_authorization(
+                self.owner, callback(self.gateway, idempotency_key="cb-r")
+            )
+
+        self.assertEqual(raised.exception.code, "REAUTH_CHANNEL_MISMATCH")
+        self.assertEqual(self.vault.slot_ids("workspace-1"), (self.original_slot,))
+        self.assertEqual(len(self.gateway.revocations), 1)
+        self.assertEqual(
+            self.service.get_connection(self.owner, self.connection.connection_id),
+            self.connection,
+        )
+
+    def test_repeated_rotations_leave_exactly_one_slot(self) -> None:
+        self.reauthorize()
+        self.clock.advance(timedelta(hours=1))
+        self.reauthorize(key="reauth-2", callback_key="cb-reauth-2")
+
+        self.assertEqual(len(self.vault.slot_ids("workspace-1")), 1)
+        self.assertEqual(len(self.service._state.connections), 1)
+        self.assertEqual(len(self.service._state.active_keys), 1)
