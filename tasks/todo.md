@@ -127,21 +127,21 @@ deterministic cumulative tenant registry.
 
 **Acceptance criteria:**
 
-- [ ] Candidate staging requires a matching in-progress subscriber attempt,
+- [x] Candidate staging requires a matching in-progress subscriber attempt,
   mandatory public-only/provider-cap limitations, unique rows, and exposes no
   current snapshot before finish.
-- [ ] Registry first/last/count/title/published-time rules handle exact replay,
+- [x] Registry first/last/count/title/published-time rules handle exact replay,
   out-of-order snapshots, and permutations deterministically.
-- [ ] Exact `COMPLETE` finish promotes candidate plus registry fold atomically;
+- [x] Exact `COMPLETE` finish promotes candidate plus registry fold atomically;
   absence never marks unsubscribe, partial attempts promote nothing, and an
   identical foreign ID cannot affect counts or lookup.
 
 **Verification:**
 
-- [ ] RED then GREEN:
+- [x] RED then GREEN:
   `python -m unittest channel_data.tests.test_subscribers -v`
-- [ ] Full channel-data, workspace, and analytics suites pass.
-- [ ] Replay/concurrency/permutation fixtures, compile, secret scan, and
+- [x] Full channel-data, workspace, and analytics suites pass.
+- [x] Replay/concurrency/permutation fixtures, compile, secret scan, and
   `git diff --check` pass.
 
 **Dependencies:** Task 3
