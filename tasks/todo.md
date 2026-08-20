@@ -1,6 +1,6 @@
 # Task List: channel-data
 
-Status: proposed for review
+Status: approved
 Plan: [`tasks/plan.md`](plan.md)
 Spec: [`SPEC-channel-data.md`](../SPEC-channel-data.md)
 

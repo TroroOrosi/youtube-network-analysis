@@ -1,6 +1,6 @@
 # Implementation Plan: channel-data
 
-Status: proposed for review
+Status: approved
 Date: 2026-08-20
 Specification: [`SPEC-channel-data.md`](../SPEC-channel-data.md)
 Capability: [`channel-data`](../CAPABILITY_MAP.md)

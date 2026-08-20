@@ -261,6 +261,12 @@ The public interfaces are synchronous domain contracts. Async, SQL, ORM, HTTP,
 and queue adapters may wrap them later without changing their observable
 semantics.
 
+The `publish_*` and `replace_video_comment_activity` commands below write
+candidate data under the matching `IN_PROGRESS` collection attempt. They do
+not change the current accepted generation. `finish_collection(COMPLETE)`
+validates the entire candidate and promotes it atomically under the same
+transaction/lock; `PARTIAL` or `FAILED` never promotes candidate data.
+
 ```python
 class CollectionWriter(Protocol):
     def start_collection(
