@@ -179,6 +179,45 @@ Tenant selectors remain untrusted hints, missing/foreign identifiers share safe
 errors, contexts are single-workspace and current-revision bound, and no
 database, HTTP, OAuth, dependency, real data, or production adapter was added.
 
+## Verified milestone: workspace-access complete
+
+Verified implementation HEAD: `38b3b57`
+
+Completed final slices:
+
+- `114cc20` adds allowlisted access export, sole-owner deletion preflight,
+  session revocation/tombstoning, 30/90/365-day retention, and secret-free audit
+  events.
+- `d8cfe1f` separates private in-memory state/audit collection and stable error
+  constructors from the public orchestration service without behavior changes.
+- `38b3b57` closes final review findings: owner-only workspace update/delete,
+  safe deletion replay, malformed external-value validation, generated
+  correlation IDs, and idempotency actor removal during account deletion.
+
+Final verification evidence:
+
+- workspace-access suite: 40 tests passed;
+- subscriber analytics regression suite: 29 tests passed;
+- `python -m compileall -q workspace_access subscriber_analytics`: passed;
+- every Notebook code cell parsed and compiled;
+- fixture runtime created an owner workspace/context and rendered the session
+  value only as `AccessSecret(<REDACTED>)`;
+- `git diff --check`, Markdown fence validation, and credential-value scan
+  passed;
+- graph rebuilt at the verified implementation HEAD with no parser errors;
+  public session/context/membership/privacy operations have direct behavior
+  tests even where static helper attribution remains conservative.
+
+Five-axis review verdict: no unresolved Critical or Required finding.
+Correctness covers exact expiry/retention boundaries, idempotent replay, stale
+authorization, and concurrent last-owner changes. Security covers digest-only
+session storage, current-role authorization, cross-tenant existence hiding,
+runtime input validation, PII allowlists/deletion, and secret-free errors/audit.
+The in-memory adapter uses linear scans suitable only for fixtures; production
+pagination/indexes belong to later persistence/API modules. No dependency,
+database, endpoint, provider/OAuth flow, credential, real user/channel data, or
+production deployment was introduced.
+
 ## Decisions and constraints
 
 - OAuth scope remains `youtube.readonly`; no write/delete/upload permission.
@@ -212,12 +251,13 @@ before OAuth/token persistence.
 
 ## Current next steps
 
-1. Implement Task 3 workspace creation/list/context resolution with explicit
-   cross-workspace negative tests.
-2. Implement Task 4 membership commands, idempotency, authorization-revision
-   invalidation, and atomic last-owner concurrency protection.
-3. Complete privacy/audit lifecycle and final module review before specifying
-   `channel-data`; do not introduce persistence, Web OAuth, endpoints, or UI.
+1. Specify `channel-data` tenant-scoped subscriber snapshots, registry entries,
+   videos, comments, freshness, and collection-state repository contracts.
+2. Keep storage implementation fixture/in-memory until repository interfaces,
+   uniqueness, retention/deletion, and workspace-context enforcement are
+   approved.
+3. Threat-model `channel-connections` before any Web OAuth or credential storage;
+   do not collect real channel data without explicit owner-authorized execution.
 
 Recommended next-phase skills: `spec-driven-development`,
 `security-and-hardening`, and `api-and-interface-design`. Use the code-review

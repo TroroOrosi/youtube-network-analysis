@@ -181,17 +181,17 @@ findings, document the stable public boundary, and preserve continuation state.
 
 **Acceptance criteria:**
 
-- [ ] README/module docs describe public contracts, safe usage, limitations, and
+- [x] README/module docs describe public contracts, safe usage, limitations, and
   exact verification commands without implying production authentication.
-- [ ] Graph impact/test queries and security review show no unresolved high-risk
+- [x] Graph impact/test queries and security review show no unresolved high-risk
   finding, orphaned public behavior, or missing critical test.
-- [ ] Durable progress identifies verified HEAD and the next capability module.
+- [x] Durable progress identifies verified HEAD and the next capability module.
 
 **Verification:**
 
-- [ ] Focused workspace and full analytics suites pass.
-- [ ] Compile, Notebook code-cell, secret scan, and `git diff --check` pass.
-- [ ] Worktree is clean and verified commits are pushed.
+- [x] Focused workspace and full analytics suites pass.
+- [x] Compile, Notebook code-cell, secret scan, and `git diff --check` pass.
+- [x] Worktree is clean and verified commits are pushed.
 
 **Dependencies:** Task 5
 
@@ -206,8 +206,8 @@ findings, document the stable public boundary, and preserve continuation state.
 
 ## Final checkpoint: workspace-access complete
 
-- [ ] All six tasks and both intermediate checkpoints are complete.
-- [ ] Approved specification success criteria have verification evidence.
-- [ ] No database, endpoint, OAuth, external authentication, dependency, real
+- [x] All six tasks and both intermediate checkpoints are complete.
+- [x] Approved specification success criteria have verification evidence.
+- [x] No database, endpoint, OAuth, external authentication, dependency, real
   user data, or production behavior was introduced.
-- [ ] Branch is pushed and ready to specify `channel-data`.
+- [x] Branch is pushed and ready to specify `channel-data`.
