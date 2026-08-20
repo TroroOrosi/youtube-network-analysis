@@ -41,19 +41,25 @@ from channel_data.models import (
 from workspace_access.models import Permission, WorkspaceContext
 
 from .errors import CollectionJobsError, ErrorCode
-from .memory import IdempotencyRecord, MemoryState, QuotaLedgerEntry
+from .memory import CursorRecord, IdempotencyRecord, MemoryState, QuotaLedgerEntry
 from .models import (
     ACTIVE_STATUSES,
     BACKOFF_SCHEDULE,
     CancelRun,
     CollectionRun,
+    CollectionSchedule,
+    CreateSchedule,
     DEFAULT_DAILY_QUOTA_UNITS,
+    DeleteSchedule,
     EnqueueRun,
     ExecuteRun,
+    JobsPage,
+    JobsPageRequest,
     MAX_ATTEMPTS,
     MAX_IDENTIFIER_LENGTH,
     RunFailureReason,
     RunKind,
+    RunQuery,
     RunStatus,
 )
 
@@ -277,12 +283,207 @@ class CollectionJobsService:
             self._remember(record_key, payload, cancelled, now)
             return cancelled
 
+    # Schedules
+
+    def create_schedule(
+        self, context: WorkspaceContext, command: CreateSchedule
+    ) -> CollectionSchedule:
+        _require(context, Permission.COLLECTION_RUN)
+        with self._lock:
+            now = self._now()
+            record_key = (
+                context.workspace_id,
+                context.user_id,
+                "create_schedule",
+                command.idempotency_key,
+            )
+            payload = {
+                "connection_id": command.connection_id,
+                "kind": command.kind.value,
+                "interval": command.interval.total_seconds(),
+            }
+            replayed = self._replay(record_key, payload, now)
+            if replayed is not None:
+                return replayed
+
+            connection = self._connections.get_connection(context, command.connection_id)
+            schedule = CollectionSchedule(
+                schedule_id=f"schedule_{self._tokens.new_token()}",
+                workspace_id=context.workspace_id,
+                connection_id=connection.connection_id,
+                kind=command.kind,
+                interval=command.interval,
+                enabled=True,
+                created_at=now,
+                last_enqueued_at=None,
+            )
+            self._state.schedules[
+                _key(context.workspace_id, schedule.schedule_id)
+            ] = schedule
+            self._bump_revision(context.workspace_id)
+            self._remember(record_key, payload, schedule, now)
+            return schedule
+
+    def delete_schedule(
+        self, context: WorkspaceContext, command: DeleteSchedule
+    ) -> None:
+        _require(context, Permission.COLLECTION_RUN)
+        with self._lock:
+            now = self._now()
+            record_key = (
+                context.workspace_id,
+                context.user_id,
+                "delete_schedule",
+                command.idempotency_key,
+            )
+            payload = {"schedule_id": command.schedule_id}
+            if self._replay(record_key, payload, now) is not None:
+                return None
+
+            schedule_key = _key(context.workspace_id, command.schedule_id)
+            if schedule_key not in self._state.schedules:
+                raise _safe_error(ErrorCode.SCHEDULE_NOT_FOUND_OR_FORBIDDEN)
+            del self._state.schedules[schedule_key]
+            self._bump_revision(context.workspace_id)
+            self._remember(record_key, payload, command.schedule_id, now)
+            return None
+
+    def enqueue_due_runs(
+        self, context: WorkspaceContext, reference_time: datetime
+    ) -> tuple[CollectionRun, ...]:
+        _require(context, Permission.COLLECTION_RUN)
+        if (
+            not isinstance(reference_time, datetime)
+            or reference_time.utcoffset() is None
+        ):
+            raise _safe_error(ErrorCode.INVALID_INPUT, field="reference_time")
+        with self._lock:
+            enqueued: list[CollectionRun] = []
+            for schedule_key, schedule in sorted(self._state.schedules.items()):
+                if schedule.workspace_id != context.workspace_id or not schedule.enabled:
+                    continue
+                if (
+                    schedule.last_enqueued_at is not None
+                    and reference_time < schedule.last_enqueued_at + schedule.interval
+                ):
+                    continue
+                if self._active_run(
+                    context.workspace_id, schedule.connection_id, schedule.kind
+                ):
+                    continue
+                connection = self._connections.get_connection(
+                    context, schedule.connection_id
+                )
+                run = CollectionRun(
+                    run_id=f"run_{self._tokens.new_token()}",
+                    workspace_id=context.workspace_id,
+                    connection_id=connection.connection_id,
+                    provider_channel_id=connection.provider_channel_id,
+                    kind=schedule.kind,
+                    status=RunStatus.QUEUED,
+                    attempt=1,
+                    enqueued_at=reference_time,
+                    started_at=None,
+                    finished_at=None,
+                    pages_fetched=0,
+                    quota_spent=0,
+                    failure_reason=None,
+                    next_attempt_at=None,
+                )
+                self._store(run)
+                self._state.schedules[schedule_key] = replace(
+                    schedule, last_enqueued_at=reference_time
+                )
+                enqueued.append(run)
+            return tuple(enqueued)
+
     # Reads
 
     def get_run(self, context: WorkspaceContext, run_id: str) -> CollectionRun:
         _require(context, Permission.COLLECTION_READ)
         with self._lock:
             return self._run(context.workspace_id, run_id)
+
+    def list_runs(
+        self,
+        context: WorkspaceContext,
+        query: RunQuery = RunQuery(),
+        page: JobsPageRequest = JobsPageRequest(),
+    ) -> JobsPage:
+        _require(context, Permission.COLLECTION_READ)
+        with self._lock:
+            rows = [
+                run
+                for run in self._state.runs.values()
+                if run.workspace_id == context.workspace_id
+                and (query.connection_id is None or run.connection_id == query.connection_id)
+                and (query.kind is None or run.kind is query.kind)
+            ]
+            rows.sort(key=lambda run: run.run_id)
+            rows.sort(key=lambda run: run.enqueued_at, reverse=True)
+            return self._page(
+                context,
+                rows,
+                page,
+                {
+                    "view": "runs",
+                    "connection_id": query.connection_id,
+                    "kind": None if query.kind is None else query.kind.value,
+                },
+            )
+
+    def list_schedules(
+        self,
+        context: WorkspaceContext,
+        page: JobsPageRequest = JobsPageRequest(),
+    ) -> JobsPage:
+        _require(context, Permission.COLLECTION_READ)
+        with self._lock:
+            rows = [
+                schedule
+                for schedule in self._state.schedules.values()
+                if schedule.workspace_id == context.workspace_id
+            ]
+            rows.sort(key=lambda schedule: schedule.schedule_id)
+            rows.sort(key=lambda schedule: schedule.created_at, reverse=True)
+            return self._page(context, rows, page, {"view": "schedules"})
+
+    def _page(
+        self,
+        context: WorkspaceContext,
+        rows: list[Any],
+        page: JobsPageRequest,
+        query: dict[str, Any],
+    ) -> JobsPage:
+        workspace_id = context.workspace_id
+        revision = self._state.revisions.get(workspace_id, 0)
+        fingerprint = _fingerprint({**query, "limit": page.limit})
+        offset = 0
+        if page.cursor is not None:
+            record = self._state.cursors.get(page.cursor)
+            if (
+                record is None
+                or record.workspace_id != workspace_id
+                or record.query_fingerprint != fingerprint
+            ):
+                raise _safe_error(ErrorCode.INVALID_CURSOR, field="cursor")
+            if record.revision != revision:
+                raise _safe_error(ErrorCode.CURSOR_EXPIRED, field="cursor")
+            offset = record.offset
+            del self._state.cursors[page.cursor]
+
+        window = rows[offset : offset + page.limit]
+        next_cursor = None
+        if offset + page.limit < len(rows):
+            next_cursor = f"cursor_{self._tokens.new_token()}"
+            self._state.cursors[next_cursor] = CursorRecord(
+                workspace_id=workspace_id,
+                query_fingerprint=fingerprint,
+                revision=revision,
+                offset=offset + page.limit,
+                created_at=self._now(),
+            )
+        return JobsPage(items=tuple(window), next_cursor=next_cursor)
 
     # Internal execution
 
@@ -642,8 +843,11 @@ class CollectionJobsService:
 
     def _store(self, run: CollectionRun) -> None:
         self._state.runs[_key(run.workspace_id, run.run_id)] = run
-        self._state.revisions[run.workspace_id] = (
-            self._state.revisions.get(run.workspace_id, 0) + 1
+        self._bump_revision(run.workspace_id)
+
+    def _bump_revision(self, workspace_id: str) -> None:
+        self._state.revisions[workspace_id] = (
+            self._state.revisions.get(workspace_id, 0) + 1
         )
 
     def _run(self, workspace_id: str, run_id: object) -> CollectionRun:
