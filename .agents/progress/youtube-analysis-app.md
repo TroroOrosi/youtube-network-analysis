@@ -360,15 +360,52 @@ Recommended process skills: `spec-driven-development`, then
 `api-and-interface-design` for public contracts and `security-and-hardening`
 before OAuth/token persistence.
 
-## Current next steps
+## Approved checkpoint: channel-connections specification
 
-1. Specify `channel-connections`, including its capability map and explicit
-   non-goals, before implementation.
-2. Threat-model Web OAuth, encrypted token storage, revocation, tenant binding,
-   and current execution authority before any credential persistence.
-3. Keep provider calls and real channel collection gated behind an explicit
-   owner-authorized run.
+Branch: `feature/multi-channel-analytics`
 
-Recommended next-phase skills: `spec-driven-development`,
-`security-and-hardening`, and `api-and-interface-design`. Use the code-review
-graph before codebase exploration.
+Approved specification HEAD: `55a11435c19fcb01c344164f2052a018ffcd375e`
+
+On 2026-08-20 the user approved all seven decisions in
+`SPEC-channel-connections.md`:
+
+1. members read safe metadata while owners manage connections;
+2. hosted Web Authorization Code flow uses exact HTTPS redirect, one-time
+   session-bound state, PKCE S256, and 10-minute intents;
+3. only `youtube.readonly` is allowed, with refresh-token, `mine=true`, and
+   `mySubscribers=true` verification;
+4. connections and credentials are workspace-owned and tenant-isolated;
+5. production credentials require an approved vault/KMS while the reference
+   slice uses synthetic in-memory fakes only;
+6. disconnect removes credential access but retains collected `channel-data`,
+   and authorizer departure does not disconnect a workspace-owned connection;
+7. the reference slice excludes Web/UI, real OAuth/provider calls, database,
+   KMS, jobs, credentials, and real data.
+
+No `channel-connections` implementation has started. No dependency, OAuth
+configuration, credential, provider call, real channel data, Web route, or UI
+was introduced during specification approval.
+
+The final hosted product now explicitly requires a clear UI that a
+non-engineer can operate: guided connection steps, plain Japanese labels,
+visible status and next actions, safe actionable errors, accessibility, and
+responsive behavior. This is a future Web/UI acceptance requirement, not part
+of the approved reference implementation slice.
+
+The unrelated untracked `.repowise/wiki.db` was confirmed as an unreferenced,
+reproducible RepoWise SQLite cache and removed before this checkpoint.
+
+### Next session
+
+1. Break the approved reference slice into small ordered implementation tasks.
+2. Implement its deterministic domain contracts and synthetic fakes test-first,
+   without network, browser, database, KMS, credentials, or real data.
+3. Run focused and full regression suites, compile, secret scans, Markdown
+   validation, graph impact review, and `git diff --check`.
+4. Specify the later frontend separately with the non-engineer UI acceptance
+   requirements, then verify it in a real browser when UI work is authorized.
+
+Recommended next-session skills: `planning-and-task-breakdown`, then
+`incremental-implementation` and `test-driven-development`; use
+`api-and-interface-design` and `security-and-hardening` for their distinct
+domain responsibilities. Use the code-review graph before codebase exploration.

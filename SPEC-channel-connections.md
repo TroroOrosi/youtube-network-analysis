@@ -1,8 +1,9 @@
 # Channel Connections Specification
 
-Status: Proposed
+Status: Approved
 Module id: `channel-connections`
 Date: 2026-08-20
+Approved: 2026-08-20 (all seven review decisions)
 
 ## Objective
 
@@ -38,6 +39,27 @@ version.
 - The same YouTube channel may be connected independently in two workspaces;
   connection state, credentials, authorization intents, idempotency, errors,
   and deletion never cross that boundary.
+
+### Future Web/UI acceptance requirement
+
+The final hosted product must be understandable and operable by a
+non-engineer. UI implementation remains outside this approved reference slice,
+but the later Web/UI specification and acceptance tests must require:
+
+- a guided connection flow that presents one clear primary action at each step;
+- plain Japanese labels and explanations, with OAuth or security terminology
+  avoided unless it is immediately explained in user language;
+- connection status, data readiness, limitations, and the next recommended
+  action shown together rather than as raw machine states;
+- safe, actionable error messages that explain what the user can do next
+  without exposing provider responses, credentials, or internal identifiers;
+- accessible keyboard operation, visible focus, semantic controls, readable
+  contrast, and assistive-technology labels; and
+- responsive behavior suitable for ordinary desktop and mobile use.
+
+Browser-based usability and accessibility verification is required when that
+future UI slice is implemented. These requirements do not authorize Web routes,
+real OAuth, credentials, provider calls, or UI work in the current slice.
 
 ## Source-grounded provider constraints
 
@@ -729,14 +751,17 @@ simplification checks. Static graph attribution is not treated as test execution
     interface inspection, staged secret scan, graph review, and `git diff
     --check` pass with no unresolved Critical or Required finding.
 
-## Open questions
+## Approval status
 
-No technical question is intentionally left for implementation. The product and
-security choices below require approval before planning.
+The user approved all seven choices on 2026-08-20. No technical question is
+intentionally left for the reference implementation plan. Choices that remain
+outside this slice still require their own later specification and approval,
+including the production Web stack, persistence, vault/KMS, provider adapter,
+deployment, and the detailed non-engineer UI design.
 
-## Review decisions requested
+## Approved review decisions
 
-Please approve or revise these seven choices:
+The following seven choices are approved:
 
 1. Members can read safe connection metadata via `channel.read`; only owners can
    connect, complete callbacks, reauthorize, or disconnect via
