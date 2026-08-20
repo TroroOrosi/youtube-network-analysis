@@ -30,6 +30,7 @@ collect_subscribers.py が育てたレジストリと collect_comments.py のコ
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -91,6 +92,59 @@ def load_comment_stats(data_dir: Path):
         .reset_index()
     )
     return stats, len(files)
+
+
+def validate_comment_collection(data_dir: Path, allow_incomplete: bool = False) -> dict:
+    """コメントの全動画カバレッジを検証する。
+
+    サイレント判定は、1本でも未取得動画があると偽陽性を作り得る。
+    明示的な override がない限り fail-closed にする。
+    """
+    path = common.comment_state_path(data_dir)
+    if not path.exists():
+        message = (
+            f"コメント収集状態がありません: {path}\n"
+            "collect_comments.py をキャッシュなしで全件実行するか、更新時は --force を付けてください。"
+        )
+        if not allow_incomplete:
+            raise SystemExit(message)
+        print("警告: " + message)
+        return {}
+
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        if not allow_incomplete:
+            raise SystemExit(f"コメント収集状態を読み取れません: {path}: {exc}") from exc
+        print(f"警告: コメント収集状態を読み取れません: {path}: {exc}")
+        return {}
+
+    coverage_scope = state.get("coverage_scope", "")
+    complete = (
+        state.get("status") == "complete"
+        and int(state.get("videos_missing", 1)) == 0
+        and bool(state.get("comment_coverage_complete"))
+    )
+    safe = complete and coverage_scope == common.COMMENT_COVERAGE_OWNER
+    if not safe:
+        if complete and coverage_scope == common.COMMENT_COVERAGE_PUBLIC:
+            message = (
+                "コメント収集は公開動画だけを対象にしています。非公開・限定公開動画の"
+                "コメントを見落とすため、サイレント判定には利用できません。\n"
+                "OAuthで collect_comments.py --use-oauth --force を実行してください。"
+            )
+        else:
+            message = (
+                "コメント収集が全動画をカバーしていません。"
+                f" status={state.get('status', 'unknown')}, "
+                f"cached={state.get('videos_cached', '?')}/{state.get('videos_listed', '?')}, "
+                f"refreshed_this_run={state.get('videos_refreshed_this_run', '?')}。\n"
+                "collect_comments.py を再実行して未取得動画を収集してください。"
+            )
+        if not allow_incomplete:
+            raise SystemExit(message)
+        print("警告: " + message)
+    return state
 
 
 def build_table(registry: pd.DataFrame, comment_stats: pd.DataFrame) -> pd.DataFrame:
@@ -189,6 +243,11 @@ def main() -> None:
         help="最新スナップショットに出現しなかった人（解約の可能性あり）も対象に含める",
     )
     parser.add_argument(
+        "--allow-incomplete-comments",
+        action="store_true",
+        help="未完了コメントキャッシュでも抽出する（偽陽性の可能性があるため非推奨）",
+    )
+    parser.add_argument(
         "--data-dir",
         type=Path,
         default=common.DATA_DIR,
@@ -201,6 +260,10 @@ def main() -> None:
     now = common.parse_ts(args.now) if args.now else common.utcnow()
 
     registry = load_registry(args.data_dir)
+    comment_state = validate_comment_collection(
+        args.data_dir,
+        allow_incomplete=args.allow_incomplete_comments,
+    )
 
     # 既定では最新スナップショットに出現した人（現役の公開登録者）のみを対象にする。
     # レジストリには解約済みの人も last_seen_at が古いまま残るため。
@@ -212,10 +275,10 @@ def main() -> None:
         registry = registry[current]
 
     comment_stats, n_comment_files = load_comment_stats(args.data_dir)
-    if n_comment_files == 0:
-        print(
-            "警告: コメントデータがありません（collect_comments.py 未実行）。"
-            "全員が「コメントなし」として扱われます。"
+    if n_comment_files == 0 and int(comment_state.get("videos_listed", 0)) > 0:
+        raise SystemExit(
+            "収集状態では動画が存在しますが、コメントキャッシュがありません。"
+            "collect_comments.py を再実行してください。"
         )
 
     table = build_table(registry, comment_stats)
