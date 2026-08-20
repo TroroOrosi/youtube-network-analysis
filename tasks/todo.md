@@ -17,19 +17,19 @@ command, error, and repository protocol values.
 
 **Acceptance criteria:**
 
-- [ ] Public records are immutable/slotted; enums and error fields have stable
+- [x] Public records are immutable/slotted; enums and error fields have stable
   machine values and no pandas/provider/database/HTTP types leak into them.
-- [ ] Boundary validation rejects empty/oversized identifiers and text, naive
+- [x] Boundary validation rejects empty/oversized identifiers and text, naive
   times, booleans as counts, invalid counts/ranges, duplicate input keys, and
   forbidden coverage combinations.
-- [ ] Repository protocols require `WorkspaceContext` for every tenant
+- [x] Repository protocols require `WorkspaceContext` for every tenant
   operation and expose the approved permission-specific interfaces.
 
 **Verification:**
 
-- [ ] RED then GREEN: `python -m unittest channel_data.tests.test_models -v`
-- [ ] Workspace and subscriber analytics regression suites pass.
-- [ ] Compile, public-signature inspection, and `git diff --check` pass.
+- [x] RED then GREEN: `python -m unittest channel_data.tests.test_models -v`
+- [x] Workspace and subscriber analytics regression suites pass.
+- [x] Compile, public-signature inspection, and `git diff --check` pass.
 
 **Dependencies:** None
 
