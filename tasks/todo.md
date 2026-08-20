@@ -51,18 +51,18 @@ locking, and actor/payload-bound idempotency before other mutations reuse them.
 
 **Acceptance criteria:**
 
-- [ ] Starting a collection requires `collection.run`, stores every key under
+- [x] Starting a collection requires `collection.run`, stores every key under
   the context workspace, and returns immutable `IN_PROGRESS` state.
-- [ ] Exact idempotent replay returns the original result; changed actor,
+- [x] Exact idempotent replay returns the original result; changed actor,
   workspace, operation, or canonical payload fails atomically.
-- [ ] Identical channel/resource IDs in two workspaces remain independent, and
+- [x] Identical channel/resource IDs in two workspaces remain independent, and
   missing/foreign public error fields are identical and non-enumerating.
 
 **Verification:**
 
-- [ ] RED then GREEN: `python -m unittest channel_data.tests.test_tenant_isolation -v`
-- [ ] Full channel-data, workspace, and analytics suites pass.
-- [ ] Two-workspace runtime fixture, compile, secret scan, and integrity checks
+- [x] RED then GREEN: `python -m unittest channel_data.tests.test_tenant_isolation -v`
+- [x] Full channel-data, workspace, and analytics suites pass.
+- [x] Two-workspace runtime fixture, compile, secret scan, and integrity checks
   pass.
 
 **Dependencies:** Task 1
@@ -79,10 +79,10 @@ locking, and actor/payload-bound idempotency before other mutations reuse them.
 
 ## Checkpoint A: Contract and tenant boundary
 
-- [ ] Tasks 1-2 are independently committed and pushed.
-- [ ] Contract, permission, idempotency, and identical-ID isolation fixtures
+- [x] Tasks 1-2 are independently committed and pushed.
+- [x] Contract, permission, idempotency, and identical-ID isolation fixtures
   pass with no foreign existence signal.
-- [ ] No dependency, persistence, job, OAuth, network, or real data introduced.
+- [x] No dependency, persistence, job, OAuth, network, or real data introduced.
 
 ## Task 3: Track collection transitions and freshness
 

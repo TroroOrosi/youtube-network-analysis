@@ -11,11 +11,13 @@ from .ports import (
     CollectionReader,
     CollectionWriter,
 )
+from .service import ChannelDataService
 
 __all__ = (
     "AnalysisDataReader",
     "ChannelDataAdministrator",
     "ChannelDataError",
+    "ChannelDataService",
     "CollectionReader",
     "CollectionWriter",
     "ErrorCode",
