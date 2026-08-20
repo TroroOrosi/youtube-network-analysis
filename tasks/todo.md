@@ -16,17 +16,17 @@ commands, stable errors, and safe secret wrappers.
 
 **Acceptance criteria:**
 
-- [ ] Public records are immutable/slotted and accept only timezone-aware values
+- [x] Public records are immutable/slotted and accept only timezone-aware values
   at service boundaries.
-- [ ] `OWNER` and `MEMBER` resolve to the approved exact permission matrix.
-- [ ] Session evidence/issued secrets have constant redacted repr/str and errors
+- [x] `OWNER` and `MEMBER` resolve to the approved exact permission matrix.
+- [x] Session evidence/issued secrets have constant redacted repr/str and errors
   contain stable non-sensitive codes.
 
 **Verification:**
 
-- [ ] RED then GREEN: `python -m unittest workspace_access.tests.test_models -v`
-- [ ] Regression: `python -m unittest discover -s subscriber_analytics/tests -v`
-- [ ] Compile and `git diff --check` pass.
+- [x] RED then GREEN: `python -m unittest workspace_access.tests.test_models -v`
+- [x] Regression: `python -m unittest discover -s subscriber_analytics/tests -v`
+- [x] Compile and `git diff --check` pass.
 
 **Dependencies:** None
 
