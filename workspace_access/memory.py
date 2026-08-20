@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from .models import AuditCategory, AuditEvent, Membership
+from .models import AuditCategory, AuditEvent, Membership, Workspace
 
 
 @dataclass(slots=True)
@@ -33,9 +33,10 @@ class SessionState:
 
 @dataclass(frozen=True, slots=True)
 class IdempotencyRecord:
+    actor_user_id: str
     operation: str
     payload: tuple[str, ...]
-    result: Membership | None
+    result: Membership | Workspace | None
 
 
 class InMemoryAuditLog:

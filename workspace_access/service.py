@@ -27,6 +27,7 @@ from .models import (
     AuditOutcome,
     ChangeMembershipRole,
     CreateWorkspace,
+    DeleteWorkspace,
     ErrorCode,
     GrantMembership,
     IssuedSession,
@@ -36,6 +37,7 @@ from .models import (
     RetentionReport,
     Role,
     SessionEvidence,
+    UpdateWorkspace,
     VerifiedIdentity,
     Workspace,
     WorkspaceAccessError,
@@ -164,7 +166,10 @@ class WorkspaceAccessService:
         self,
         evidence: SessionEvidence,
     ) -> AuthenticatedSession:
-        digest = self._digest(evidence.secret.reveal())
+        raw_secret = evidence.secret.reveal()
+        if not isinstance(raw_secret, str):
+            raise_expired_or_revoked()
+        digest = self._digest(raw_secret)
         with self._lock:
             now = self._now()
             state = self._sessions_by_digest.get(digest)
@@ -189,13 +194,7 @@ class WorkspaceAccessService:
         session: AuthenticatedSession,
         command: CreateWorkspace,
     ) -> WorkspaceContext:
-        name = command.name.strip()
-        if not name or len(name) > 100:
-            raise WorkspaceAccessError(
-                ErrorCode.INVALID_INPUT,
-                message="Workspace name is invalid",
-                field="name",
-            )
+        name = self._validated_workspace_name(command.name)
         with self._lock:
             actor = self._require_active_session(session)
             now = self._now()
@@ -255,6 +254,119 @@ class WorkspaceAccessService:
                 )
             )
 
+    def update_workspace(
+        self,
+        context: WorkspaceContext,
+        command: UpdateWorkspace,
+    ) -> Workspace:
+        name = self._validated_workspace_name(command.name)
+        self._validate_idempotency_key(command.idempotency_key)
+        with self._lock:
+            _, workspace, _ = self._authorize_context(
+                context,
+                Permission.WORKSPACE_UPDATE,
+            )
+            payload = (name,)
+            found, replay = self._idempotency_replay(
+                workspace.workspace_id,
+                command.idempotency_key,
+                context.user_id,
+                "update_workspace",
+                payload,
+            )
+            if found:
+                if not isinstance(replay, Workspace):
+                    raise AssertionError("workspace replay must contain a workspace")
+                return replay
+            self._require_current_revision(context, workspace)
+
+            if workspace.name == name:
+                updated = workspace
+            else:
+                updated = Workspace(
+                    workspace_id=workspace.workspace_id,
+                    name=name,
+                    created_at=workspace.created_at,
+                    authorization_revision=workspace.authorization_revision + 1,
+                )
+                self._workspaces_by_id[workspace.workspace_id] = updated
+                self._audit(
+                    AuditCategory.ADMINISTRATION,
+                    AuditAction.WORKSPACE_UPDATED,
+                    actor_user_id=context.user_id,
+                    workspace_id=workspace.workspace_id,
+                    target_id=workspace.workspace_id,
+                )
+            self._record_idempotency(
+                workspace.workspace_id,
+                command.idempotency_key,
+                context.user_id,
+                "update_workspace",
+                payload,
+                updated,
+            )
+            return updated
+
+    def delete_workspace(
+        self,
+        context: WorkspaceContext,
+        command: DeleteWorkspace,
+    ) -> None:
+        self._validate_idempotency_key(command.idempotency_key)
+        with self._lock:
+            self._active_session_by_id(context.session_id, context.user_id)
+            found, _ = self._idempotency_replay(
+                context.workspace_id,
+                command.idempotency_key,
+                context.user_id,
+                "delete_workspace",
+                (),
+            )
+            if found:
+                return
+            _, workspace, _ = self._authorize_context(
+                context,
+                Permission.WORKSPACE_DELETE,
+            )
+            self._require_current_revision(context, workspace)
+
+            memberships = [
+                membership
+                for membership in self._memberships_by_id.values()
+                if membership.workspace_id == workspace.workspace_id
+            ]
+            for membership in memberships:
+                del self._memberships_by_id[membership.membership_id]
+                del self._membership_id_by_pair[
+                    (membership.workspace_id, membership.user_id)
+                ]
+                if (
+                    self._preferred_workspace_by_user.get(membership.user_id)
+                    == workspace.workspace_id
+                ):
+                    del self._preferred_workspace_by_user[membership.user_id]
+            del self._workspaces_by_id[workspace.workspace_id]
+            self._idempotency_records = {
+                key: record
+                for key, record in self._idempotency_records.items()
+                if key[0] != workspace.workspace_id
+            }
+            self._record_idempotency(
+                workspace.workspace_id,
+                command.idempotency_key,
+                context.user_id,
+                "delete_workspace",
+                (),
+                None,
+            )
+            self._audit(
+                AuditCategory.ADMINISTRATION,
+                AuditAction.WORKSPACE_DELETED,
+                actor_user_id=context.user_id,
+                workspace_id=workspace.workspace_id,
+                target_id=workspace.workspace_id,
+            )
+
     def resolve_workspace_context(
         self,
         session: AuthenticatedSession,
@@ -273,6 +385,8 @@ class WorkspaceAccessService:
 
             membership: Membership | None = None
             if selection is not None:
+                if not self._valid_identifier(selection.workspace_id):
+                    raise_workspace_not_found_or_forbidden()
                 membership = self._membership_for_pair(
                     selection.workspace_id,
                     actor.user_id,
@@ -333,15 +447,18 @@ class WorkspaceAccessService:
             found, replay = self._idempotency_replay(
                 workspace.workspace_id,
                 command.idempotency_key,
+                context.user_id,
                 "grant_membership",
                 payload,
             )
             if found:
-                if replay is None:
+                if not isinstance(replay, Membership):
                     raise AssertionError("grant replay must contain a membership")
                 return replay
             self._require_current_revision(context, workspace)
 
+            if not self._valid_identifier(command.user_id):
+                raise_membership_not_found_or_forbidden()
             user = self._users_by_id.get(command.user_id)
             if user is None or not user.enabled:
                 raise_membership_not_found_or_forbidden()
@@ -364,6 +481,7 @@ class WorkspaceAccessService:
             self._record_idempotency(
                 workspace.workspace_id,
                 command.idempotency_key,
+                context.user_id,
                 "grant_membership",
                 payload,
                 membership,
@@ -393,11 +511,12 @@ class WorkspaceAccessService:
             found, replay = self._idempotency_replay(
                 workspace.workspace_id,
                 command.idempotency_key,
+                context.user_id,
                 "change_membership_role",
                 payload,
             )
             if found:
-                if replay is None:
+                if not isinstance(replay, Membership):
                     raise AssertionError("role replay must contain a membership")
                 return replay
             target = self._membership_target(
@@ -427,6 +546,7 @@ class WorkspaceAccessService:
             self._record_idempotency(
                 workspace.workspace_id,
                 command.idempotency_key,
+                context.user_id,
                 "change_membership_role",
                 payload,
                 updated,
@@ -456,6 +576,7 @@ class WorkspaceAccessService:
             found, _ = self._idempotency_replay(
                 workspace.workspace_id,
                 command.idempotency_key,
+                context.user_id,
                 "revoke_membership",
                 payload,
             )
@@ -483,6 +604,7 @@ class WorkspaceAccessService:
             self._record_idempotency(
                 workspace.workspace_id,
                 command.idempotency_key,
+                context.user_id,
                 "revoke_membership",
                 payload,
                 None,
@@ -591,9 +713,13 @@ class WorkspaceAccessService:
             self._idempotency_records = {
                 key: record
                 for key, record in self._idempotency_records.items()
-                if actor.user_id not in record.payload
+                if record.actor_user_id != actor.user_id
+                and actor.user_id not in record.payload
                 and not any(value in removed_membership_ids for value in record.payload)
-                and (record.result is None or record.result.user_id != actor.user_id)
+                and not (
+                    isinstance(record.result, Membership)
+                    and record.result.user_id == actor.user_id
+                )
             }
             self._audit(
                 AuditCategory.ADMINISTRATION,
@@ -631,7 +757,10 @@ class WorkspaceAccessService:
             )
 
     def logout(self, evidence: SessionEvidence) -> None:
-        digest = self._digest(evidence.secret.reveal())
+        raw_secret = evidence.secret.reveal()
+        if not isinstance(raw_secret, str):
+            return
+        digest = self._digest(raw_secret)
         with self._lock:
             state = self._sessions_by_digest.get(digest)
             if state is not None and state.revoked_at is None:
@@ -651,6 +780,8 @@ class WorkspaceAccessService:
     ) -> None:
         with self._lock:
             actor_state = self._require_active_session(session)
+            if not self._valid_identifier(target_session_id):
+                return
             target_digest = self._session_digest_by_id.get(target_session_id)
             target = (
                 self._sessions_by_digest.get(target_digest)
@@ -795,6 +926,10 @@ class WorkspaceAccessService:
         workspace_id: str,
         user_id: str,
     ) -> Membership | None:
+        if not self._valid_identifier(workspace_id) or not self._valid_identifier(
+            user_id
+        ):
+            return None
         membership_id = self._membership_id_by_pair.get((workspace_id, user_id))
         return (
             self._memberships_by_id.get(membership_id)
@@ -807,6 +942,8 @@ class WorkspaceAccessService:
         workspace_id: str,
         membership_id: str,
     ) -> Membership:
+        if not self._valid_identifier(membership_id):
+            raise_membership_not_found_or_forbidden()
         membership = self._memberships_by_id.get(membership_id)
         if membership is None or membership.workspace_id != workspace_id:
             raise_membership_not_found_or_forbidden()
@@ -833,13 +970,18 @@ class WorkspaceAccessService:
         self,
         workspace_id: str,
         key: str,
+        actor_user_id: str,
         operation: str,
         payload: tuple[str, ...],
     ) -> tuple[bool, Membership | None]:
         record = self._idempotency_records.get((workspace_id, key))
         if record is None:
             return False, None
-        if record.operation != operation or record.payload != payload:
+        if (
+            record.actor_user_id != actor_user_id
+            or record.operation != operation
+            or record.payload != payload
+        ):
             raise WorkspaceAccessError(
                 ErrorCode.IDEMPOTENCY_CONFLICT,
                 message="Idempotency key was reused with different input",
@@ -851,11 +993,13 @@ class WorkspaceAccessService:
         self,
         workspace_id: str,
         key: str,
+        actor_user_id: str,
         operation: str,
         payload: tuple[str, ...],
         result: Membership | None,
     ) -> None:
         self._idempotency_records[(workspace_id, key)] = IdempotencyRecord(
+            actor_user_id=actor_user_id,
             operation=operation,
             payload=payload,
             result=result,
@@ -920,18 +1064,66 @@ class WorkspaceAccessService:
 
     @staticmethod
     def _validate_identity(identity: VerifiedIdentity) -> None:
-        if not identity.issuer.strip() or len(identity.issuer) > 2048:
+        if (
+            not isinstance(identity.issuer, str)
+            or not identity.issuer.strip()
+            or len(identity.issuer) > 2048
+        ):
             raise WorkspaceAccessError(
                 ErrorCode.INVALID_INPUT,
                 message="Identity issuer is invalid",
                 field="issuer",
             )
-        if not identity.subject.strip() or len(identity.subject) > 512:
+        if (
+            not isinstance(identity.subject, str)
+            or not identity.subject.strip()
+            or len(identity.subject) > 512
+        ):
             raise WorkspaceAccessError(
                 ErrorCode.INVALID_INPUT,
                 message="Identity subject is invalid",
                 field="subject",
             )
+        if identity.verified_email is not None and (
+            not isinstance(identity.verified_email, str)
+            or not identity.verified_email.strip()
+            or len(identity.verified_email) > 320
+        ):
+            raise WorkspaceAccessError(
+                ErrorCode.INVALID_INPUT,
+                message="Verified email is invalid",
+                field="verified_email",
+            )
+        if identity.display_name is not None and (
+            not isinstance(identity.display_name, str)
+            or len(identity.display_name) > 200
+        ):
+            raise WorkspaceAccessError(
+                ErrorCode.INVALID_INPUT,
+                message="Display name is invalid",
+                field="display_name",
+            )
+
+    @staticmethod
+    def _validated_workspace_name(value: object) -> str:
+        if not isinstance(value, str):
+            raise WorkspaceAccessError(
+                ErrorCode.INVALID_INPUT,
+                message="Workspace name is invalid",
+                field="name",
+            )
+        name = value.strip()
+        if not name or len(name) > 100:
+            raise WorkspaceAccessError(
+                ErrorCode.INVALID_INPUT,
+                message="Workspace name is invalid",
+                field="name",
+            )
+        return name
+
+    @staticmethod
+    def _valid_identifier(value: object) -> bool:
+        return isinstance(value, str) and 0 < len(value) <= 200
 
     @staticmethod
     def _validate_idempotency_key(key: str) -> None:
@@ -987,3 +1179,10 @@ class WorkspaceAccessService:
     def _debug_audit_counts(self) -> dict[AuditCategory, int]:
         with self._lock:
             return self._audit_log.counts()
+
+    def _debug_idempotency_actor_ids(self) -> frozenset[str]:
+        with self._lock:
+            return frozenset(
+                record.actor_user_id
+                for record in self._idempotency_records.values()
+            )

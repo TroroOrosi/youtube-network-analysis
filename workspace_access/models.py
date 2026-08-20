@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
@@ -88,6 +89,8 @@ class AuditAction(str, Enum):
     SESSION_REVOKED = "SESSION_REVOKED"
     USER_SUSPENDED = "USER_SUSPENDED"
     WORKSPACE_CREATED = "WORKSPACE_CREATED"
+    WORKSPACE_UPDATED = "WORKSPACE_UPDATED"
+    WORKSPACE_DELETED = "WORKSPACE_DELETED"
     MEMBERSHIP_GRANTED = "MEMBERSHIP_GRANTED"
     MEMBERSHIP_ROLE_CHANGED = "MEMBERSHIP_ROLE_CHANGED"
     MEMBERSHIP_REVOKED = "MEMBERSHIP_REVOKED"
@@ -115,7 +118,7 @@ class WorkspaceAccessError(ValueError):
         self.message = message
         self.field = field
         self.retryable = retryable
-        self.correlation_id = correlation_id
+        self.correlation_id = correlation_id or f"error_{uuid.uuid4().hex}"
 
 
 def _utc(value: datetime, field: str) -> datetime:
@@ -258,6 +261,17 @@ class WorkspaceContext:
 @dataclass(frozen=True, slots=True)
 class CreateWorkspace:
     name: str
+
+
+@dataclass(frozen=True, slots=True)
+class UpdateWorkspace:
+    name: str
+    idempotency_key: str
+
+
+@dataclass(frozen=True, slots=True)
+class DeleteWorkspace:
+    idempotency_key: str
 
 
 @dataclass(frozen=True, slots=True)

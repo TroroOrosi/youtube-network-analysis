@@ -6,11 +6,14 @@ from datetime import UTC, datetime
 from workspace_access.models import (
     AccessSecret,
     CreateWorkspace,
+    DeleteWorkspace,
     ErrorCode,
+    GrantMembership,
     Permission,
     Role,
     SessionEvidence,
     VerifiedIdentity,
+    UpdateWorkspace,
     WorkspaceAccessError,
     WorkspaceSelection,
     permissions_for_role,
@@ -134,7 +137,11 @@ class WorkspaceAuthorizationTests(unittest.TestCase):
         foreign = self.service.create_workspace(other, CreateWorkspace("Private name"))
 
         errors = []
-        for workspace_id in (foreign.workspace_id, "workspace-does-not-exist"):
+        for workspace_id in (
+            foreign.workspace_id,
+            "workspace-does-not-exist",
+            [],  # type: ignore[list-item]
+        ):
             with self.assertRaises(WorkspaceAccessError) as caught:
                 self.service.resolve_workspace_context(
                     actor,
@@ -143,8 +150,8 @@ class WorkspaceAuthorizationTests(unittest.TestCase):
                 )
             errors.append(caught.exception)
 
-        self.assertEqual(errors[0].code, errors[1].code)
-        self.assertEqual(errors[0].message, errors[1].message)
+        self.assertTrue(all(error.code == errors[0].code for error in errors))
+        self.assertTrue(all(error.message == errors[0].message for error in errors))
         self.assertEqual(
             errors[0].code,
             ErrorCode.WORKSPACE_NOT_FOUND_OR_FORBIDDEN.value,
@@ -188,12 +195,102 @@ class WorkspaceAuthorizationTests(unittest.TestCase):
     def test_workspace_name_is_validated_at_service_boundary(self) -> None:
         session = self.login("owner")
 
-        for name in ("", "   ", "x" * 101):
-            with self.subTest(name_length=len(name)):
+        for name in ("", "   ", "x" * 101, None):
+            with self.subTest(name=repr(name)):
                 with self.assertRaises(WorkspaceAccessError) as caught:
-                    self.service.create_workspace(session, CreateWorkspace(name))
+                    self.service.create_workspace(
+                        session,
+                        CreateWorkspace(name),  # type: ignore[arg-type]
+                    )
                 self.assertEqual(caught.exception.code, ErrorCode.INVALID_INPUT.value)
                 self.assertEqual(caught.exception.field, "name")
+
+    def test_owner_updates_workspace_name_with_idempotent_replay(self) -> None:
+        owner = self.login("owner")
+        created = self.service.create_workspace(owner, CreateWorkspace("Before"))
+        context = self.service.resolve_workspace_context(
+            owner,
+            WorkspaceSelection(created.workspace_id),
+            Permission.WORKSPACE_UPDATE,
+        )
+        command = UpdateWorkspace("  After  ", "update-name")
+
+        updated = self.service.update_workspace(context, command)
+        replay = self.service.update_workspace(context, command)
+
+        self.assertEqual(updated.name, "After")
+        self.assertEqual(updated, replay)
+        self.assertEqual(
+            self.service.list_accessible_workspaces(owner)[0].name,
+            "After",
+        )
+
+    def test_member_cannot_update_or_delete_workspace(self) -> None:
+        owner = self.login("owner")
+        member = self.login("member")
+        created = self.service.create_workspace(owner, CreateWorkspace("Team"))
+        owner_context = self.service.resolve_workspace_context(
+            owner,
+            WorkspaceSelection(created.workspace_id),
+            Permission.MEMBERSHIP_MANAGE,
+        )
+        self.service.grant_membership(
+            owner_context,
+            GrantMembership(member.user_id, Role.MEMBER, "grant-member"),
+        )
+        member_context = self.service.resolve_workspace_context(
+            member,
+            WorkspaceSelection(created.workspace_id),
+            Permission.WORKSPACE_READ,
+        )
+
+        with self.assertRaises(WorkspaceAccessError) as update_error:
+            self.service.update_workspace(
+                member_context,
+                UpdateWorkspace("Changed", "member-update"),
+            )
+        with self.assertRaises(WorkspaceAccessError) as delete_error:
+            self.service.delete_workspace(
+                member_context,
+                DeleteWorkspace("member-delete"),
+            )
+
+        self.assertEqual(update_error.exception.code, ErrorCode.PERMISSION_DENIED.value)
+        self.assertEqual(delete_error.exception.code, ErrorCode.PERMISSION_DENIED.value)
+
+    def test_explicit_deletion_invalidates_all_members_and_replays_safely(self) -> None:
+        owner = self.login("owner")
+        member = self.login("member")
+        created = self.service.create_workspace(owner, CreateWorkspace("Team"))
+        self.service.grant_membership(
+            self.service.resolve_workspace_context(
+                owner,
+                WorkspaceSelection(created.workspace_id),
+                Permission.MEMBERSHIP_MANAGE,
+            ),
+            GrantMembership(member.user_id, Role.MEMBER, "grant-member"),
+        )
+        delete_context = self.service.resolve_workspace_context(
+            owner,
+            WorkspaceSelection(created.workspace_id),
+            Permission.WORKSPACE_DELETE,
+        )
+        command = DeleteWorkspace("delete-team")
+
+        self.service.delete_workspace(delete_context, command)
+        self.service.delete_workspace(delete_context, command)
+
+        for session in (owner, member):
+            with self.assertRaises(WorkspaceAccessError) as caught:
+                self.service.resolve_workspace_context(
+                    session,
+                    WorkspaceSelection(created.workspace_id),
+                    Permission.WORKSPACE_READ,
+                )
+            self.assertEqual(
+                caught.exception.code,
+                ErrorCode.WORKSPACE_NOT_FOUND_OR_FORBIDDEN.value,
+            )
 
 
 if __name__ == "__main__":

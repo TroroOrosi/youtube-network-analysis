@@ -190,16 +190,23 @@ class MembershipAdministrationTests(unittest.TestCase):
             CreateWorkspace("Other"),
         )
         errors = []
-        for membership_id in (other_workspace.membership_id, "missing-membership"):
+        for membership_id in (
+            other_workspace.membership_id,
+            "missing-membership",
+            [],  # type: ignore[list-item]
+        ):
             with self.assertRaises(WorkspaceAccessError) as caught:
                 self.service.revoke_membership(
                     self.owner_context(),
-                    RevokeMembership(membership_id, f"revoke-{membership_id}"),
+                    RevokeMembership(
+                        membership_id,  # type: ignore[arg-type]
+                        "revoke-target",
+                    ),
                 )
             errors.append(caught.exception)
 
-        self.assertEqual(errors[0].code, errors[1].code)
-        self.assertEqual(errors[0].message, errors[1].message)
+        self.assertTrue(all(error.code == errors[0].code for error in errors))
+        self.assertTrue(all(error.message == errors[0].message for error in errors))
         self.assertEqual(
             errors[0].code,
             ErrorCode.MEMBERSHIP_NOT_FOUND_OR_FORBIDDEN.value,

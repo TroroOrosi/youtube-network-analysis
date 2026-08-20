@@ -227,6 +227,23 @@ class SessionLifecycleTests(unittest.TestCase):
         )
         self.assertEqual(new_error.exception.code, ErrorCode.UNAUTHENTICATED.value)
 
+    def test_malformed_identity_and_session_evidence_fail_with_typed_errors(self) -> None:
+        with self.assertRaises(WorkspaceAccessError) as identity_error:
+            self.service.establish_session(
+                identity("subject-1", display_name="x" * 201)
+            )
+        with self.assertRaises(WorkspaceAccessError) as evidence_error:
+            self.service.authenticate_session(
+                SessionEvidence(AccessSecret(123)),  # type: ignore[arg-type]
+            )
+
+        self.assertEqual(identity_error.exception.code, ErrorCode.INVALID_INPUT.value)
+        self.assertEqual(identity_error.exception.field, "display_name")
+        self.assertEqual(
+            evidence_error.exception.code,
+            ErrorCode.SESSION_EXPIRED_OR_REVOKED.value,
+        )
+
 
 class ProductionDefaultPortTests(unittest.TestCase):
     def test_system_clock_returns_aware_utc_time(self) -> None:

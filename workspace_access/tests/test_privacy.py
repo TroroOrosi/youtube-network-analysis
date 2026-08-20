@@ -176,6 +176,10 @@ class PrivacyLifecycleTests(unittest.TestCase):
             self.service._debug_user_direct_identifiers(deleted_user.user_id),  # noqa: SLF001
             (None, None, None, None),
         )
+        self.assertNotIn(
+            deleted_user.user_id,
+            self.service._debug_idempotency_actor_ids(),  # noqa: SLF001
+        )
         survivor_context = self.service.resolve_workspace_context(
             surviving_owner,
             WorkspaceSelection(workspace.workspace_id),

@@ -120,6 +120,13 @@ class AccessContractTests(unittest.TestCase):
         self.assertEqual(error.correlation_id, "correlation-1")
         self.assertEqual(str(error), "Permission is required")
 
+        generated = WorkspaceAccessError(
+            ErrorCode.INVALID_INPUT,
+            message="Invalid input",
+        )
+        self.assertIsNotNone(generated.correlation_id)
+        self.assertTrue(generated.correlation_id.startswith("error_"))
+
     def test_workspace_membership_context_and_commands_are_typed_records(self) -> None:
         workspace = Workspace(
             workspace_id="workspace-1",
