@@ -3,9 +3,18 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from threading import RLock
+
+from .errors import (
+    raise_expired_or_revoked,
+    raise_last_owner_required,
+    raise_membership_not_found_or_forbidden,
+    raise_no_accessible_workspace,
+    raise_unauthenticated,
+    raise_workspace_not_found_or_forbidden,
+)
+from .memory import IdempotencyRecord, InMemoryAuditLog, SessionState, UserState
 
 from .models import (
     AccessSecret,
@@ -42,36 +51,6 @@ DEFAULT_IDLE_TIMEOUT = timedelta(minutes=30)
 DEFAULT_ABSOLUTE_TIMEOUT = timedelta(hours=12)
 
 
-@dataclass(slots=True)
-class _UserState:
-    user_id: str
-    issuer: str | None
-    subject: str | None
-    verified_email: str | None
-    display_name: str | None
-    enabled: bool = True
-    deleted_at: datetime | None = None
-
-
-@dataclass(slots=True)
-class _SessionState:
-    session_id: str
-    user_id: str
-    secret_digest: str
-    authenticated_at: datetime
-    last_used_at: datetime
-    idle_expires_at: datetime
-    absolute_expires_at: datetime
-    revoked_at: datetime | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class _IdempotencyRecord:
-    operation: str
-    payload: tuple[str, ...]
-    result: Membership | None
-
-
 class WorkspaceAccessService:
     """Resolve verified identities into revocable server-side sessions."""
 
@@ -94,18 +73,18 @@ class WorkspaceAccessService:
         self._idle_timeout = idle_timeout
         self._absolute_timeout = absolute_timeout
         self._lock = RLock()
-        self._users_by_id: dict[str, _UserState] = {}
+        self._users_by_id: dict[str, UserState] = {}
         self._user_id_by_identity: dict[tuple[str, str], str] = {}
-        self._sessions_by_digest: dict[str, _SessionState] = {}
+        self._sessions_by_digest: dict[str, SessionState] = {}
         self._session_digest_by_id: dict[str, str] = {}
         self._workspaces_by_id: dict[str, Workspace] = {}
         self._memberships_by_id: dict[str, Membership] = {}
         self._membership_id_by_pair: dict[tuple[str, str], str] = {}
         self._preferred_workspace_by_user: dict[str, str] = {}
         self._idempotency_records: dict[
-            tuple[str, str], _IdempotencyRecord
+            tuple[str, str], IdempotencyRecord
         ] = {}
-        self._audit_events: list[AuditEvent] = []
+        self._audit_log = InMemoryAuditLog()
 
     def __repr__(self) -> str:
         return (
@@ -122,7 +101,7 @@ class WorkspaceAccessService:
             user_id = self._user_id_by_identity.get(identity_key)
             if user_id is None:
                 user_id = self._token_source.new_id("user")
-                user = _UserState(
+                user = UserState(
                     user_id=user_id,
                     issuer=identity.issuer,
                     subject=identity.subject,
@@ -134,7 +113,7 @@ class WorkspaceAccessService:
             else:
                 user = self._users_by_id[user_id]
                 if not user.enabled:
-                    self._raise_unauthenticated()
+                    raise_unauthenticated()
                 user.verified_email = identity.verified_email
                 user.display_name = identity.display_name
 
@@ -156,7 +135,7 @@ class WorkspaceAccessService:
             session_id = self._token_source.new_id("session")
             absolute_expires_at = now + self._absolute_timeout
             idle_expires_at = min(now + self._idle_timeout, absolute_expires_at)
-            state = _SessionState(
+            state = SessionState(
                 session_id=session_id,
                 user_id=user_id,
                 secret_digest=digest,
@@ -190,13 +169,13 @@ class WorkspaceAccessService:
             now = self._now()
             state = self._sessions_by_digest.get(digest)
             if state is None or state.revoked_at is not None:
-                self._raise_expired_or_revoked()
+                raise_expired_or_revoked()
             user = self._users_by_id.get(state.user_id)
             if user is None or not user.enabled:
-                self._raise_unauthenticated()
+                raise_unauthenticated()
             if now >= state.idle_expires_at or now >= state.absolute_expires_at:
                 state.revoked_at = now
-                self._raise_expired_or_revoked()
+                raise_expired_or_revoked()
 
             state.last_used_at = now
             state.idle_expires_at = min(
@@ -260,7 +239,7 @@ class WorkspaceAccessService:
             actor = self._require_active_session(session)
             memberships = self._memberships_for_user(actor.user_id)
             if not memberships:
-                self._raise_no_accessible_workspace()
+                raise_no_accessible_workspace()
             summaries = [
                 WorkspaceSummary(
                     workspace_id=membership.workspace_id,
@@ -299,10 +278,10 @@ class WorkspaceAccessService:
                     actor.user_id,
                 )
                 if membership is None:
-                    self._raise_workspace_not_found_or_forbidden()
+                    raise_workspace_not_found_or_forbidden()
             else:
                 if not memberships:
-                    self._raise_no_accessible_workspace()
+                    raise_no_accessible_workspace()
                 preferred_workspace_id = self._preferred_workspace_by_user.get(
                     actor.user_id
                 )
@@ -328,7 +307,7 @@ class WorkspaceAccessService:
                 )
             workspace = self._workspaces_by_id.get(membership.workspace_id)
             if workspace is None:
-                self._raise_workspace_not_found_or_forbidden()
+                raise_workspace_not_found_or_forbidden()
             if selection is not None:
                 self._preferred_workspace_by_user[actor.user_id] = workspace.workspace_id
             return self._context(
@@ -365,7 +344,7 @@ class WorkspaceAccessService:
 
             user = self._users_by_id.get(command.user_id)
             if user is None or not user.enabled:
-                self._raise_membership_not_found_or_forbidden()
+                raise_membership_not_found_or_forbidden()
             pair = (workspace.workspace_id, command.user_id)
             if pair in self._membership_id_by_pair:
                 raise WorkspaceAccessError(
@@ -430,7 +409,7 @@ class WorkspaceAccessService:
                 and command.role is not Role.OWNER
                 and self._owner_count(workspace.workspace_id) == 1
             ):
-                self._raise_last_owner_required()
+                raise_last_owner_required()
             self._require_current_revision(context, workspace)
 
             if target.role is command.role:
@@ -490,7 +469,7 @@ class WorkspaceAccessService:
                 target.role is Role.OWNER
                 and self._owner_count(workspace.workspace_id) == 1
             ):
-                self._raise_last_owner_required()
+                raise_last_owner_required()
             self._require_current_revision(context, workspace)
 
             del self._memberships_by_id[target.membership_id]
@@ -525,16 +504,7 @@ class WorkspaceAccessService:
                 context,
                 Permission.AUDIT_READ,
             )
-            return tuple(
-                sorted(
-                    (
-                        event
-                        for event in self._audit_events
-                        if event.workspace_id == workspace.workspace_id
-                    ),
-                    key=lambda event: (event.occurred_at, event.event_id),
-                )
-            )
+            return self._audit_log.for_workspace(workspace.workspace_id)
 
     def export_my_access_data(
         self,
@@ -558,14 +528,7 @@ class WorkspaceAccessService:
                     key=lambda item: (item.workspace_name.casefold(), item.workspace_id),
                 )
             )
-            audit_events = tuple(
-                event
-                for event in sorted(
-                    self._audit_events,
-                    key=lambda event: (event.occurred_at, event.event_id),
-                )
-                if event.actor_user_id == actor.user_id
-            )
+            audit_events = self._audit_log.for_actor(actor.user_id)
             return AccountAccessExport(
                 user_id=user.user_id,
                 issuer=user.issuer or "",
@@ -586,7 +549,7 @@ class WorkspaceAccessService:
                 and self._owner_count(membership.workspace_id) == 1
                 for membership in memberships
             ):
-                self._raise_last_owner_required()
+                raise_last_owner_required()
 
             now = self._now()
             removed_membership_ids = {membership.membership_id for membership in memberships}
@@ -658,23 +621,9 @@ class WorkspaceAccessService:
                 state = self._sessions_by_digest.pop(digest)
                 self._session_digest_by_id.pop(state.session_id, None)
 
-            security_purged = 0
-            administration_purged = 0
-            retained_events: list[AuditEvent] = []
-            for event in self._audit_events:
-                retention = (
-                    timedelta(days=90)
-                    if event.category is AuditCategory.SECURITY
-                    else timedelta(days=365)
-                )
-                if event.occurred_at + retention <= reference_time:
-                    if event.category is AuditCategory.SECURITY:
-                        security_purged += 1
-                    else:
-                        administration_purged += 1
-                else:
-                    retained_events.append(event)
-            self._audit_events = retained_events
+            security_purged, administration_purged = self._audit_log.purge(
+                reference_time
+            )
             return RetentionReport(
                 session_records_purged=len(expired_digests),
                 security_audit_events_purged=security_purged,
@@ -760,14 +709,14 @@ class WorkspaceAccessService:
     def _require_active_session(
         self,
         session: AuthenticatedSession,
-    ) -> _SessionState:
+    ) -> SessionState:
         return self._active_session_by_id(session.session_id, session.user_id)
 
     def _active_session_by_id(
         self,
         session_id: str,
         user_id: str,
-    ) -> _SessionState:
+    ) -> SessionState:
         digest = self._session_digest_by_id.get(session_id)
         state = self._sessions_by_digest.get(digest) if digest is not None else None
         now = self._now()
@@ -778,17 +727,17 @@ class WorkspaceAccessService:
             or now >= state.idle_expires_at
             or now >= state.absolute_expires_at
         ):
-            self._raise_unauthenticated()
+            raise_unauthenticated()
         user = self._users_by_id.get(state.user_id)
         if user is None or not user.enabled:
-            self._raise_unauthenticated()
+            raise_unauthenticated()
         return state
 
     def _authorize_context(
         self,
         context: WorkspaceContext,
         permission: Permission,
-    ) -> tuple[_SessionState, Workspace, Membership]:
+    ) -> tuple[SessionState, Workspace, Membership]:
         state = self._active_session_by_id(context.session_id, context.user_id)
         workspace = self._workspaces_by_id.get(context.workspace_id)
         membership = self._memberships_by_id.get(context.membership_id)
@@ -825,7 +774,7 @@ class WorkspaceAccessService:
                 message="Authorization context is no longer current",
             )
 
-    def _authenticated_session(self, state: _SessionState) -> AuthenticatedSession:
+    def _authenticated_session(self, state: SessionState) -> AuthenticatedSession:
         return AuthenticatedSession(
             session_id=state.session_id,
             user_id=state.user_id,
@@ -860,7 +809,7 @@ class WorkspaceAccessService:
     ) -> Membership:
         membership = self._memberships_by_id.get(membership_id)
         if membership is None or membership.workspace_id != workspace_id:
-            self._raise_membership_not_found_or_forbidden()
+            raise_membership_not_found_or_forbidden()
         return membership
 
     def _owner_count(self, workspace_id: str) -> int:
@@ -906,7 +855,7 @@ class WorkspaceAccessService:
         payload: tuple[str, ...],
         result: Membership | None,
     ) -> None:
-        self._idempotency_records[(workspace_id, key)] = _IdempotencyRecord(
+        self._idempotency_records[(workspace_id, key)] = IdempotencyRecord(
             operation=operation,
             payload=payload,
             result=result,
@@ -922,7 +871,7 @@ class WorkspaceAccessService:
         target_id: str | None,
     ) -> None:
         event_id = self._token_source.new_id("audit")
-        self._audit_events.append(
+        self._audit_log.append(
             AuditEvent(
                 event_id=event_id,
                 category=category,
@@ -939,7 +888,7 @@ class WorkspaceAccessService:
     @staticmethod
     def _context(
         *,
-        state: _SessionState,
+        state: SessionState,
         workspace: Workspace,
         membership: Membership,
         resolved_at: datetime,
@@ -983,48 +932,6 @@ class WorkspaceAccessService:
                 message="Identity subject is invalid",
                 field="subject",
             )
-
-    @staticmethod
-    def _raise_unauthenticated() -> None:
-        raise WorkspaceAccessError(
-            ErrorCode.UNAUTHENTICATED,
-            message="Authentication is required",
-        )
-
-    @staticmethod
-    def _raise_expired_or_revoked() -> None:
-        raise WorkspaceAccessError(
-            ErrorCode.SESSION_EXPIRED_OR_REVOKED,
-            message="Session is expired or revoked",
-        )
-
-    @staticmethod
-    def _raise_no_accessible_workspace() -> None:
-        raise WorkspaceAccessError(
-            ErrorCode.NO_ACCESSIBLE_WORKSPACE,
-            message="No accessible workspace is available",
-        )
-
-    @staticmethod
-    def _raise_workspace_not_found_or_forbidden() -> None:
-        raise WorkspaceAccessError(
-            ErrorCode.WORKSPACE_NOT_FOUND_OR_FORBIDDEN,
-            message="Workspace was not found or is not accessible",
-        )
-
-    @staticmethod
-    def _raise_membership_not_found_or_forbidden() -> None:
-        raise WorkspaceAccessError(
-            ErrorCode.MEMBERSHIP_NOT_FOUND_OR_FORBIDDEN,
-            message="Membership was not found or is not accessible",
-        )
-
-    @staticmethod
-    def _raise_last_owner_required() -> None:
-        raise WorkspaceAccessError(
-            ErrorCode.LAST_OWNER_REQUIRED,
-            message="Workspace must retain at least one owner",
-        )
 
     @staticmethod
     def _validate_idempotency_key(key: str) -> None:
@@ -1079,9 +986,4 @@ class WorkspaceAccessService:
 
     def _debug_audit_counts(self) -> dict[AuditCategory, int]:
         with self._lock:
-            return {
-                category: sum(
-                    event.category is category for event in self._audit_events
-                )
-                for category in AuditCategory
-            }
+            return self._audit_log.counts()
