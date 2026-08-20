@@ -16,6 +16,9 @@ from channel_connections.models import (
     ConnectionPageRequest,
     ConnectionProvider,
     ConnectionStatus,
+    DisconnectConnection,
+    ReportCredentialInvalidation,
+    RevocationOutcome,
     YOUTUBE_READONLY_SCOPE,
 )
 from channel_connections.ports import ProviderRejected, ProviderUnavailable
@@ -32,6 +35,8 @@ from channel_connections.tests.support import (
     credential,
     grant,
 )
+from channel_data.models import CollectionKind, StartCollection
+from channel_data.service import ChannelDataService
 from workspace_access.models import Permission
 
 
@@ -575,3 +580,195 @@ class ReauthorizationTests(ConnectionFixture):
         self.assertEqual(len(self.vault.slot_ids("workspace-1")), 1)
         self.assertEqual(len(self.service._state.connections), 1)
         self.assertEqual(len(self.service._state.active_keys), 1)
+
+
+class DisconnectTests(ConnectionFixture):
+    def setUp(self) -> None:
+        super().setUp()
+        self.connection = self.connect()
+        self.slot = self.vault.slot_ids("workspace-1")[0]
+
+    def disconnect(self, actor=None, *, key: str = "disconnect-1") -> None:
+        self.service.disconnect(
+            actor or self.owner,
+            DisconnectConnection(
+                connection_id=self.connection.connection_id, idempotency_key=key
+            ),
+        )
+
+    def test_disconnect_revokes_deletes_and_hides_the_connection(self) -> None:
+        self.disconnect()
+
+        self.assertEqual(self.gateway.revocations, [("workspace-1", self.slot)])
+        self.assertEqual(self.vault.slot_ids("workspace-1"), ())
+        self.assertEqual(self.service._state.credential_slots, {})
+        self.assertEqual(self.service._state.active_keys, {})
+        with self.assertRaises(ChannelConnectionsError) as raised:
+            self.service.get_connection(self.owner, self.connection.connection_id)
+        self.assertEqual(raised.exception.code, "CONNECTION_NOT_FOUND_OR_FORBIDDEN")
+
+    def test_disconnect_requires_manage_permission(self) -> None:
+        with self.assertRaises(ChannelConnectionsError) as raised:
+            self.disconnect(context("workspace-1", Permission.CHANNEL_READ))
+
+        self.assertEqual(raised.exception.code, "PERMISSION_DENIED")
+        self.assertEqual(self.vault.slot_ids("workspace-1"), (self.slot,))
+
+    def test_a_foreign_or_missing_connection_cannot_be_disconnected(self) -> None:
+        for actor, connection_id in (
+            (context("workspace-2"), self.connection.connection_id),
+            (self.owner, "connection_missing"),
+        ):
+            with self.assertRaises(ChannelConnectionsError) as raised:
+                self.service.disconnect(
+                    actor,
+                    DisconnectConnection(
+                        connection_id=connection_id, idempotency_key="d"
+                    ),
+                )
+            self.assertEqual(raised.exception.code, "CONNECTION_NOT_FOUND_OR_FORBIDDEN")
+        self.assertEqual(self.vault.slot_ids("workspace-1"), (self.slot,))
+
+    def test_exact_replay_is_idempotent_and_reuse_conflicts(self) -> None:
+        self.disconnect()
+        self.disconnect()
+
+        self.assertEqual(len(self.gateway.revocations), 1)
+        with self.assertRaises(ChannelConnectionsError) as raised:
+            self.service.disconnect(
+                self.owner,
+                DisconnectConnection(
+                    connection_id="connection_other", idempotency_key="disconnect-1"
+                ),
+            )
+        self.assertEqual(raised.exception.code, "IDEMPOTENCY_CONFLICT")
+
+    def test_unconfirmed_revocation_still_deletes_the_credential(self) -> None:
+        self.gateway.revocation_outcome = RevocationOutcome.NOT_CONFIRMED
+
+        self.disconnect()
+
+        self.assertEqual(self.vault.slot_ids("workspace-1"), ())
+        cleanups = list(self.service._state.cleanups.values())
+        self.assertEqual([record.kind for record in cleanups], ["REVOCATION_UNCONFIRMED"])
+        self.assertNotIn("synthetic", repr(cleanups[0]))
+
+    def test_the_channel_can_be_connected_again_after_disconnect(self) -> None:
+        self.disconnect()
+        self.clock.advance(timedelta(minutes=5))
+
+        reconnected = self.connect(begin_key="begin-2", callback_key="callback-2")
+
+        self.assertNotEqual(reconnected.connection_id, self.connection.connection_id)
+        self.assertEqual(reconnected.provider_channel_id, "UC_channel_1")
+        self.assertEqual(len(self.vault.slot_ids("workspace-1")), 1)
+
+    def test_disconnect_is_audited_without_secrets(self) -> None:
+        self.disconnect()
+
+        event = self.service._state.audit_events[-1]
+        self.assertEqual(event.action.value, "CONNECTION_DISCONNECTED")
+        self.assertEqual(event.connection_id, self.connection.connection_id)
+        self.assertNotIn(self.slot, repr(event))
+
+    def test_disconnect_does_not_delete_collected_channel_data(self) -> None:
+        data_context = context(
+            "workspace-1", Permission.COLLECTION_RUN, Permission.COLLECTION_READ
+        )
+        data = ChannelDataService()
+        data.start_collection(
+            data_context,
+            StartCollection(
+                channel_id=self.connection.provider_channel_id,
+                collection_id="collection-1",
+                kind=CollectionKind.SUBSCRIBERS,
+                started_at=NOW,
+                idempotency_key="collect-1",
+            ),
+        )
+
+        self.disconnect()
+
+        freshness = data.get_freshness(data_context, self.connection.provider_channel_id)
+        self.assertEqual(freshness.channel_id, self.connection.provider_channel_id)
+        self.assertIsNotNone(freshness.subscribers.latest_attempt)
+
+    def test_a_reauthorization_racing_a_disconnect_publishes_nothing(self) -> None:
+        self.service.begin_reauthorization(
+            self.owner,
+            BeginReauthorization(
+                connection_id=self.connection.connection_id, idempotency_key="r"
+            ),
+        )
+        self.disconnect()
+
+        with self.assertRaises(ChannelConnectionsError) as raised:
+            self.service.complete_authorization(
+                self.owner, callback(self.gateway, idempotency_key="cb-r")
+            )
+
+        self.assertEqual(raised.exception.code, "CONNECTION_NOT_FOUND_OR_FORBIDDEN")
+        self.assertEqual(self.service._state.connections, {})
+        self.assertEqual(self.vault.slot_ids("workspace-1"), ())
+
+
+class CredentialInvalidationTests(ConnectionFixture):
+    def setUp(self) -> None:
+        super().setUp()
+        self.connection = self.connect()
+        self.slot = self.vault.slot_ids("workspace-1")[0]
+        self.clock.advance(timedelta(hours=2))
+
+    def invalidate(self, actor=None, *, key: str = "invalidate-1"):
+        return self.service.report_credential_invalidation(
+            actor or self.owner,
+            ReportCredentialInvalidation(
+                connection_id=self.connection.connection_id, idempotency_key=key
+            ),
+        )
+
+    def test_invalidation_fails_closed_and_removes_the_credential(self) -> None:
+        updated = self.invalidate()
+
+        self.assertEqual(updated.status, ConnectionStatus.REAUTH_REQUIRED)
+        self.assertEqual(updated.updated_at, NOW + timedelta(hours=2))
+        self.assertEqual(self.vault.slot_ids("workspace-1"), ())
+        self.assertEqual(self.service._state.credential_slots, {})
+        self.assertEqual(
+            self.service.get_connection(self.owner, self.connection.connection_id).status,
+            ConnectionStatus.REAUTH_REQUIRED,
+        )
+
+    def test_invalidation_requires_manage_permission_and_an_own_connection(self) -> None:
+        with self.assertRaises(ChannelConnectionsError) as denied:
+            self.invalidate(context("workspace-1", Permission.CHANNEL_READ))
+        self.assertEqual(denied.exception.code, "PERMISSION_DENIED")
+
+        with self.assertRaises(ChannelConnectionsError) as foreign:
+            self.invalidate(context("workspace-2"))
+        self.assertEqual(foreign.exception.code, "CONNECTION_NOT_FOUND_OR_FORBIDDEN")
+        self.assertEqual(self.vault.slot_ids("workspace-1"), (self.slot,))
+
+    def test_invalidation_is_audited_and_idempotent(self) -> None:
+        self.invalidate()
+        self.invalidate()
+
+        actions = [event.action.value for event in self.service._state.audit_events]
+        self.assertEqual(actions.count("CONNECTION_REAUTH_REQUIRED"), 1)
+
+    def test_reauthorization_restores_an_invalidated_connection(self) -> None:
+        self.invalidate()
+
+        self.service.begin_reauthorization(
+            self.owner,
+            BeginReauthorization(
+                connection_id=self.connection.connection_id, idempotency_key="r"
+            ),
+        )
+        restored = self.service.complete_authorization(
+            self.owner, callback(self.gateway, idempotency_key="cb-r")
+        )
+
+        self.assertEqual(restored.status, ConnectionStatus.ACTIVE)
+        self.assertEqual(restored.connection_id, self.connection.connection_id)
+        self.assertEqual(len(self.vault.slot_ids("workspace-1")), 1)

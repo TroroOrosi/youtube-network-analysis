@@ -42,6 +42,13 @@ class CleanupRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class CompletedMutation:
+    """Secret-free idempotency result for a command that returns nothing."""
+
+    connection_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class CursorRecord:
     """Server-side continuation bound to one workspace, query, and revision."""
 

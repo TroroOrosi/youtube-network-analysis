@@ -24,6 +24,7 @@ from .errors import ChannelConnectionsError, ErrorCode
 from .memory import (
     AuthorizationIntent,
     CleanupRecord,
+    CompletedMutation,
     CursorRecord,
     IdempotencyRecord,
     MemoryState,
@@ -45,11 +46,13 @@ from .models import (
     ConnectionAuditEvent,
     ConnectionProvider,
     ConnectionStatus,
+    DisconnectConnection,
     IDEMPOTENCY_TTL,
     RevocationOutcome,
     INTENT_TTL,
     MAX_IDENTIFIER_LENGTH,
     RedactedSecret,
+    ReportCredentialInvalidation,
     VerifiedProviderGrant,
 )
 from .ports import (
@@ -231,6 +234,95 @@ class ChannelConnectionsService:
             connection = self._publish(context, intent, grant, now)
             self._remember(record_key, payload, connection, now, CALLBACK_REPLAY_TTL)
             return connection
+
+    def disconnect(
+        self, context: WorkspaceContext, command: DisconnectConnection
+    ) -> None:
+        _require(context, Permission.CHANNEL_MANAGE_CONNECTION)
+        with self._lock:
+            now = self._now()
+            record_key = (
+                context.workspace_id,
+                context.user_id,
+                "disconnect",
+                command.idempotency_key,
+            )
+            payload = {"connection_id": command.connection_id}
+            if self._replay(record_key, payload, now) is not None:
+                return None
+
+            workspace_id = context.workspace_id
+            connection = self._connection(workspace_id, command.connection_id)
+            connection_key = _key(workspace_id, connection.connection_id)
+
+            slot_id = self._state.credential_slots.pop(connection_key, None)
+            if slot_id is not None:
+                self._revoke_slot(workspace_id, slot_id, now)
+            del self._state.connections[connection_key]
+            self._state.active_keys.pop(
+                (workspace_id, connection.provider.value, connection.provider_channel_id),
+                None,
+            )
+            self._bump_revision(workspace_id)
+            self._remember(
+                record_key,
+                payload,
+                CompletedMutation(connection_id=connection.connection_id),
+                now,
+                IDEMPOTENCY_TTL,
+            )
+            self._record_audit(
+                context,
+                action=ConnectionAuditAction.CONNECTION_DISCONNECTED,
+                occurred_at=now,
+                connection_id=connection.connection_id,
+            )
+            return None
+
+    def report_credential_invalidation(
+        self, context: WorkspaceContext, command: ReportCredentialInvalidation
+    ) -> ChannelConnection:
+        _require(context, Permission.CHANNEL_MANAGE_CONNECTION)
+        with self._lock:
+            now = self._now()
+            record_key = (
+                context.workspace_id,
+                context.user_id,
+                "invalidate",
+                command.idempotency_key,
+            )
+            payload = {"connection_id": command.connection_id}
+            replayed = self._replay(record_key, payload, now)
+            if replayed is not None:
+                return replayed
+
+            workspace_id = context.workspace_id
+            connection = self._connection(workspace_id, command.connection_id)
+            connection_key = _key(workspace_id, connection.connection_id)
+
+            slot_id = self._state.credential_slots.pop(connection_key, None)
+            if slot_id is not None:
+                self._vault.delete(workspace_id, slot_id)
+            invalidated = ChannelConnection(
+                connection_id=connection.connection_id,
+                workspace_id=workspace_id,
+                provider=connection.provider,
+                provider_channel_id=connection.provider_channel_id,
+                channel_title=connection.channel_title,
+                status=ConnectionStatus.REAUTH_REQUIRED,
+                connected_at=connection.connected_at,
+                updated_at=now,
+            )
+            self._state.connections[connection_key] = invalidated
+            self._bump_revision(workspace_id)
+            self._remember(record_key, payload, invalidated, now, IDEMPOTENCY_TTL)
+            self._record_audit(
+                context,
+                action=ConnectionAuditAction.CONNECTION_REAUTH_REQUIRED,
+                occurred_at=now,
+                connection_id=connection.connection_id,
+            )
+            return invalidated
 
     # Reads
 
