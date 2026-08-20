@@ -39,10 +39,13 @@ from .errors import CollectionJobsError, ErrorCode
 from .memory import IdempotencyRecord, MemoryState, QuotaLedgerEntry
 from .models import (
     ACTIVE_STATUSES,
+    BACKOFF_SCHEDULE,
+    CancelRun,
     CollectionRun,
     DEFAULT_DAILY_QUOTA_UNITS,
     EnqueueRun,
     ExecuteRun,
+    MAX_ATTEMPTS,
     MAX_IDENTIFIER_LENGTH,
     RunFailureReason,
     RunKind,
@@ -148,6 +151,7 @@ class CollectionJobsService:
         connections: Any,
         channel_data: Any,
         daily_quota_units: int = DEFAULT_DAILY_QUOTA_UNITS,
+        page_size: int = 50,
     ) -> None:
         self._clock = clock
         self._tokens = tokens
@@ -155,6 +159,7 @@ class CollectionJobsService:
         self._connections = connections
         self._channel_data = channel_data
         self._daily_quota_units = daily_quota_units
+        self._page_size = page_size
         self._lock = RLock()
         self._state = MemoryState()
 
@@ -236,6 +241,44 @@ class CollectionJobsService:
             self._remember(record_key, payload, finished, now)
             return finished
 
+    def cancel_run(
+        self, context: WorkspaceContext, command: CancelRun
+    ) -> CollectionRun:
+        _require(context, Permission.COLLECTION_RUN)
+        with self._lock:
+            now = self._now()
+            record_key = (
+                context.workspace_id,
+                context.user_id,
+                "cancel",
+                command.idempotency_key,
+            )
+            payload = {"run_id": command.run_id}
+            replayed = self._replay(record_key, payload, now)
+            if replayed is not None:
+                return replayed
+
+            run = self._run(context.workspace_id, command.run_id)
+            if run.status not in ACTIVE_STATUSES:
+                raise _safe_error(ErrorCode.INVALID_RUN_TRANSITION, field="run_id")
+            cancelled = replace(
+                run,
+                status=RunStatus.CANCELLED,
+                finished_at=now,
+                failure_reason=RunFailureReason.CANCELLED,
+                next_attempt_at=None,
+            )
+            self._store(cancelled)
+            self._remember(record_key, payload, cancelled, now)
+            return cancelled
+
+    # Reads
+
+    def get_run(self, context: WorkspaceContext, run_id: str) -> CollectionRun:
+        _require(context, Permission.COLLECTION_READ)
+        with self._lock:
+            return self._run(context.workspace_id, run_id)
+
     # Internal execution
 
     def _execute(
@@ -259,7 +302,7 @@ class CollectionJobsService:
         authority: ExecutionAuthority,
         now: datetime,
     ) -> CollectionRun:
-        collection_id = f"{run.run_id}-subscribers"
+        collection_id = f"{run.run_id}-a{run.attempt}-subscribers"
         self._channel_data.start_collection(
             context,
             StartCollection(
@@ -325,7 +368,10 @@ class CollectionJobsService:
                 result = self._broker.run_provider_operation(
                     authority,
                     ProviderOperationRequest(
-                        operation=operation, page_token=page_token, video_id=video_id
+                        operation=operation,
+                        page_token=page_token,
+                        video_id=video_id,
+                        max_results=self._page_size,
                     ),
                 )
             except ChannelConnectionsError as error:
@@ -370,7 +416,9 @@ class CollectionJobsService:
                 progress_current=len(outcome.rows),
                 progress_total=len(outcome.rows),
                 failure_code=(
-                    None if succeeded else _COLLECTION_FAILURE[outcome.reason]
+                    _COLLECTION_FAILURE[outcome.reason]
+                    if status is CollectionStatus.FAILED
+                    else None
                 ),
                 idempotency_key=f"{collection_id}-finish",
             ),
@@ -385,6 +433,18 @@ class CollectionJobsService:
         pages: int,
         spent: int,
     ) -> CollectionRun:
+        if reason is RunFailureReason.PROVIDER_UNAVAILABLE and run.attempt < MAX_ATTEMPTS:
+            return replace(
+                run,
+                status=RunStatus.QUEUED,
+                attempt=run.attempt + 1,
+                started_at=None,
+                finished_at=None,
+                failure_reason=None,
+                pages_fetched=pages,
+                quota_spent=spent,
+                next_attempt_at=now + BACKOFF_SCHEDULE[run.attempt - 1],
+            )
         if reason is None:
             status = RunStatus.SUCCEEDED
         elif reason is RunFailureReason.QUOTA_EXHAUSTED:

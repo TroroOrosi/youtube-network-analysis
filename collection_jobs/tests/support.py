@@ -82,7 +82,9 @@ class Stack:
         )
 
 
-def build_stack(*, daily_quota_units: int | None = None) -> Stack:
+def build_stack(
+    *, daily_quota_units: int | None = None, page_size: int = 2
+) -> Stack:
     clock = FixedClock(NOW)
     gateway = FakeYouTubeGateway()
     data_gateway = FakeYouTubeDataGateway()
@@ -96,7 +98,9 @@ def build_stack(*, daily_quota_units: int | None = None) -> Stack:
         data_gateway=data_gateway,
     )
     channel_data = ChannelDataService(clock=clock)
-    jobs_kwargs = {} if daily_quota_units is None else {"daily_quota_units": daily_quota_units}
+    jobs_kwargs: dict[str, int] = {"page_size": page_size}
+    if daily_quota_units is not None:
+        jobs_kwargs["daily_quota_units"] = daily_quota_units
     jobs = CollectionJobsService(
         clock=clock,
         tokens=SequenceTokens("job"),
