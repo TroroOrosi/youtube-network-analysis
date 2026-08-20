@@ -24,6 +24,7 @@ from .errors import ChannelConnectionsError, ErrorCode
 from .memory import (
     AuthorizationIntent,
     CleanupRecord,
+    CursorRecord,
     IdempotencyRecord,
     MemoryState,
     StartedIntentRef,
@@ -38,6 +39,8 @@ from .models import (
     ChannelConnection,
     CompleteAuthorization,
     ConnectionAuditAction,
+    ConnectionPage,
+    ConnectionPageRequest,
     ConnectionAuditEvent,
     ConnectionProvider,
     ConnectionStatus,
@@ -61,6 +64,7 @@ from .ports import (
 
 
 DEFAULT_REDIRECT_URI_ID = "hosted-callback"
+_CONNECTION_ORDER = "connected_at_desc,connection_id_asc"
 PROVIDER_AUTHORIZATION_HOSTS = ("accounts.google.com",)
 
 _MESSAGES = {
@@ -222,6 +226,61 @@ class ChannelConnectionsService:
         _require(context, Permission.CHANNEL_READ)
         with self._lock:
             return self._connection(context.workspace_id, connection_id)
+
+    def list_connections(
+        self,
+        context: WorkspaceContext,
+        page: ConnectionPageRequest = ConnectionPageRequest(),
+    ) -> ConnectionPage:
+        _require(context, Permission.CHANNEL_READ)
+        with self._lock:
+            now = self._now()
+            workspace_id = context.workspace_id
+            revision = self._state.workspace_revisions.get(workspace_id, 0)
+            query = _fingerprint({"limit": page.limit, "order": _CONNECTION_ORDER})
+
+            offset = 0
+            if page.cursor is not None:
+                record = self._state.cursors.get(page.cursor)
+                if (
+                    record is None
+                    or record.workspace_id != workspace_id
+                    or record.query_fingerprint != query
+                ):
+                    raise _safe_error(ErrorCode.INVALID_CURSOR)
+                if record.revision != revision:
+                    raise _safe_error(ErrorCode.CURSOR_EXPIRED)
+                offset = record.offset
+                del self._state.cursors[page.cursor]
+
+            rows = self._ordered_connections(workspace_id)
+            window = rows[offset : offset + page.limit]
+            next_cursor = None
+            if offset + page.limit < len(rows):
+                next_cursor = f"cursor_{self._tokens.new_token()}"
+                self._state.cursors[next_cursor] = CursorRecord(
+                    workspace_id=workspace_id,
+                    query_fingerprint=query,
+                    revision=revision,
+                    offset=offset + page.limit,
+                    created_at=now,
+                )
+            return ConnectionPage(items=tuple(window), next_cursor=next_cursor)
+
+    def _ordered_connections(self, workspace_id: str) -> list[ChannelConnection]:
+        rows = [
+            connection
+            for connection in self._state.connections.values()
+            if connection.workspace_id == workspace_id
+        ]
+        rows.sort(key=lambda connection: connection.connection_id)
+        rows.sort(key=lambda connection: connection.connected_at, reverse=True)
+        return rows
+
+    def _bump_revision(self, workspace_id: str) -> None:
+        self._state.workspace_revisions[workspace_id] = (
+            self._state.workspace_revisions.get(workspace_id, 0) + 1
+        )
 
     # Internal orchestration
 
@@ -424,6 +483,7 @@ class ChannelConnectionsService:
         self._state.connections[connection_key] = connection
         self._state.credential_slots[connection_key] = slot_id
         self._state.active_keys[active_key] = connection_id
+        self._bump_revision(workspace_id)
         self._consume_intent(intent)
         self._record_audit(
             context,

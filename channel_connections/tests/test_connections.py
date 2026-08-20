@@ -12,6 +12,7 @@ from channel_connections.models import (
     AuthorizationFailureReason,
     BeginAuthorization,
     ChannelConnection,
+    ConnectionPageRequest,
     ConnectionProvider,
     ConnectionStatus,
     YOUTUBE_READONLY_SCOPE,
@@ -352,3 +353,118 @@ class UnknownOutcomeRetryTests(ConnectionFixture):
         self.assertTrue(raised.exception.retryable)
         self.assertEqual(len(self.gateway.exchanges), 1)
         self.assertEqual(self.service._state.connections, {})
+
+
+class ListConnectionsTests(ConnectionFixture):
+    def connect_channel(self, index: int, actor=None) -> ChannelConnection:
+        self.gateway.grant = grant(
+            provider_channel_id=f"UC_channel_{index}",
+            channel_title=f"チャンネル{index}",
+        )
+        connection = self.connect(
+            actor,
+            begin_key=f"begin-{index}",
+            callback_key=f"callback-{index}",
+        )
+        self.clock.advance(timedelta(minutes=1))
+        return connection
+
+    def test_listing_is_newest_first_and_defaults_to_fifty(self) -> None:
+        first = self.connect_channel(1)
+        second = self.connect_channel(2)
+
+        page = self.service.list_connections(self.owner)
+
+        self.assertEqual(
+            [item.connection_id for item in page.items],
+            [second.connection_id, first.connection_id],
+        )
+        self.assertIsNone(page.next_cursor)
+        self.assertEqual(ConnectionPageRequest().limit, 50)
+
+    def test_members_may_list_but_a_foreign_workspace_sees_nothing(self) -> None:
+        self.connect_channel(1)
+        member = context("workspace-1", Permission.CHANNEL_READ)
+
+        self.assertEqual(len(self.service.list_connections(member).items), 1)
+        self.assertEqual(
+            self.service.list_connections(context("workspace-2")).items, ()
+        )
+
+    def test_full_traversal_returns_every_row_exactly_once(self) -> None:
+        expected = [self.connect_channel(index).connection_id for index in range(1, 6)]
+
+        seen: list[str] = []
+        page = self.service.list_connections(self.owner, ConnectionPageRequest(limit=2))
+        seen.extend(item.connection_id for item in page.items)
+        while page.next_cursor is not None:
+            page = self.service.list_connections(
+                self.owner, ConnectionPageRequest(cursor=page.next_cursor, limit=2)
+            )
+            seen.extend(item.connection_id for item in page.items)
+
+        self.assertEqual(seen, list(reversed(expected)))
+        self.assertEqual(len(set(seen)), len(expected))
+
+    def test_cursor_is_opaque_and_carries_no_connection_metadata(self) -> None:
+        connection = self.connect_channel(1)
+        self.connect_channel(2)
+
+        page = self.service.list_connections(self.owner, ConnectionPageRequest(limit=1))
+
+        self.assertIsNotNone(page.next_cursor)
+        self.assertNotIn(connection.connection_id, page.next_cursor)
+        self.assertNotIn("UC_channel", page.next_cursor)
+        self.assertNotIn("workspace-1", page.next_cursor)
+
+    def test_tampered_or_foreign_cursors_fail_identically(self) -> None:
+        self.connect_channel(1)
+        self.connect_channel(2)
+        page = self.service.list_connections(self.owner, ConnectionPageRequest(limit=1))
+        cursor = page.next_cursor
+        assert cursor is not None
+
+        failures = []
+        for actor, token, limit in (
+            (self.owner, cursor + "x", 1),
+            (context("workspace-2"), cursor, 1),
+            (self.owner, cursor, 2),
+        ):
+            with self.assertRaises(ChannelConnectionsError) as raised:
+                self.service.list_connections(
+                    actor, ConnectionPageRequest(cursor=token, limit=limit)
+                )
+            failures.append(raised.exception)
+
+        self.assertEqual({failure.code for failure in failures}, {"INVALID_CURSOR"})
+        self.assertEqual({failure.message for failure in failures}, {failures[0].message})
+
+    def test_a_cursor_is_single_use(self) -> None:
+        self.connect_channel(1)
+        self.connect_channel(2)
+        page = self.service.list_connections(self.owner, ConnectionPageRequest(limit=1))
+        assert page.next_cursor is not None
+
+        self.service.list_connections(
+            self.owner, ConnectionPageRequest(cursor=page.next_cursor, limit=1)
+        )
+        with self.assertRaises(ChannelConnectionsError) as raised:
+            self.service.list_connections(
+                self.owner, ConnectionPageRequest(cursor=page.next_cursor, limit=1)
+            )
+
+        self.assertEqual(raised.exception.code, "INVALID_CURSOR")
+
+    def test_a_changed_result_set_expires_the_cursor(self) -> None:
+        self.connect_channel(1)
+        self.connect_channel(2)
+        page = self.service.list_connections(self.owner, ConnectionPageRequest(limit=1))
+        assert page.next_cursor is not None
+
+        self.connect_channel(3)
+
+        with self.assertRaises(ChannelConnectionsError) as raised:
+            self.service.list_connections(
+                self.owner, ConnectionPageRequest(cursor=page.next_cursor, limit=1)
+            )
+        self.assertEqual(raised.exception.code, "CURSOR_EXPIRED")

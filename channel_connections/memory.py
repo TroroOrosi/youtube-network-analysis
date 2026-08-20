@@ -42,6 +42,17 @@ class CleanupRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class CursorRecord:
+    """Server-side continuation bound to one workspace, query, and revision."""
+
+    workspace_id: str
+    query_fingerprint: str
+    revision: int
+    offset: int
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class StartedIntentRef:
     """Idempotency result for a begin call.
 
@@ -83,6 +94,8 @@ class MemoryState:
     connections: dict[str, ChannelConnection] = field(default_factory=dict)
     credential_slots: dict[str, str] = field(default_factory=dict)
     cleanups: dict[str, CleanupRecord] = field(default_factory=dict)
+    cursors: dict[str, CursorRecord] = field(default_factory=dict)
+    workspace_revisions: dict[str, int] = field(default_factory=dict)
     active_keys: dict[tuple[str, str, str], str] = field(default_factory=dict)
     audit_events: list[ConnectionAuditEvent] = field(default_factory=list)
 
