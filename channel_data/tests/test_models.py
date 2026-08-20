@@ -295,6 +295,46 @@ class ChannelDataValueContractTests(unittest.TestCase):
         ):
             self.assertFalse(hasattr(value, "__dict__"))
 
+    def test_silent_dataset_requires_complete_owner_video_coverage(self) -> None:
+        common = {
+            "subscriber_registry": (),
+            "author_activity": (),
+            "snapshot_id": "snapshot-1",
+            "snapshot_captured_at": NOW,
+            "inventory_id": "inventory-1",
+            "inventory_captured_at": NOW,
+            "subscriber_limitations": (
+                CoverageLimitation.PUBLIC_SUBSCRIPTIONS_ONLY,
+                CoverageLimitation.PROVIDER_RESULT_CAP_POSSIBLE,
+            ),
+        }
+        invalid_coverages = (
+            CommentCoverage(
+                "inventory-1",
+                VideoCoverageScope.PUBLIC_VIDEOS,
+                1,
+                1,
+                0,
+                NOW,
+                True,
+            ),
+            CommentCoverage(
+                "inventory-1",
+                VideoCoverageScope.OWNER_VIDEOS,
+                1,
+                0,
+                1,
+                None,
+                False,
+            ),
+        )
+
+        for coverage in invalid_coverages:
+            with self.subTest(coverage=coverage):
+                with self.assertRaises(ChannelDataError) as caught:
+                    SilentAnalysisDataset(**common, comment_coverage=coverage)
+                self.assertEqual(caught.exception.field, "comment_coverage")
+
     def test_commands_reject_duplicates_and_forbidden_coverage_combinations(self) -> None:
         observations = (
             SubscriberObservationInput("subscriber-1", "First", NOW),

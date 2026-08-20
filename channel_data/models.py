@@ -503,6 +503,15 @@ class SilentAnalysisDataset:
         _subscriber_limitations(self.subscriber_limitations)
         if self.comment_coverage.inventory_id != self.inventory_id:
             raise _invalid("comment_coverage", "coverage must name the dataset inventory")
+        if (
+            self.comment_coverage.coverage_scope
+            is not VideoCoverageScope.OWNER_VIDEOS
+            or not self.comment_coverage.is_complete
+        ):
+            raise _invalid(
+                "comment_coverage",
+                "silent analysis requires complete owner-video coverage",
+            )
 
 
 T = TypeVar("T")
