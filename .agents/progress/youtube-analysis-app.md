@@ -153,6 +153,32 @@ authentication provider, credential, real user data, or production behavior was
 introduced. Next implementation slice is workspace creation/selection/context
 resolution, followed by membership and atomic last-owner safety.
 
+## Verified milestone: workspace-access tenant isolation
+
+Verified implementation HEAD: `1ef4423`
+
+- `6745e6f` adds atomic workspace/first-owner creation, stable tenant-scoped
+  listing, explicit/single/preferred selection, current-role permission checks,
+  and non-enumerating foreign/missing workspace failures.
+- `1ef4423` adds owner-only membership grant/change/revoke, exact-payload
+  idempotent replay, key-conflict rejection, current authorization revisions,
+  and serial/concurrent last-owner protection under the same state lock.
+
+Verification evidence:
+
+- workspace-access suite: 31 tests passed, including explicit cross-tenant
+  negative fixtures and two-thread owner-departure concurrency;
+- subscriber analytics regression suite: 29 tests passed;
+- compile, `git diff --check`, and credential-value scan passed;
+- graph rebuild completed without parser errors and found no affected registered
+  existing flow. Its private-helper coverage warning is conservative: public
+  session, workspace, and membership operations execute through those helpers
+  in focused behavior tests.
+
+Tenant selectors remain untrusted hints, missing/foreign identifiers share safe
+errors, contexts are single-workspace and current-revision bound, and no
+database, HTTP, OAuth, dependency, real data, or production adapter was added.
+
 ## Decisions and constraints
 
 - OAuth scope remains `youtube.readonly`; no write/delete/upload permission.

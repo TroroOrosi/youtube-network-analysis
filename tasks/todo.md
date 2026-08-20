@@ -139,9 +139,9 @@ idempotency and atomic last-owner protection.
 
 ## Checkpoint B: Tenant isolation
 
-- [ ] Tasks 3-4 are independently committed and pushed.
-- [ ] Permission matrix and negative isolation cases are fully exercised.
-- [ ] Graph review finds no unexpected existing-code impact.
+- [x] Tasks 3-4 are independently committed and pushed.
+- [x] Permission matrix and negative isolation cases are fully exercised.
+- [x] Graph review finds no unexpected existing-code impact.
 
 ## Task 5: Complete privacy and audit lifecycle
 
