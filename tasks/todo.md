@@ -239,20 +239,20 @@ authorized channel/workspace deletion while preserving other tenants.
 
 **Acceptance criteria:**
 
-- [ ] Retention removes superseded video/activity candidates immediately,
+- [x] Retention removes superseded video/activity candidates immediately,
   snapshot headers/observations at exactly 365 days, and terminal
   attempts/idempotency records at exactly 90 days without silently deleting
   unresolved in-flight attempts.
-- [ ] Channel deletion removes data, state, cursors, and idempotency records;
+- [x] Channel deletion removes data, state, cursors, and idempotency records;
   workspace cascade removes all its channels and no identical foreign record.
-- [ ] Delete/replay and concurrent publish/delete behavior is atomic,
+- [x] Delete/replay and concurrent publish/delete behavior is atomic,
   non-enumerating, immediately inaccessible, and reports only safe counts.
 
 **Verification:**
 
-- [ ] RED then GREEN: `python -m unittest channel_data.tests.test_privacy -v`
-- [ ] Full channel-data, workspace, and analytics suites pass.
-- [ ] Exact-cutoff and two-thread cascade fixtures, no-PII/error scan, compile,
+- [x] RED then GREEN: `python -m unittest channel_data.tests.test_privacy -v`
+- [x] Full channel-data, workspace, and analytics suites pass.
+- [x] Exact-cutoff and two-thread cascade fixtures, no-PII/error scan, compile,
   and integrity checks pass.
 
 **Dependencies:** Task 6
@@ -268,9 +268,9 @@ authorized channel/workspace deletion while preserving other tenants.
 
 ## Checkpoint C: Query and privacy lifecycle
 
-- [ ] Tasks 6-7 are independently committed and pushed.
-- [ ] All tenant copies are covered by retention/cascade tests at exact cutoffs.
-- [ ] Graph impact/flow/test queries have no parser failure; an unavailable or
+- [x] Tasks 6-7 are independently committed and pushed.
+- [x] All tenant copies are covered by retention/cascade tests at exact cutoffs.
+- [x] Graph impact/flow/test queries have no parser failure; an unavailable or
   empty graph is recorded rather than misreported as coverage evidence.
 
 ## Task 8: Integrate, review, and document channel-data

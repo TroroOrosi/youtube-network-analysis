@@ -20,6 +20,7 @@ from .models import (
 @dataclass(slots=True)
 class IdempotencyRecord:
     actor_user_id: str
+    channel_id: str | None
     operation: str
     payload_fingerprint: str
     result: object

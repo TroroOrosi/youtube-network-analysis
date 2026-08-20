@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import secrets
 from dataclasses import fields, is_dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import Enum
 from threading import RLock
 from typing import Any
@@ -24,6 +24,7 @@ from .memory import (
 from .models import (
     AuthorCommentActivity,
     ChannelDataFreshness,
+    ChannelDataRetentionReport,
     CommentCoverage,
     CollectionFreshness,
     CollectionHistoryQuery,
@@ -31,6 +32,8 @@ from .models import (
     CollectionState,
     CollectionStatus,
     DatasetReadinessCode,
+    DeleteChannelData,
+    DeleteWorkspaceData,
     FinishCollection,
     Page,
     PageRequest,
@@ -49,6 +52,9 @@ from .models import (
     VideoCoverageScope,
     VideoInventory,
 )
+
+
+_NO_REPLAY = object()
 
 
 def _safe_error(code: ErrorCode, *, retryable: bool = False) -> ChannelDataError:
@@ -100,10 +106,12 @@ class ChannelDataService:
         self,
         state: MemoryState | None = None,
         token_generator: object | None = None,
+        clock: object | None = None,
     ) -> None:
         self._state = state or MemoryState()
         self._lock = RLock()
         self._token_generator = token_generator
+        self._clock = clock
 
     def start_collection(
         self,
@@ -113,7 +121,7 @@ class ChannelDataService:
         self._require(context, Permission.COLLECTION_RUN)
         with self._lock:
             replay = self._replay(context, "start_collection", command)
-            if replay is not None:
+            if replay is not _NO_REPLAY:
                 return replay
 
             collection_key = (context.workspace_id, command.collection_id)
@@ -146,7 +154,7 @@ class ChannelDataService:
         self._require(context, Permission.COLLECTION_RUN)
         with self._lock:
             replay = self._replay(context, "finish_collection", command)
-            if replay is not None:
+            if replay is not _NO_REPLAY:
                 return replay
 
             key = (context.workspace_id, command.collection_id)
@@ -211,7 +219,7 @@ class ChannelDataService:
         self._require(context, Permission.COLLECTION_RUN)
         with self._lock:
             replay = self._replay(context, "publish_subscriber_snapshot", command)
-            if replay is not None:
+            if replay is not _NO_REPLAY:
                 return replay
             collection = self._active_collection(
                 context,
@@ -274,7 +282,7 @@ class ChannelDataService:
         self._require(context, Permission.COLLECTION_RUN)
         with self._lock:
             replay = self._replay(context, "publish_video_inventory", command)
-            if replay is not None:
+            if replay is not _NO_REPLAY:
                 return replay
             collection = self._active_collection(
                 context,
@@ -340,7 +348,7 @@ class ChannelDataService:
                 "replace_video_comment_activity",
                 command,
             )
-            if replay is not None:
+            if replay is not _NO_REPLAY:
                 return replay
             collection = self._active_collection(
                 context,
@@ -547,6 +555,111 @@ class ChannelDataService:
                 comment_coverage=coverage,
             )
 
+    def delete_channel_data(
+        self,
+        context: WorkspaceContext,
+        command: DeleteChannelData,
+    ) -> None:
+        self._require(context, Permission.CHANNEL_MANAGE_CONNECTION)
+        with self._lock:
+            replay = self._replay(context, "delete_channel_data", command)
+            if replay is not _NO_REPLAY:
+                return None
+            if not self._channel_exists(context.workspace_id, command.channel_id):
+                raise _safe_error(ErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN)
+            self._delete_channel_copies(context.workspace_id, command.channel_id)
+            self._state.revision += 1
+            self._remember(
+                context,
+                "delete_channel_data",
+                command,
+                None,
+                self._now(),
+            )
+            return None
+
+    def delete_workspace_data(
+        self,
+        context: WorkspaceContext,
+        command: DeleteWorkspaceData,
+    ) -> None:
+        self._require(context, Permission.WORKSPACE_DELETE)
+        with self._lock:
+            replay = self._replay(context, "delete_workspace_data", command)
+            if replay is not _NO_REPLAY:
+                return None
+            self._delete_workspace_copies(context.workspace_id)
+            self._state.revision += 1
+            self._remember(
+                context,
+                "delete_workspace_data",
+                command,
+                None,
+                self._now(),
+            )
+            return None
+
+    def purge_retention(
+        self,
+        context: WorkspaceContext,
+        reference_time: datetime,
+    ) -> ChannelDataRetentionReport:
+        self._require(context, Permission.CHANNEL_MANAGE_CONNECTION)
+        if (
+            not isinstance(reference_time, datetime)
+            or reference_time.tzinfo is None
+            or reference_time.utcoffset() is None
+        ):
+            raise ChannelDataError(
+                ErrorCode.INVALID_INPUT,
+                message="reference_time must be timezone-aware",
+                field="reference_time",
+            )
+        reference = reference_time.astimezone(UTC)
+        snapshot_cutoff = reference - timedelta(days=365)
+        terminal_cutoff = reference - timedelta(days=90)
+        with self._lock:
+            snapshot_keys = [
+                key
+                for key, snapshot in self._state.subscriber_snapshots.items()
+                if key[0] == context.workspace_id
+                and snapshot.captured_at <= snapshot_cutoff
+            ]
+            for key in snapshot_keys:
+                snapshot = self._state.subscriber_snapshots.pop(key)
+                self._state.subscriber_observations.pop(key, None)
+                channel_key = (key[0], key[1])
+                if self._state.accepted_subscriber_snapshot.get(channel_key) == snapshot.snapshot_id:
+                    self._state.accepted_subscriber_snapshot.pop(channel_key, None)
+
+            collection_keys = [
+                key
+                for key, state in self._state.collections.items()
+                if key[0] == context.workspace_id
+                and state.status is not CollectionStatus.IN_PROGRESS
+                and state.completed_at is not None
+                and state.completed_at <= terminal_cutoff
+            ]
+            for key in collection_keys:
+                self._state.collections.pop(key, None)
+
+            idempotency_keys = [
+                key
+                for key, record in self._state.idempotency.items()
+                if key[0] == context.workspace_id
+                and record.completed_at <= terminal_cutoff
+            ]
+            for key in idempotency_keys:
+                self._state.idempotency.pop(key, None)
+
+            if snapshot_keys or collection_keys or idempotency_keys:
+                self._state.revision += 1
+            return ChannelDataRetentionReport(
+                snapshots_removed=len(snapshot_keys),
+                collection_attempts_removed=len(collection_keys),
+                idempotency_records_removed=len(idempotency_keys),
+            )
+
     def _collection_rows(
         self,
         workspace_id: str,
@@ -612,6 +725,12 @@ class ChannelDataService:
             ):
                 return token
         raise _safe_error(ErrorCode.OPERATION_IN_PROGRESS, retryable=True)
+
+    def _now(self) -> datetime:
+        value = datetime.now(UTC) if self._clock is None else self._clock.now()  # type: ignore[attr-defined]
+        if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
+            raise RuntimeError("clock must return a timezone-aware datetime")
+        return value.astimezone(UTC)
 
     @staticmethod
     def _freshness(
@@ -857,6 +976,92 @@ class ChannelDataService:
         del self._state.comment_candidates[candidate_key]
         return candidate.inventory_id
 
+    def _channel_exists(self, workspace_id: str, channel_id: str) -> bool:
+        return any(
+            key[0] == workspace_id and state.channel_id == channel_id
+            for key, state in self._state.collections.items()
+        ) or any(
+            key[0] == workspace_id and key[1] == channel_id
+            for mapping in (
+                self._state.subscriber_snapshots,
+                self._state.subscriber_registry,
+                self._state.video_inventories,
+                self._state.comment_activity,
+            )
+            for key in mapping
+        )
+
+    @staticmethod
+    def _drop_keys(mapping: dict[Any, Any], predicate: Any) -> None:
+        for key in [key for key, value in mapping.items() if predicate(key, value)]:
+            mapping.pop(key, None)
+
+    def _delete_channel_copies(self, workspace_id: str, channel_id: str) -> None:
+        collection_ids = {
+            state.collection_id
+            for key, state in self._state.collections.items()
+            if key[0] == workspace_id and state.channel_id == channel_id
+        }
+        self._drop_keys(
+            self._state.collections,
+            lambda key, state: key[0] == workspace_id and state.channel_id == channel_id,
+        )
+        for mapping in (
+            self._state.subscriber_candidates,
+            self._state.video_candidates,
+            self._state.comment_candidates,
+        ):
+            self._drop_keys(
+                mapping,
+                lambda key, _: key[0] == workspace_id and key[1] in collection_ids,
+            )
+        for mapping in (
+            self._state.subscriber_snapshots,
+            self._state.subscriber_observations,
+            self._state.subscriber_registry,
+            self._state.video_inventories,
+            self._state.videos,
+            self._state.comment_activity,
+            self._state.comment_coverage,
+        ):
+            self._drop_keys(
+                mapping,
+                lambda key, _: key[0] == workspace_id and key[1] == channel_id,
+            )
+        for mapping in (
+            self._state.accepted_subscriber_snapshot,
+            self._state.accepted_video_inventory,
+        ):
+            mapping.pop((workspace_id, channel_id), None)
+        self._drop_keys(
+            self._state.cursors,
+            lambda key, record: key[0] == workspace_id and record.channel_id == channel_id,
+        )
+        self._drop_keys(
+            self._state.idempotency,
+            lambda key, record: key[0] == workspace_id and record.channel_id == channel_id,
+        )
+
+    def _delete_workspace_copies(self, workspace_id: str) -> None:
+        for mapping in (
+            self._state.collections,
+            self._state.idempotency,
+            self._state.subscriber_candidates,
+            self._state.subscriber_snapshots,
+            self._state.subscriber_observations,
+            self._state.subscriber_registry,
+            self._state.accepted_subscriber_snapshot,
+            self._state.video_candidates,
+            self._state.video_inventories,
+            self._state.videos,
+            self._state.accepted_video_inventory,
+            self._state.comment_candidates,
+            self._state.comment_activity,
+            self._state.comment_coverage,
+            self._state.cursors,
+        ):
+            self._drop_keys(mapping, lambda key, _: key[0] == workspace_id)
+
     @staticmethod
     def _require(context: WorkspaceContext, permission: Permission) -> None:
         if not isinstance(context, WorkspaceContext) or permission not in context.permissions:
@@ -871,7 +1076,7 @@ class ChannelDataService:
         key = (context.workspace_id, getattr(command, "idempotency_key"))
         record = self._state.idempotency.get(key)
         if record is None:
-            return None
+            return _NO_REPLAY
         if (
             record.actor_user_id != context.user_id
             or record.operation != operation
@@ -891,6 +1096,7 @@ class ChannelDataService:
         key = (context.workspace_id, getattr(command, "idempotency_key"))
         self._state.idempotency[key] = IdempotencyRecord(
             actor_user_id=context.user_id,
+            channel_id=getattr(command, "channel_id", None),
             operation=operation,
             payload_fingerprint=_fingerprint(command),
             result=result,
