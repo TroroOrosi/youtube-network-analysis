@@ -29,6 +29,7 @@ APPROVED_SCOPES: tuple[str, ...] = (YOUTUBE_READONLY_SCOPE,)
 INTENT_TTL = timedelta(minutes=10)
 CALLBACK_REPLAY_TTL = timedelta(hours=24)
 IDEMPOTENCY_TTL = timedelta(days=90)
+AUTHORITY_TTL = timedelta(minutes=60)
 
 
 class ConnectionProvider(str, Enum):
@@ -58,6 +59,12 @@ class AuthorizationFailureReason(str, Enum):
     OFFLINE_CREDENTIAL_MISSING = "OFFLINE_CREDENTIAL_MISSING"
     CHANNEL_NOT_UNIQUE = "CHANNEL_NOT_UNIQUE"
     SUBSCRIBER_CAPABILITY_MISSING = "SUBSCRIBER_CAPABILITY_MISSING"
+
+
+class ProviderOperation(str, Enum):
+    LIST_SUBSCRIBERS = "LIST_SUBSCRIBERS"
+    LIST_VIDEOS = "LIST_VIDEOS"
+    LIST_VIDEO_COMMENT_AUTHORS = "LIST_VIDEO_COMMENT_AUTHORS"
 
 
 class ConnectionAuditAction(str, Enum):
@@ -370,6 +377,150 @@ class DeleteWorkspaceConnections:
 
     def __post_init__(self) -> None:
         _identifier(self.idempotency_key, "idempotency_key")
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionAuthority:
+    """A workspace-bound right to request brokered operations. Not a credential."""
+
+    authority_id: str
+    workspace_id: str
+    connection_id: str
+    provider_channel_id: str
+    issued_at: datetime
+    expires_at: datetime
+
+    def __post_init__(self) -> None:
+        _identifier(self.authority_id, "authority_id")
+        _identifier(self.workspace_id, "workspace_id")
+        _identifier(self.connection_id, "connection_id")
+        _identifier(self.provider_channel_id, "provider_channel_id")
+        object.__setattr__(self, "issued_at", _utc(self.issued_at, "issued_at"))
+        object.__setattr__(self, "expires_at", _utc(self.expires_at, "expires_at"))
+        if self.expires_at <= self.issued_at:
+            raise _invalid("expires_at", "expires_at must follow issued_at")
+
+
+@dataclass(frozen=True, slots=True)
+class IssueExecutionAuthority:
+    connection_id: str
+
+    def __post_init__(self) -> None:
+        _identifier(self.connection_id, "connection_id")
+
+
+@dataclass(frozen=True, slots=True)
+class SubscriberRow:
+    subscriber_channel_id: str
+    title: str
+    api_published_at: datetime | None
+
+    def __post_init__(self) -> None:
+        _identifier(self.subscriber_channel_id, "subscriber_channel_id")
+        _display_text(self.title, "title")
+        if self.api_published_at is not None:
+            object.__setattr__(
+                self, "api_published_at", _utc(self.api_published_at, "api_published_at")
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class VideoRow:
+    video_id: str
+    title: str
+    published_at: datetime | None
+
+    def __post_init__(self) -> None:
+        _identifier(self.video_id, "video_id")
+        _display_text(self.title, "title")
+        if self.published_at is not None:
+            object.__setattr__(
+                self, "published_at", _utc(self.published_at, "published_at")
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class CommentAuthorRow:
+    """Minimized comment evidence: no text, display name, reply, or comment id."""
+
+    video_id: str
+    author_channel_id: str
+    comment_count: int
+    latest_comment_at: datetime
+
+    def __post_init__(self) -> None:
+        _identifier(self.video_id, "video_id")
+        _identifier(self.author_channel_id, "author_channel_id")
+        if (
+            isinstance(self.comment_count, bool)
+            or not isinstance(self.comment_count, int)
+            or self.comment_count < 1
+        ):
+            raise _invalid("comment_count", "comment_count must be a positive integer")
+        object.__setattr__(
+            self, "latest_comment_at", _utc(self.latest_comment_at, "latest_comment_at")
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderOperationRequest:
+    operation: ProviderOperation
+    page_token: str | None = None
+    video_id: str | None = None
+    max_results: int = 50
+
+    def __post_init__(self) -> None:
+        _enum(self.operation, ProviderOperation, "operation")
+        if self.page_token is not None:
+            _identifier(self.page_token, "page_token")
+        if self.video_id is not None:
+            _identifier(self.video_id, "video_id")
+        if (
+            isinstance(self.max_results, bool)
+            or not isinstance(self.max_results, int)
+            or not 1 <= self.max_results <= 50
+        ):
+            raise _invalid("max_results", "max_results must be an integer from 1 to 50")
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderPage:
+    """What a data gateway returns after validating one provider response."""
+
+    rows: tuple[object, ...]
+    next_page_token: str | None
+    quota_cost: int
+
+    def __post_init__(self) -> None:
+        _tuple(self.rows, "rows")
+        if self.next_page_token is not None:
+            _identifier(self.next_page_token, "next_page_token")
+        if (
+            isinstance(self.quota_cost, bool)
+            or not isinstance(self.quota_cost, int)
+            or self.quota_cost < 1
+        ):
+            raise _invalid("quota_cost", "quota_cost must be a positive integer")
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderOperationResult:
+    operation: ProviderOperation
+    rows: tuple[object, ...]
+    next_page_token: str | None
+    quota_cost: int
+
+    def __post_init__(self) -> None:
+        _enum(self.operation, ProviderOperation, "operation")
+        _tuple(self.rows, "rows")
+        if self.next_page_token is not None:
+            _identifier(self.next_page_token, "next_page_token")
+        if (
+            isinstance(self.quota_cost, bool)
+            or not isinstance(self.quota_cost, int)
+            or self.quota_cost < 1
+        ):
+            raise _invalid("quota_cost", "quota_cost must be a positive integer")
 
 
 @dataclass(frozen=True, slots=True, repr=False)

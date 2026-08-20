@@ -32,6 +32,7 @@ from .memory import (
 )
 from .models import (
     APPROVED_SCOPES,
+    AUTHORITY_TTL,
     AuthorizationFailureReason,
     AuthorizationOperation,
     AuthorizationStart,
@@ -49,10 +50,16 @@ from .models import (
     ConnectionStatus,
     DeleteWorkspaceConnections,
     DisconnectConnection,
+    ExecutionAuthority,
     IDEMPOTENCY_TTL,
+    IssueExecutionAuthority,
     RevocationOutcome,
     INTENT_TTL,
     MAX_IDENTIFIER_LENGTH,
+    ProviderOperation,
+    ProviderOperationRequest,
+    ProviderOperationResult,
+    ProviderPage,
     RedactedSecret,
     ReportCredentialInvalidation,
     VerifiedProviderGrant,
@@ -62,14 +69,17 @@ from .ports import (
     ConnectionAuditSink,
     CredentialVault,
     EphemeralSecretStore,
+    ProviderAuthorizationExpired,
     ProviderRejected,
     ProviderUnavailable,
     TokenGenerator,
     YouTubeAuthorizationGateway,
+    YouTubeDataGateway,
 )
 
 
 DEFAULT_REDIRECT_URI_ID = "hosted-callback"
+_SYSTEM_ACTOR = "system"
 _CONNECTION_ORDER = "connected_at_desc,connection_id_asc"
 PROVIDER_AUTHORIZATION_HOSTS = ("accounts.google.com",)
 
@@ -85,6 +95,8 @@ _MESSAGES = {
     ErrorCode.PROVIDER_AUTHORIZATION_FAILED: "Authorization could not be completed",
     ErrorCode.PROVIDER_CAPABILITY_MISSING: "The channel is missing a required capability",
     ErrorCode.REAUTH_CHANNEL_MISMATCH: "The authorized channel does not match",
+    ErrorCode.AUTHORITY_NOT_FOUND_OR_EXPIRED: "The execution authority is unavailable",
+    ErrorCode.CONNECTION_REAUTH_REQUIRED: "The connection must be authorized again",
     ErrorCode.INVALID_CURSOR: "The page cursor is unavailable",
     ErrorCode.CURSOR_EXPIRED: "The page cursor is no longer current",
 }
@@ -156,6 +168,7 @@ class ChannelConnectionsService:
         gateway: YouTubeAuthorizationGateway,
         ephemeral_secrets: EphemeralSecretStore,
         credential_vault: CredentialVault,
+        data_gateway: YouTubeDataGateway | None = None,
         audit_sink: ConnectionAuditSink | None = None,
         redirect_uri_id: str = DEFAULT_REDIRECT_URI_ID,
         provider: ConnectionProvider = ConnectionProvider.YOUTUBE,
@@ -165,6 +178,7 @@ class ChannelConnectionsService:
         self._gateway = gateway
         self._ephemeral = ephemeral_secrets
         self._vault = credential_vault
+        self._data_gateway = data_gateway
         self._audit_sink = audit_sink
         self._redirect_uri_id = redirect_uri_id
         self._provider = provider
@@ -261,6 +275,7 @@ class ChannelConnectionsService:
             if slot_id is not None:
                 self._revoke_slot(workspace_id, slot_id, now)
             del self._state.connections[connection_key]
+            self._revoke_authorities(workspace_id, connection.connection_id)
             self._state.active_keys.pop(
                 (workspace_id, connection.provider.value, connection.provider_channel_id),
                 None,
@@ -316,6 +331,7 @@ class ChannelConnectionsService:
                 updated_at=now,
             )
             self._state.connections[connection_key] = invalidated
+            self._revoke_authorities(workspace_id, connection.connection_id)
             self._bump_revision(workspace_id)
             self._remember(record_key, payload, invalidated, now, IDEMPOTENCY_TTL)
             self._record_audit(
@@ -325,6 +341,163 @@ class ChannelConnectionsService:
                 connection_id=connection.connection_id,
             )
             return invalidated
+
+    # Background execution
+
+    def issue_execution_authority(
+        self, context: WorkspaceContext, command: IssueExecutionAuthority
+    ) -> ExecutionAuthority:
+        _require(context, Permission.COLLECTION_RUN)
+        with self._lock:
+            now = self._now()
+            connection = self._connection(context.workspace_id, command.connection_id)
+            if connection.status is not ConnectionStatus.ACTIVE:
+                raise _safe_error(ErrorCode.CONNECTION_REAUTH_REQUIRED)
+            authority = ExecutionAuthority(
+                authority_id=f"authority_{self._tokens.new_token()}",
+                workspace_id=context.workspace_id,
+                connection_id=connection.connection_id,
+                provider_channel_id=connection.provider_channel_id,
+                issued_at=now,
+                expires_at=now + AUTHORITY_TTL,
+            )
+            self._state.authorities[
+                _key(context.workspace_id, authority.authority_id)
+            ] = authority
+            return authority
+
+    def run_provider_operation(
+        self, authority: ExecutionAuthority, request: ProviderOperationRequest
+    ) -> ProviderOperationResult:
+        if self._data_gateway is None:
+            raise _safe_error(ErrorCode.PROVIDER_AUTHORIZATION_FAILED, retryable=True)
+        if (
+            request.operation is ProviderOperation.LIST_VIDEO_COMMENT_AUTHORS
+            and request.video_id is None
+        ):
+            raise _safe_error(ErrorCode.INVALID_INPUT, field="video_id")
+
+        with self._lock:
+            now = self._now()
+            workspace_id, slot_id = self._authorized_slot(authority, now)
+            try:
+                page = self._provider_page(workspace_id, slot_id, request)
+            except ProviderAuthorizationExpired:
+                self._invalidate_credentials(authority, now)
+                raise _safe_error(ErrorCode.CONNECTION_REAUTH_REQUIRED) from None
+            except BaseException:
+                raise _safe_error(
+                    ErrorCode.PROVIDER_AUTHORIZATION_FAILED,
+                    retryable=True,
+                    reason_code=AuthorizationFailureReason.PROVIDER_UNAVAILABLE.value,
+                ) from None
+
+            if not isinstance(page, ProviderPage):
+                raise _provider_failure(
+                    AuthorizationFailureReason.INVALID_PROVIDER_RESPONSE
+                )
+            return ProviderOperationResult(
+                operation=request.operation,
+                rows=tuple(page.rows),
+                next_page_token=page.next_page_token,
+                quota_cost=page.quota_cost,
+            )
+
+    def _authorized_slot(
+        self, authority: ExecutionAuthority, now: datetime
+    ) -> tuple[str, str]:
+        if not isinstance(authority, ExecutionAuthority):
+            raise _safe_error(ErrorCode.AUTHORITY_NOT_FOUND_OR_EXPIRED)
+        workspace_id = authority.workspace_id
+        stored = self._state.authorities.get(_key(workspace_id, authority.authority_id))
+        if (
+            stored is None
+            or stored.connection_id != authority.connection_id
+            or stored.expires_at <= now
+        ):
+            raise _safe_error(ErrorCode.AUTHORITY_NOT_FOUND_OR_EXPIRED)
+        connection_key = _key(workspace_id, stored.connection_id)
+        connection = self._state.connections.get(connection_key)
+        if connection is None:
+            raise _safe_error(ErrorCode.AUTHORITY_NOT_FOUND_OR_EXPIRED)
+        if connection.status is not ConnectionStatus.ACTIVE:
+            raise _safe_error(ErrorCode.CONNECTION_REAUTH_REQUIRED)
+        slot_id = self._state.credential_slots.get(connection_key)
+        if slot_id is None:
+            raise _safe_error(ErrorCode.CONNECTION_REAUTH_REQUIRED)
+        return workspace_id, slot_id
+
+    def _provider_page(
+        self, workspace_id: str, slot_id: str, request: ProviderOperationRequest
+    ) -> ProviderPage:
+        gateway = self._data_gateway
+        assert gateway is not None
+        if request.operation is ProviderOperation.LIST_SUBSCRIBERS:
+            return gateway.list_subscribers(
+                workspace_id,
+                slot_id,
+                page_token=request.page_token,
+                max_results=request.max_results,
+            )
+        if request.operation is ProviderOperation.LIST_VIDEOS:
+            return gateway.list_videos(
+                workspace_id,
+                slot_id,
+                page_token=request.page_token,
+                max_results=request.max_results,
+            )
+        return gateway.list_video_comment_authors(
+            workspace_id,
+            slot_id,
+            video_id=request.video_id or "",
+            page_token=request.page_token,
+            max_results=request.max_results,
+        )
+
+    def _invalidate_credentials(
+        self, authority: ExecutionAuthority, now: datetime
+    ) -> None:
+        workspace_id = authority.workspace_id
+        connection_key = _key(workspace_id, authority.connection_id)
+        connection = self._state.connections.get(connection_key)
+        if connection is None:
+            return
+        slot_id = self._state.credential_slots.pop(connection_key, None)
+        if slot_id is not None:
+            self._vault.delete(workspace_id, slot_id)
+        self._state.connections[connection_key] = ChannelConnection(
+            connection_id=connection.connection_id,
+            workspace_id=workspace_id,
+            provider=connection.provider,
+            provider_channel_id=connection.provider_channel_id,
+            channel_title=connection.channel_title,
+            status=ConnectionStatus.REAUTH_REQUIRED,
+            connected_at=connection.connected_at,
+            updated_at=now,
+        )
+        self._revoke_authorities(workspace_id, connection.connection_id)
+        self._bump_revision(workspace_id)
+        self._state.audit_events.append(
+            ConnectionAuditEvent(
+                event_id=f"event_{self._tokens.new_token()}",
+                workspace_id=workspace_id,
+                actor_user_id=_SYSTEM_ACTOR,
+                action=ConnectionAuditAction.CONNECTION_REAUTH_REQUIRED,
+                outcome=AuditOutcome.SUCCEEDED,
+                occurred_at=now,
+                correlation_id=f"correlation_{self._tokens.new_token()}",
+                connection_id=connection.connection_id,
+            )
+        )
+
+    def _revoke_authorities(self, workspace_id: str, connection_id: str) -> None:
+        for key in [
+            key
+            for key, authority in self._state.authorities.items()
+            if authority.workspace_id == workspace_id
+            and authority.connection_id == connection_id
+        ]:
+            del self._state.authorities[key]
 
     # Privacy administration
 
@@ -374,6 +547,11 @@ class ChannelConnectionsService:
                 token: record
                 for token, record in self._state.cursors.items()
                 if record.workspace_id != workspace_id
+            }
+            self._state.authorities = {
+                key: authority
+                for key, authority in self._state.authorities.items()
+                if authority.workspace_id != workspace_id
             }
             self._state.cleanups = {
                 cleanup_id: record

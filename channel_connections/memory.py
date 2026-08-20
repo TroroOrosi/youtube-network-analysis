@@ -16,6 +16,7 @@ from .models import (
     ChannelConnection,
     ConnectionAuditEvent,
     ConnectionProvider,
+    ExecutionAuthority,
     ProviderCredential,
     RedactedSecret,
 )
@@ -102,6 +103,7 @@ class MemoryState:
     credential_slots: dict[str, str] = field(default_factory=dict)
     cleanups: dict[str, CleanupRecord] = field(default_factory=dict)
     cursors: dict[str, CursorRecord] = field(default_factory=dict)
+    authorities: dict[str, ExecutionAuthority] = field(default_factory=dict)
     workspace_revisions: dict[str, int] = field(default_factory=dict)
     active_keys: dict[tuple[str, str, str], str] = field(default_factory=dict)
     audit_events: list[ConnectionAuditEvent] = field(default_factory=list)

@@ -20,7 +20,12 @@ from .models import (
     ConnectionRetentionReport,
     DeleteWorkspaceConnections,
     DisconnectConnection,
+    ExecutionAuthority,
+    IssueExecutionAuthority,
     ProviderCredential,
+    ProviderOperationRequest,
+    ProviderOperationResult,
+    ProviderPage,
     RedactedSecret,
     ReportCredentialInvalidation,
     RevocationOutcome,
@@ -38,6 +43,10 @@ class ProviderRejected(Exception):
 
 class ProviderUnavailable(Exception):
     """A gateway could not determine the provider outcome, such as a timeout."""
+
+
+class ProviderAuthorizationExpired(Exception):
+    """The stored grant is revoked or expired and can no longer be used."""
 
 
 class ConnectionReader(Protocol):
@@ -72,6 +81,18 @@ class ConnectionManager(Protocol):
     def report_credential_invalidation(
         self, context: WorkspaceContext, command: ReportCredentialInvalidation
     ) -> ChannelConnection: ...
+
+
+class ConnectionExecutionBroker(Protocol):
+    """The only path from background execution to the provider."""
+
+    def issue_execution_authority(
+        self, context: WorkspaceContext, command: IssueExecutionAuthority
+    ) -> ExecutionAuthority: ...
+
+    def run_provider_operation(
+        self, authority: ExecutionAuthority, request: ProviderOperationRequest
+    ) -> ProviderOperationResult: ...
 
 
 class ConnectionPrivacyAdministrator(Protocol):
@@ -146,6 +167,38 @@ class YouTubeAuthorizationGateway(Protocol):
     def revoke(
         self, workspace_id: str, credential_slot_id: str
     ) -> RevocationOutcome: ...
+
+
+class YouTubeDataGateway(Protocol):
+    """Owns provider endpoints, pagination, validation, and quota accounting."""
+
+    def list_subscribers(
+        self,
+        workspace_id: str,
+        credential_slot_id: str,
+        *,
+        page_token: str | None,
+        max_results: int,
+    ) -> ProviderPage: ...
+
+    def list_videos(
+        self,
+        workspace_id: str,
+        credential_slot_id: str,
+        *,
+        page_token: str | None,
+        max_results: int,
+    ) -> ProviderPage: ...
+
+    def list_video_comment_authors(
+        self,
+        workspace_id: str,
+        credential_slot_id: str,
+        *,
+        video_id: str,
+        page_token: str | None,
+        max_results: int,
+    ) -> ProviderPage: ...
 
 
 class ConnectionAuditSink(Protocol):

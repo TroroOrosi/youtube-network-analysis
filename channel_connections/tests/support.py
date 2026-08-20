@@ -11,8 +11,12 @@ from datetime import UTC, datetime, timedelta
 
 from channel_connections.models import (
     APPROVED_SCOPES,
+    CommentAuthorRow,
     CompleteAuthorization,
     ConnectionProvider,
+    ProviderPage,
+    SubscriberRow,
+    VideoRow,
     ProviderCredential,
     RedactedSecret,
     RevocationOutcome,
@@ -257,3 +261,114 @@ def callback(
         provider_error=provider_error,
         idempotency_key=idempotency_key,
     )
+
+
+@dataclass
+class DataCall:
+    operation: str
+    workspace_id: str
+    credential_slot_id: str
+    page_token: str | None
+    video_id: str | None
+
+
+class FakeYouTubeDataGateway:
+    """Strict synthetic data gateway. It never contacts Google or the network."""
+
+    QUOTA_COST = 3
+
+    def __init__(self) -> None:
+        self.calls: list[DataCall] = []
+        self.failure: Exception | None = None
+        self.subscribers = tuple(
+            SubscriberRow(
+                subscriber_channel_id=f"UC_sub_{index}",
+                title=f"視聴者{index}",
+                api_published_at=NOW - timedelta(days=index),
+            )
+            for index in range(1, 6)
+        )
+        self.videos = tuple(
+            VideoRow(
+                video_id=f"video-{index}",
+                title=f"動画{index}",
+                published_at=NOW - timedelta(days=index * 10),
+            )
+            for index in range(1, 4)
+        )
+        self.comment_authors = {
+            "video-1": (
+                CommentAuthorRow("video-1", "UC_sub_1", 2, NOW - timedelta(days=5)),
+                CommentAuthorRow("video-1", "UC_sub_2", 1, NOW - timedelta(days=200)),
+            ),
+            "video-2": (
+                CommentAuthorRow("video-2", "UC_sub_1", 1, NOW - timedelta(days=3)),
+            ),
+            "video-3": (),
+        }
+
+    def list_subscribers(
+        self,
+        workspace_id: str,
+        credential_slot_id: str,
+        *,
+        page_token: str | None,
+        max_results: int,
+    ) -> ProviderPage:
+        self._record("LIST_SUBSCRIBERS", workspace_id, credential_slot_id, page_token, None)
+        return self._page(self.subscribers, page_token, max_results)
+
+    def list_videos(
+        self,
+        workspace_id: str,
+        credential_slot_id: str,
+        *,
+        page_token: str | None,
+        max_results: int,
+    ) -> ProviderPage:
+        self._record("LIST_VIDEOS", workspace_id, credential_slot_id, page_token, None)
+        return self._page(self.videos, page_token, max_results)
+
+    def list_video_comment_authors(
+        self,
+        workspace_id: str,
+        credential_slot_id: str,
+        *,
+        video_id: str,
+        page_token: str | None,
+        max_results: int,
+    ) -> ProviderPage:
+        self._record(
+            "LIST_VIDEO_COMMENT_AUTHORS",
+            workspace_id,
+            credential_slot_id,
+            page_token,
+            video_id,
+        )
+        return self._page(self.comment_authors.get(video_id, ()), page_token, max_results)
+
+    def _record(
+        self,
+        operation: str,
+        workspace_id: str,
+        credential_slot_id: str,
+        page_token: str | None,
+        video_id: str | None,
+    ) -> None:
+        self.calls.append(
+            DataCall(operation, workspace_id, credential_slot_id, page_token, video_id)
+        )
+        if self.failure is not None:
+            raise self.failure
+
+    def _page(
+        self, rows: tuple[object, ...], page_token: str | None, max_results: int
+    ) -> ProviderPage:
+        offset = int(page_token.removeprefix("page-")) if page_token else 0
+        window = rows[offset : offset + max_results]
+        next_offset = offset + max_results
+        return ProviderPage(
+            rows=tuple(window),
+            next_page_token=f"page-{next_offset}" if next_offset < len(rows) else None,
+            quota_cost=self.QUOTA_COST,
+        )

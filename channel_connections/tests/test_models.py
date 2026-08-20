@@ -78,6 +78,8 @@ class ErrorContractTests(unittest.TestCase):
                 "PROVIDER_AUTHORIZATION_FAILED",
                 "PROVIDER_CAPABILITY_MISSING",
                 "REAUTH_CHANNEL_MISMATCH",
+                "AUTHORITY_NOT_FOUND_OR_EXPIRED",
+                "CONNECTION_REAUTH_REQUIRED",
                 "INVALID_CURSOR",
                 "CURSOR_EXPIRED",
             ],
@@ -518,6 +520,7 @@ class PackageSurfaceTests(unittest.TestCase):
             set(channel_connections.__all__),
             {
                 "ChannelConnectionsError",
+                "ConnectionExecutionBroker",
                 "ConnectionManager",
                 "ConnectionPrivacyAdministrator",
                 "ConnectionReader",
