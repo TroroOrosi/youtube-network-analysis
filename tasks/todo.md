@@ -151,18 +151,18 @@ events.
 
 **Acceptance criteria:**
 
-- [ ] Export contains only the user's approved account/membership/workspace
+- [x] Export contains only the user's approved account/membership/workspace
   fields and excludes session/provider secrets and other-user PII.
-- [ ] Account deletion fails without partial mutation for sole owners; otherwise
+- [x] Account deletion fails without partial mutation for sole owners; otherwise
   revokes all sessions, removes memberships, and tombstones direct identifiers.
-- [ ] Retention selection follows approved 30/90/365-day boundaries and audit
+- [x] Retention selection follows approved 30/90/365-day boundaries and audit
   records contain no raw secrets/assertions/payloads.
 
 **Verification:**
 
-- [ ] RED then GREEN: `python -m unittest workspace_access.tests.test_privacy -v`
-- [ ] Full workspace and analytics suites pass.
-- [ ] Compile, secret-value scan, and `git diff --check` pass.
+- [x] RED then GREEN: `python -m unittest workspace_access.tests.test_privacy -v`
+- [x] Full workspace and analytics suites pass.
+- [x] Compile, secret-value scan, and `git diff --check` pass.
 
 **Dependencies:** Task 4
 

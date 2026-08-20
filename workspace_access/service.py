@@ -9,7 +9,13 @@ from threading import RLock
 
 from .models import (
     AccessSecret,
+    AccountAccessExport,
+    AccountMembershipExport,
     AuthenticatedSession,
+    AuditAction,
+    AuditCategory,
+    AuditEvent,
+    AuditOutcome,
     ChangeMembershipRole,
     CreateWorkspace,
     ErrorCode,
@@ -18,6 +24,7 @@ from .models import (
     Membership,
     Permission,
     RevokeMembership,
+    RetentionReport,
     Role,
     SessionEvidence,
     VerifiedIdentity,
@@ -38,11 +45,12 @@ DEFAULT_ABSOLUTE_TIMEOUT = timedelta(hours=12)
 @dataclass(slots=True)
 class _UserState:
     user_id: str
-    issuer: str
-    subject: str
+    issuer: str | None
+    subject: str | None
     verified_email: str | None
     display_name: str | None
     enabled: bool = True
+    deleted_at: datetime | None = None
 
 
 @dataclass(slots=True)
@@ -97,6 +105,7 @@ class WorkspaceAccessService:
         self._idempotency_records: dict[
             tuple[str, str], _IdempotencyRecord
         ] = {}
+        self._audit_events: list[AuditEvent] = []
 
     def __repr__(self) -> str:
         return (
@@ -158,6 +167,13 @@ class WorkspaceAccessService:
             )
             self._sessions_by_digest[digest] = state
             self._session_digest_by_id[session_id] = digest
+            self._audit(
+                AuditCategory.SECURITY,
+                AuditAction.SESSION_ESTABLISHED,
+                actor_user_id=user_id,
+                workspace_id=None,
+                target_id=session_id,
+            )
             return IssuedSession(
                 session_id=session_id,
                 secret=AccessSecret(raw_secret),
@@ -222,6 +238,13 @@ class WorkspaceAccessService:
             self._membership_id_by_pair[
                 (workspace.workspace_id, actor.user_id)
             ] = membership.membership_id
+            self._audit(
+                AuditCategory.ADMINISTRATION,
+                AuditAction.WORKSPACE_CREATED,
+                actor_user_id=actor.user_id,
+                workspace_id=workspace.workspace_id,
+                target_id=workspace.workspace_id,
+            )
             return self._context(
                 state=actor,
                 workspace=workspace,
@@ -366,6 +389,13 @@ class WorkspaceAccessService:
                 payload,
                 membership,
             )
+            self._audit(
+                AuditCategory.ADMINISTRATION,
+                AuditAction.MEMBERSHIP_GRANTED,
+                actor_user_id=context.user_id,
+                workspace_id=workspace.workspace_id,
+                target_id=membership.membership_id,
+            )
             return membership
 
     def change_membership_role(
@@ -422,6 +452,14 @@ class WorkspaceAccessService:
                 payload,
                 updated,
             )
+            if target.role is not command.role:
+                self._audit(
+                    AuditCategory.ADMINISTRATION,
+                    AuditAction.MEMBERSHIP_ROLE_CHANGED,
+                    actor_user_id=context.user_id,
+                    workspace_id=workspace.workspace_id,
+                    target_id=updated.membership_id,
+                )
             return updated
 
     def revoke_membership(
@@ -470,6 +508,178 @@ class WorkspaceAccessService:
                 payload,
                 None,
             )
+            self._audit(
+                AuditCategory.ADMINISTRATION,
+                AuditAction.MEMBERSHIP_REVOKED,
+                actor_user_id=context.user_id,
+                workspace_id=workspace.workspace_id,
+                target_id=target.membership_id,
+            )
+
+    def list_audit_events(
+        self,
+        context: WorkspaceContext,
+    ) -> tuple[AuditEvent, ...]:
+        with self._lock:
+            _, workspace, _ = self._authorize_context(
+                context,
+                Permission.AUDIT_READ,
+            )
+            return tuple(
+                sorted(
+                    (
+                        event
+                        for event in self._audit_events
+                        if event.workspace_id == workspace.workspace_id
+                    ),
+                    key=lambda event: (event.occurred_at, event.event_id),
+                )
+            )
+
+    def export_my_access_data(
+        self,
+        session: AuthenticatedSession,
+    ) -> AccountAccessExport:
+        with self._lock:
+            actor = self._require_active_session(session)
+            user = self._users_by_id[actor.user_id]
+            memberships = tuple(
+                sorted(
+                    (
+                        AccountMembershipExport(
+                            workspace_id=membership.workspace_id,
+                            workspace_name=self._workspaces_by_id[
+                                membership.workspace_id
+                            ].name,
+                            role=membership.role,
+                        )
+                        for membership in self._memberships_for_user(actor.user_id)
+                    ),
+                    key=lambda item: (item.workspace_name.casefold(), item.workspace_id),
+                )
+            )
+            audit_events = tuple(
+                event
+                for event in sorted(
+                    self._audit_events,
+                    key=lambda event: (event.occurred_at, event.event_id),
+                )
+                if event.actor_user_id == actor.user_id
+            )
+            return AccountAccessExport(
+                user_id=user.user_id,
+                issuer=user.issuer or "",
+                subject=user.subject or "",
+                verified_email=user.verified_email,
+                display_name=user.display_name,
+                memberships=memberships,
+                audit_events=audit_events,
+            )
+
+    def request_account_deletion(self, session: AuthenticatedSession) -> None:
+        with self._lock:
+            actor = self._require_active_session(session)
+            user = self._users_by_id[actor.user_id]
+            memberships = list(self._memberships_for_user(actor.user_id))
+            if any(
+                membership.role is Role.OWNER
+                and self._owner_count(membership.workspace_id) == 1
+                for membership in memberships
+            ):
+                self._raise_last_owner_required()
+
+            now = self._now()
+            removed_membership_ids = {membership.membership_id for membership in memberships}
+            for membership in memberships:
+                workspace = self._workspaces_by_id[membership.workspace_id]
+                del self._memberships_by_id[membership.membership_id]
+                del self._membership_id_by_pair[
+                    (membership.workspace_id, membership.user_id)
+                ]
+                self._bump_authorization_revision(workspace)
+                self._audit(
+                    AuditCategory.ADMINISTRATION,
+                    AuditAction.MEMBERSHIP_REVOKED,
+                    actor_user_id=actor.user_id,
+                    workspace_id=membership.workspace_id,
+                    target_id=membership.membership_id,
+                )
+
+            self._preferred_workspace_by_user.pop(actor.user_id, None)
+            for state in self._sessions_by_digest.values():
+                if state.user_id == actor.user_id and state.revoked_at is None:
+                    state.revoked_at = now
+            self._audit(
+                AuditCategory.SECURITY,
+                AuditAction.SESSION_REVOKED,
+                actor_user_id=actor.user_id,
+                workspace_id=None,
+                target_id=actor.user_id,
+            )
+
+            if user.issuer is not None and user.subject is not None:
+                self._user_id_by_identity.pop((user.issuer, user.subject), None)
+            user.issuer = None
+            user.subject = None
+            user.verified_email = None
+            user.display_name = None
+            user.enabled = False
+            user.deleted_at = now
+            self._idempotency_records = {
+                key: record
+                for key, record in self._idempotency_records.items()
+                if actor.user_id not in record.payload
+                and not any(value in removed_membership_ids for value in record.payload)
+                and (record.result is None or record.result.user_id != actor.user_id)
+            }
+            self._audit(
+                AuditCategory.ADMINISTRATION,
+                AuditAction.ACCOUNT_DELETED,
+                actor_user_id=actor.user_id,
+                workspace_id=None,
+                target_id=actor.user_id,
+            )
+
+    def purge_expired_data(self, reference_time: datetime) -> RetentionReport:
+        if reference_time.tzinfo is None or reference_time.utcoffset() is None:
+            raise WorkspaceAccessError(
+                ErrorCode.INVALID_INPUT,
+                message="reference_time must be timezone-aware",
+                field="reference_time",
+            )
+        reference_time = reference_time.astimezone(UTC)
+        with self._lock:
+            expired_digests = [
+                digest
+                for digest, state in self._sessions_by_digest.items()
+                if state.absolute_expires_at + timedelta(days=30) <= reference_time
+            ]
+            for digest in expired_digests:
+                state = self._sessions_by_digest.pop(digest)
+                self._session_digest_by_id.pop(state.session_id, None)
+
+            security_purged = 0
+            administration_purged = 0
+            retained_events: list[AuditEvent] = []
+            for event in self._audit_events:
+                retention = (
+                    timedelta(days=90)
+                    if event.category is AuditCategory.SECURITY
+                    else timedelta(days=365)
+                )
+                if event.occurred_at + retention <= reference_time:
+                    if event.category is AuditCategory.SECURITY:
+                        security_purged += 1
+                    else:
+                        administration_purged += 1
+                else:
+                    retained_events.append(event)
+            self._audit_events = retained_events
+            return RetentionReport(
+                session_records_purged=len(expired_digests),
+                security_audit_events_purged=security_purged,
+                administration_audit_events_purged=administration_purged,
+            )
 
     def logout(self, evidence: SessionEvidence) -> None:
         digest = self._digest(evidence.secret.reveal())
@@ -477,6 +687,13 @@ class WorkspaceAccessService:
             state = self._sessions_by_digest.get(digest)
             if state is not None and state.revoked_at is None:
                 state.revoked_at = self._now()
+                self._audit(
+                    AuditCategory.SECURITY,
+                    AuditAction.SESSION_REVOKED,
+                    actor_user_id=state.user_id,
+                    workspace_id=None,
+                    target_id=state.session_id,
+                )
 
     def revoke_session(
         self,
@@ -497,6 +714,13 @@ class WorkspaceAccessService:
                 and target.revoked_at is None
             ):
                 target.revoked_at = self._now()
+                self._audit(
+                    AuditCategory.SECURITY,
+                    AuditAction.SESSION_REVOKED,
+                    actor_user_id=actor_state.user_id,
+                    workspace_id=None,
+                    target_id=target.session_id,
+                )
 
     def revoke_all_user_sessions(self, session: AuthenticatedSession) -> None:
         with self._lock:
@@ -505,6 +729,13 @@ class WorkspaceAccessService:
             for state in self._sessions_by_digest.values():
                 if state.user_id == actor_state.user_id and state.revoked_at is None:
                     state.revoked_at = now
+            self._audit(
+                AuditCategory.SECURITY,
+                AuditAction.SESSION_REVOKED,
+                actor_user_id=actor_state.user_id,
+                workspace_id=None,
+                target_id=actor_state.user_id,
+            )
 
     def suspend_user_for_security(self, user_id: str) -> None:
         """Trusted security signal; not a browser/API administration method."""
@@ -518,6 +749,13 @@ class WorkspaceAccessService:
             for state in self._sessions_by_digest.values():
                 if state.user_id == user_id and state.revoked_at is None:
                     state.revoked_at = now
+            self._audit(
+                AuditCategory.SECURITY,
+                AuditAction.USER_SUSPENDED,
+                actor_user_id=None,
+                workspace_id=None,
+                target_id=user_id,
+            )
 
     def _require_active_session(
         self,
@@ -674,6 +912,30 @@ class WorkspaceAccessService:
             result=result,
         )
 
+    def _audit(
+        self,
+        category: AuditCategory,
+        action: AuditAction,
+        *,
+        actor_user_id: str | None,
+        workspace_id: str | None,
+        target_id: str | None,
+    ) -> None:
+        event_id = self._token_source.new_id("audit")
+        self._audit_events.append(
+            AuditEvent(
+                event_id=event_id,
+                category=category,
+                action=action,
+                outcome=AuditOutcome.SUCCEEDED,
+                actor_user_id=actor_user_id,
+                workspace_id=workspace_id,
+                target_id=target_id,
+                occurred_at=self._now(),
+                correlation_id=event_id,
+            )
+        )
+
     @staticmethod
     def _context(
         *,
@@ -801,3 +1063,25 @@ class WorkspaceAccessService:
     def _debug_owner_count(self, workspace_id: str) -> int:
         with self._lock:
             return self._owner_count(workspace_id)
+
+    def _debug_user_direct_identifiers(
+        self,
+        user_id: str,
+    ) -> tuple[str | None, str | None, str | None, str | None]:
+        with self._lock:
+            user = self._users_by_id[user_id]
+            return (
+                user.issuer,
+                user.subject,
+                user.verified_email,
+                user.display_name,
+            )
+
+    def _debug_audit_counts(self) -> dict[AuditCategory, int]:
+        with self._lock:
+            return {
+                category: sum(
+                    event.category is category for event in self._audit_events
+                )
+                for category in AuditCategory
+            }

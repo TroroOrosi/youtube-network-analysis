@@ -2,7 +2,13 @@
 
 from .models import (
     AccessSecret,
+    AccountAccessExport,
+    AccountMembershipExport,
     AuthenticatedSession,
+    AuditAction,
+    AuditCategory,
+    AuditEvent,
+    AuditOutcome,
     ChangeMembershipRole,
     CreateWorkspace,
     ErrorCode,
@@ -11,6 +17,7 @@ from .models import (
     Membership,
     Permission,
     RevokeMembership,
+    RetentionReport,
     ROLE_PERMISSIONS,
     Role,
     SessionEvidence,
@@ -26,7 +33,13 @@ from .service import WorkspaceAccessService
 
 __all__ = [
     "AccessSecret",
+    "AccountAccessExport",
+    "AccountMembershipExport",
     "AuthenticatedSession",
+    "AuditAction",
+    "AuditCategory",
+    "AuditEvent",
+    "AuditOutcome",
     "ChangeMembershipRole",
     "CreateWorkspace",
     "ErrorCode",
@@ -35,6 +48,7 @@ __all__ = [
     "Membership",
     "Permission",
     "RevokeMembership",
+    "RetentionReport",
     "ROLE_PERMISSIONS",
     "Role",
     "SessionEvidence",

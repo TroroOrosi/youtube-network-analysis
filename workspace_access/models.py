@@ -78,6 +78,26 @@ class ErrorCode(str, Enum):
     INVALID_INPUT = "INVALID_INPUT"
 
 
+class AuditCategory(str, Enum):
+    SECURITY = "SECURITY"
+    ADMINISTRATION = "ADMINISTRATION"
+
+
+class AuditAction(str, Enum):
+    SESSION_ESTABLISHED = "SESSION_ESTABLISHED"
+    SESSION_REVOKED = "SESSION_REVOKED"
+    USER_SUSPENDED = "USER_SUSPENDED"
+    WORKSPACE_CREATED = "WORKSPACE_CREATED"
+    MEMBERSHIP_GRANTED = "MEMBERSHIP_GRANTED"
+    MEMBERSHIP_ROLE_CHANGED = "MEMBERSHIP_ROLE_CHANGED"
+    MEMBERSHIP_REVOKED = "MEMBERSHIP_REVOKED"
+    ACCOUNT_DELETED = "ACCOUNT_DELETED"
+
+
+class AuditOutcome(str, Enum):
+    SUCCEEDED = "SUCCEEDED"
+
+
 class WorkspaceAccessError(ValueError):
     """Safe, stable workspace-access failure."""
 
@@ -258,3 +278,44 @@ class ChangeMembershipRole:
 class RevokeMembership:
     membership_id: str
     idempotency_key: str
+
+
+@dataclass(frozen=True, slots=True)
+class AuditEvent:
+    event_id: str
+    category: AuditCategory
+    action: AuditAction
+    outcome: AuditOutcome
+    actor_user_id: str | None
+    workspace_id: str | None
+    target_id: str | None
+    occurred_at: datetime
+    correlation_id: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "occurred_at", _utc(self.occurred_at, "occurred_at"))
+
+
+@dataclass(frozen=True, slots=True)
+class AccountMembershipExport:
+    workspace_id: str
+    workspace_name: str
+    role: Role
+
+
+@dataclass(frozen=True, slots=True)
+class AccountAccessExport:
+    user_id: str
+    issuer: str
+    subject: str
+    verified_email: str | None
+    display_name: str | None
+    memberships: tuple[AccountMembershipExport, ...]
+    audit_events: tuple[AuditEvent, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class RetentionReport:
+    session_records_purged: int
+    security_audit_events_purged: int
+    administration_audit_events_purged: int
