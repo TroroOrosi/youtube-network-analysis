@@ -280,6 +280,55 @@ Only public subscriber observations are represented. Stored comment activity
 has no comment text, author display name, reply/parent relation, or comment ID.
 Next work is bounded cursor pagination, then exact retention/deletion cascades.
 
+## Verified milestone: channel-data complete
+
+Branch: `feature/multi-channel-analytics`
+
+Verified implementation HEAD: `f6f8aec3d9b7f4c221067c1f128de24d467ee49a`
+
+Completed final slices:
+
+- `9a799dc` binds one-time snapshot cursors to workspace, query, limit, and
+  ordering so traversal cannot cross tenants or mix accepted generations.
+- `d07a1c3` enforces exact retention boundaries and complete channel/workspace
+  deletion cascades while preserving identical foreign-tenant identifiers.
+- `aa7eb88` proves the ready dataset maps losslessly into analytics-core and
+  reproduces `NEW_SILENT`, `OLD_SILENT`, `DORMANT`, and `ACTIVE`.
+- `f022c1c` separates privacy state operations from service orchestration.
+- `fdf64c8` closes retention-cursor leakage and COMPLETE-state invariants.
+- `f6f8aec` makes the public `SilentAnalysisDataset` contract itself reject
+  incomplete or public-video-only comment coverage.
+
+Final verification evidence:
+
+- channel-data suite: 35 tests passed;
+- workspace-access suite: 40 tests passed;
+- subscriber analytics suite: 29 tests passed;
+- `python -m compileall -q channel_data workspace_access subscriber_analytics`:
+  passed;
+- Notebook JSON parsed and every code cell compiled;
+- analytics integration reproduced all four segments and both mandatory
+  public-subscription limitations;
+- Markdown fences, public-interface/immutability inspection, forbidden-comment
+  field scan, staged credential-value scan, and `git diff --check` passed;
+- code-review graph fully rebuilt at the verified implementation HEAD: 41
+  files, 648 nodes, 7,171 edges, and no parser errors.
+
+Five-axis review verdict: no unresolved Critical or Required finding.
+Correctness includes atomic generation visibility, readiness, pagination,
+retention, deletion, concurrency, and exact tenant isolation. Security includes
+permission checks on every public operation, non-enumerating errors,
+workspace-bound keys/cursors, minimized aggregate-only comment data, and
+working retention/deletion paths. Production functions are at most 67 lines;
+the public protocols and indirectly called retention method are intentional,
+not dead code. Static graph warnings for private helper methods are conservative
+and do not replace the executed behavior tests above.
+
+No database, migration, endpoint, OAuth flow, provider call, background job,
+UI, dependency, credential, or real channel data was introduced. The next
+capability is `channel-connections`; threat-model Web OAuth and encrypted token
+storage before implementing it or collecting any real data.
+
 ## Decisions and constraints
 
 - OAuth scope remains `youtube.readonly`; no write/delete/upload permission.
@@ -313,13 +362,12 @@ before OAuth/token persistence.
 
 ## Current next steps
 
-1. Implement `channel-data` collection transitions, accepted generations,
-   pagination, retention, deletion, and analytics integration from the approved
-   spec and task plan.
-2. Keep storage fixture/in-memory; persistence, jobs, endpoints, and OAuth stay
-   gated behind later capability specifications.
-3. Threat-model `channel-connections` before any Web OAuth or credential storage;
-   do not collect real channel data without explicit owner-authorized execution.
+1. Specify `channel-connections`, including its capability map and explicit
+   non-goals, before implementation.
+2. Threat-model Web OAuth, encrypted token storage, revocation, tenant binding,
+   and current execution authority before any credential persistence.
+3. Keep provider calls and real channel collection gated behind an explicit
+   owner-authorized run.
 
 Recommended next-phase skills: `spec-driven-development`,
 `security-and-hardening`, and `api-and-interface-design`. Use the code-review

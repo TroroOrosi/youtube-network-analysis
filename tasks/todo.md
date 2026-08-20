@@ -281,20 +281,20 @@ continuation state for `channel-connections`.
 
 **Acceptance criteria:**
 
-- [ ] Fixture mapping reproduces `NEW_SILENT`, `OLD_SILENT`, `DORMANT`,
+- [x] Fixture mapping reproduces `NEW_SILENT`, `OLD_SILENT`, `DORMANT`,
   and `ACTIVE` plus mandatory public-subscription limitations without changing
   CLI/Notebook results.
-- [ ] README documents safe usage, permissions, coverage/freshness, pagination,
+- [x] README documents safe usage, permissions, coverage/freshness, pagination,
   retention, deletion, in-memory limits, and exact verification commands.
-- [ ] Five-axis/security/simplification review has no unresolved Critical or
+- [x] Five-axis/security/simplification review has no unresolved Critical or
   Required finding and durable progress identifies verified HEAD/next module.
 
 **Verification:**
 
-- [ ] Focused channel-data, workspace, and subscriber analytics suites pass.
-- [ ] Compile, Notebook code-cell, runtime integration, Markdown fence,
+- [x] Focused channel-data, workspace, and subscriber analytics suites pass.
+- [x] Compile, Notebook code-cell, runtime integration, Markdown fence,
   staged-secret, public-interface, and `git diff --check` checks pass.
-- [ ] Worktree is clean, all task commits are pushed, and local/upstream HEADs
+- [x] Worktree is clean, all task commits are pushed, and local/upstream HEADs
   match.
 
 **Dependencies:** Task 7
@@ -311,8 +311,8 @@ continuation state for `channel-connections`.
 
 ## Final checkpoint: channel-data complete
 
-- [ ] All eight tasks and three intermediate checkpoints are complete.
-- [ ] Every approved specification success criterion has direct evidence.
-- [ ] No database, migration, endpoint, OAuth, job, UI, dependency, real
+- [x] All eight tasks and three intermediate checkpoints are complete.
+- [x] Every approved specification success criterion has direct evidence.
+- [x] No database, migration, endpoint, OAuth, job, UI, dependency, real
   credential, or real channel data was introduced.
-- [ ] Branch is pushed and ready to specify `channel-connections`.
+- [x] Branch is pushed and ready to specify `channel-connections`.
