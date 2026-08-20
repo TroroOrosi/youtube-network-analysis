@@ -47,8 +47,18 @@ class CommentCandidate:
     replaced_at: dict[str, datetime] = field(default_factory=dict)
 
 
+@dataclass(frozen=True, slots=True)
+class CursorRecord:
+    channel_id: str
+    query_key: tuple[object, ...]
+    items: tuple[object, ...]
+    offset: int
+    captured_revision: int
+
+
 @dataclass(slots=True)
 class MemoryState:
+    revision: int = 0
     collections: dict[tuple[str, str], CollectionState] = field(default_factory=dict)
     idempotency: dict[tuple[str, str], IdempotencyRecord] = field(default_factory=dict)
     subscriber_candidates: dict[tuple[str, str], SubscriberCandidate] = field(
@@ -87,3 +97,4 @@ class MemoryState:
     comment_coverage: dict[tuple[str, str, str], CommentCoverage] = field(
         default_factory=dict
     )
+    cursors: dict[tuple[str, str], CursorRecord] = field(default_factory=dict)

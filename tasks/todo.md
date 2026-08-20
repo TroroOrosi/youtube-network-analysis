@@ -204,20 +204,20 @@ using opaque server-side continuation state bound to the authorized query.
 
 **Acceptance criteria:**
 
-- [ ] Limits enforce 1-500 and fixed datasets follow every approved sort and
+- [x] Limits enforce 1-500 and fixed datasets follow every approved sort and
   tie-break rule without duplicate or missing rows.
-- [ ] Cursors are opaque and bound to workspace, query, ordering, and captured
+- [x] Cursors are opaque and bound to workspace, query, ordering, and captured
   generation; tampered/cross-workspace/cross-query tokens fail identically.
-- [ ] Concurrent generation change either preserves the captured result page or
+- [x] Concurrent generation change either preserves the captured result page or
   returns `CURSOR_EXPIRED`; it never silently mixes generations.
 
 **Verification:**
 
-- [ ] RED then GREEN across
+- [x] RED then GREEN across
   `channel_data.tests.test_tenant_isolation` and
   `channel_data.tests.test_collection_state`
-- [ ] Full channel-data, workspace, and analytics suites pass.
-- [ ] Full multi-page traversal/tamper/concurrency fixtures, compile, and
+- [x] Full channel-data, workspace, and analytics suites pass.
+- [x] Full multi-page traversal/tamper/concurrency fixtures, compile, and
   integrity checks pass.
 
 **Dependencies:** Tasks 4-5

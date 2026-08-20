@@ -4,7 +4,19 @@ import unittest
 from datetime import UTC, datetime
 
 from channel_data.errors import ChannelDataError
-from channel_data.models import CollectionKind, CollectionStatus, StartCollection
+from channel_data.memory import MemoryState
+from channel_data.models import (
+    CollectionKind,
+    CollectionStatus,
+    CoverageLimitation,
+    PageRequest,
+    StartCollection,
+    SubscriberRegistryEntry,
+    SubscriberRegistryQuery,
+    SubscriberSnapshot,
+    SubscriberSnapshotQuery,
+    SubscriberTraversalStatus,
+)
 from channel_data.service import ChannelDataService
 from workspace_access.models import Permission, Role, WorkspaceContext
 
@@ -132,6 +144,103 @@ class TenantScopedCollectionStartTests(unittest.TestCase):
             )
         self.assertEqual(caught.exception.code, "RESOURCE_NOT_FOUND_OR_FORBIDDEN")
         self.assertIs(self.service.start_collection(caller, first_to_command(first)), first)
+
+    def test_registry_and_snapshot_cursors_are_workspace_and_query_bound(self) -> None:
+        limitations = (
+            CoverageLimitation.PUBLIC_SUBSCRIPTIONS_ONLY,
+            CoverageLimitation.PROVIDER_RESULT_CAP_POSSIBLE,
+        )
+        snapshots = {
+            ("workspace-1", "channel-1", f"snapshot-{index}"): SubscriberSnapshot(
+                f"snapshot-{index}",
+                "workspace-1",
+                "channel-1",
+                NOW,
+                1,
+                SubscriberTraversalStatus.COMPLETE,
+                limitations,
+            )
+            for index in range(3)
+        }
+        registry = {
+            ("workspace-1", "channel-1", f"subscriber-{index}"): SubscriberRegistryEntry(
+                "workspace-1",
+                "channel-1",
+                f"subscriber-{index}",
+                "",
+                None,
+                NOW,
+                NOW,
+                1,
+                "snapshot-0",
+            )
+            for index in range(3)
+        }
+        service = ChannelDataService(
+            MemoryState(
+                subscriber_snapshots=snapshots,
+                subscriber_registry=registry,
+            )
+        )
+        reader = context("workspace-1", "user-1", frozenset({Permission.ANALYSIS_READ}))
+        foreign_reader = context(
+            "workspace-2",
+            "user-1",
+            frozenset({Permission.ANALYSIS_READ}),
+        )
+        registry_query = SubscriberRegistryQuery("channel-1")
+        first = service.list_subscriber_registry(
+            reader,
+            registry_query,
+            PageRequest(limit=1),
+        )
+        self.assertIsNotNone(first.next_cursor)
+
+        for operation in (
+            lambda: service.list_subscriber_registry(
+                foreign_reader,
+                registry_query,
+                PageRequest(cursor=first.next_cursor, limit=1),
+            ),
+            lambda: service.list_subscriber_snapshots(
+                reader,
+                SubscriberSnapshotQuery("channel-1"),
+                PageRequest(cursor=first.next_cursor, limit=1),
+            ),
+        ):
+            with self.assertRaises(ChannelDataError) as caught:
+                operation()
+            self.assertEqual(caught.exception.code, "INVALID_CURSOR")
+
+        second = service.list_subscriber_registry(
+            reader,
+            registry_query,
+            PageRequest(cursor=first.next_cursor, limit=1),
+        )
+        third = service.list_subscriber_registry(
+            reader,
+            registry_query,
+            PageRequest(cursor=second.next_cursor, limit=1),
+        )
+        self.assertEqual(
+            [item.subscriber_channel_id for item in first.items + second.items + third.items],
+            ["subscriber-0", "subscriber-1", "subscriber-2"],
+        )
+
+        snapshot_first = service.list_subscriber_snapshots(
+            reader,
+            SubscriberSnapshotQuery("channel-1"),
+            PageRequest(limit=2),
+        )
+        snapshot_second = service.list_subscriber_snapshots(
+            reader,
+            SubscriberSnapshotQuery("channel-1"),
+            PageRequest(cursor=snapshot_first.next_cursor, limit=2),
+        )
+        self.assertEqual(
+            [item.snapshot_id for item in snapshot_first.items + snapshot_second.items],
+            ["snapshot-0", "snapshot-1", "snapshot-2"],
+        )
 
 
 def first_to_command(state):

@@ -225,6 +225,55 @@ class CollectionLifecycleTests(unittest.TestCase):
         self.assertIs(freshness.subscribers.latest_attempt, failed)
         self.assertIs(freshness.subscribers.latest_accepted_success, accepted)
 
+    def test_history_cursor_is_query_bound_and_preserves_a_captured_result(self) -> None:
+        for index in range(5):
+            self.start(
+                f"collection-{index}",
+                started_at=NOW - timedelta(minutes=index),
+            )
+        query = CollectionHistoryQuery("channel-1")
+        first = self.service.list_collection_history(
+            self.reader,
+            query,
+            PageRequest(limit=2),
+        )
+        self.assertIsNotNone(first.next_cursor)
+        self.assertNotIn("workspace-1", first.next_cursor)
+        self.assertNotIn("channel-1", first.next_cursor)
+
+        self.start("collection-new-after-page", started_at=NOW + timedelta(minutes=1))
+        second = self.service.list_collection_history(
+            self.reader,
+            query,
+            PageRequest(cursor=first.next_cursor, limit=2),
+        )
+        third = self.service.list_collection_history(
+            self.reader,
+            query,
+            PageRequest(cursor=second.next_cursor, limit=2),
+        )
+        traversed = first.items + second.items + third.items
+        self.assertEqual(len(traversed), 5)
+        self.assertEqual(len({item.collection_id for item in traversed}), 5)
+        self.assertNotIn("collection-new-after-page", {item.collection_id for item in traversed})
+        self.assertIsNone(third.next_cursor)
+
+        for invalid_page, invalid_query in (
+            (PageRequest(cursor="tampered", limit=2), query),
+            (
+                PageRequest(cursor=first.next_cursor, limit=2),
+                CollectionHistoryQuery("channel-1", CollectionKind.VIDEOS),
+            ),
+        ):
+            with self.subTest(query=invalid_query.kind):
+                with self.assertRaises(ChannelDataError) as caught:
+                    self.service.list_collection_history(
+                        self.reader,
+                        invalid_query,
+                        invalid_page,
+                    )
+                self.assertEqual(caught.exception.code, "INVALID_CURSOR")
+
 
 if __name__ == "__main__":
     unittest.main()

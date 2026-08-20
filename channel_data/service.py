@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import secrets
 from dataclasses import fields, is_dataclass
 from datetime import UTC, datetime
 from enum import Enum
@@ -14,6 +15,7 @@ from workspace_access.models import Permission, WorkspaceContext
 from .errors import ChannelDataError, ErrorCode
 from .memory import (
     CommentCandidate,
+    CursorRecord,
     IdempotencyRecord,
     MemoryState,
     SubscriberCandidate,
@@ -56,6 +58,8 @@ def _safe_error(code: ErrorCode, *, retryable: bool = False) -> ChannelDataError
         ErrorCode.IDEMPOTENCY_CONFLICT: "Idempotency key conflicts with another operation",
         ErrorCode.OPERATION_IN_PROGRESS: "Operation is already in progress",
         ErrorCode.INVALID_COLLECTION_TRANSITION: "Invalid collection transition",
+        ErrorCode.INVALID_CURSOR: "Invalid cursor",
+        ErrorCode.CURSOR_EXPIRED: "Cursor expired",
     }
     return ChannelDataError(code, message=messages[code], retryable=retryable)
 
@@ -92,9 +96,14 @@ def _dataset_not_ready(reason: DatasetReadinessCode) -> ChannelDataError:
 class ChannelDataService:
     """Standard-library reference implementation with one atomic lock."""
 
-    def __init__(self, state: MemoryState | None = None) -> None:
+    def __init__(
+        self,
+        state: MemoryState | None = None,
+        token_generator: object | None = None,
+    ) -> None:
         self._state = state or MemoryState()
         self._lock = RLock()
+        self._token_generator = token_generator
 
     def start_collection(
         self,
@@ -125,6 +134,7 @@ class ChannelDataService:
                 accepted_generation_id=None,
             )
             self._state.collections[collection_key] = state
+            self._state.revision += 1
             self._remember(context, "start_collection", command, state, command.started_at)
             return state
 
@@ -183,6 +193,7 @@ class ChannelDataService:
             else:
                 self._discard_candidate(current)
             self._state.collections[key] = finished
+            self._state.revision += 1
             self._remember(
                 context,
                 "finish_collection",
@@ -405,7 +416,18 @@ class ChannelDataService:
                 query.channel_id,
                 query.kind,
             )
-            return Page(tuple(rows[: page.limit]), None)
+            return self._page(
+                context.workspace_id,
+                query.channel_id,
+                (
+                    "collection_history",
+                    query.channel_id,
+                    query.kind.value if query.kind is not None else None,
+                    page.limit,
+                ),
+                tuple(rows),
+                page,
+            )
 
     def list_subscriber_registry(
         self,
@@ -424,7 +446,13 @@ class ChannelDataService:
             ]
             rows.sort(key=lambda entry: entry.subscriber_channel_id)
             rows.sort(key=lambda entry: entry.last_seen_at, reverse=True)
-            return Page(tuple(rows[: page.limit]), None)
+            return self._page(
+                context.workspace_id,
+                query.channel_id,
+                ("subscriber_registry", query.channel_id, page.limit),
+                tuple(rows),
+                page,
+            )
 
     def list_subscriber_snapshots(
         self,
@@ -443,7 +471,13 @@ class ChannelDataService:
             ]
             rows.sort(key=lambda snapshot: snapshot.snapshot_id)
             rows.sort(key=lambda snapshot: snapshot.captured_at, reverse=True)
-            return Page(tuple(rows[: page.limit]), None)
+            return self._page(
+                context.workspace_id,
+                query.channel_id,
+                ("subscriber_snapshots", query.channel_id, page.limit),
+                tuple(rows),
+                page,
+            )
 
     def load_silent_analysis_dataset(
         self,
@@ -529,6 +563,55 @@ class ChannelDataService:
         rows.sort(key=lambda state: state.collection_id)
         rows.sort(key=lambda state: state.started_at, reverse=True)
         return rows
+
+    def _page(
+        self,
+        workspace_id: str,
+        channel_id: str,
+        query_key: tuple[object, ...],
+        current_items: tuple[object, ...],
+        page: PageRequest,
+    ) -> Page[Any]:
+        items = current_items
+        offset = 0
+        captured_revision = self._state.revision
+        if page.cursor is not None:
+            cursor_key = (workspace_id, page.cursor)
+            record = self._state.cursors.get(cursor_key)
+            if record is None or record.query_key != query_key or record.channel_id != channel_id:
+                raise _safe_error(ErrorCode.INVALID_CURSOR)
+            del self._state.cursors[cursor_key]
+            items = record.items
+            offset = record.offset
+            captured_revision = record.captured_revision
+
+        end = min(offset + page.limit, len(items))
+        next_cursor = None
+        if end < len(items):
+            next_cursor = self._new_cursor_token(workspace_id)
+            self._state.cursors[(workspace_id, next_cursor)] = CursorRecord(
+                channel_id=channel_id,
+                query_key=query_key,
+                items=items,
+                offset=end,
+                captured_revision=captured_revision,
+            )
+        return Page(tuple(items[offset:end]), next_cursor)
+
+    def _new_cursor_token(self, workspace_id: str) -> str:
+        for _ in range(16):
+            if self._token_generator is None:
+                token = secrets.token_urlsafe(24)
+            else:
+                token = self._token_generator.new_token()  # type: ignore[attr-defined]
+            if (
+                isinstance(token, str)
+                and token
+                and len(token) <= 256
+                and (workspace_id, token) not in self._state.cursors
+            ):
+                return token
+        raise _safe_error(ErrorCode.OPERATION_IN_PROGRESS, retryable=True)
 
     @staticmethod
     def _freshness(
