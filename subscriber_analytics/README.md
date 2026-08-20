@@ -2,15 +2,15 @@
 
 自分の YouTube チャンネルの登録者のうち「コメントしていない登録者（サイレント登録者）」を、
 **「直近3ヶ月以内の登録者」のような期間条件付き**で抽出するツール。
-既存のネットワーク分析（リポジトリルート）とは独立した自己完結ディレクトリで、
-既存ファイルには一切手を加えない。
+CLI とノートブックは同じ `analytics_core.analyze` を利用するため、同じ正規化済み入力と
+基準時刻には同じセグメント、フィルタ結果、サイレント人数を返す。
 
 ## 仕組み（3ステージ）
 
 ```
-[1] 登録者収集 (OAuth必須)         [2] コメント収集 (APIキー)        [3] 抽出 (ローカルのみ・クォータ0)
+[1] 登録者収集 (OAuth必須)         [2] コメント収集                  [3] 抽出 (ローカルのみ・クォータ0)
 subscriptions.list                 playlistItems → commentThreads     レジストリ − コメント投稿者
-(mySubscribers=true)               (+ comments.list で返信も取得)      の差集合 + 期間フィルタ
+(mySubscribers=true)               (+ comments.list で返信も取得)      → analytics_core.analyze
    │                                  │                                  │
    ▼                                  ▼                                  ▼
 data/snapshots/*.csv               data/comments/{video_id}.csv       output/silent_subscribers_*.csv
@@ -30,6 +30,9 @@ data/snapshots/*.csv               data/comments/{video_id}.csv       output/sil
   いない」の判定には全履歴が必要で、期間を変えた再抽出はクォータ消費ゼロで何度でもできる。
 - **返信も収集する**：トップレベルコメントだけを見ると「返信でだけ交流している人」を
   サイレント扱いしてしまうため、`comments.list(parentId=...)` で返信も必ず取得する。
+- **分析ロジックは1か所**：`analytics_core.py` はファイルや認証情報を読み込まず、CLI と
+  ノートブックが渡した不変レコードだけを解析する。登録時刻は API の `publishedAt` を優先し、
+  無い場合は `first_seen_at` を使う。結果は登録時刻の降順、同時刻ならチャンネルID順になる。
 
 ## セットアップ
 
@@ -85,7 +88,8 @@ localhost を使う対話OAuthを開始しない。
 
 ## 使い方
 
-CLI とノートブックのどちらでも実行できる（同じ関数を呼ぶため結果は同一で、データも共有される）。
+CLI とノートブックのどちらでも実行できる。どちらも収集済みCSVを同じ型へ変換し、
+`analytics_core.analyze` を呼ぶため、計算結果とデータを共有する。
 
 ### ノートブックで実行する
 
@@ -129,7 +133,15 @@ APIキーによる公開動画だけの収集も既定では停止対象にな�
 | 一度もコメントしていない人 | `--never-commented` |
 | 直近90日コメントしていない人（過去はあってもよい） | `--no-comment-within 90d` |
 | 解約した可能性のある人も含める | `--include-unsubscribed`（既定は最新スナップショットに出現した現役登録者のみ） |
-| フィルタなし | 全登録者を4象限セグメント付きで出力 |
+| フィルタなし | 最新観測時点の公開登録者を4象限セグメント付きで出力 |
+
+`--never-commented` は、全履歴を安全に収集できた範囲でコメント件数が0件の人だけを残す。
+`--no-comment-within 90d` は、コメント0件の人に加え、最終コメントが90日の境界より古い人を残す
+（ちょうど境界時刻のコメントは期間内として扱う）。フィルタはすべて AND で組み合わせる。
+
+4象限の登録・活動期間は既定で各90日。`--subscribed-within` を指定すると新規登録者の区分期間にも、
+`--no-comment-within` を指定すると直近活動の区分期間にも同じ値を使う。**新規サイレント**と
+**古参サイレント**の合計が、対象スコープ内のサイレント登録者数になる。期間境界は含む。
 
 出力 CSV の列: `channel_id, title, subscribed_at, subscribed_at_source, first_seen_at,
 last_seen_at, comment_count, last_comment_at, segment`
@@ -147,7 +159,7 @@ last_seen_at, comment_count, last_comment_at, segment`
 - `subscriptions.list(mySubscribers=true)` の返却は**約1,000件が上限**。定期実行による
   レジストリ蓄積で緩和する（上限超のチャンネルでも観測集合が育つ）。
 - OAuth 同意画面が**テストステータス**の場合、リフレッシュトークンは**7日で失効**する
-  （失効時は自動でブラウザ再認証にフォールバック）。
+  （ローカルで再認証し、Codespaces では更新した token JSON secret を登録し直す）。
 - クォータ: `subscriptions` / `playlistItems` / `commentThreads` / `comments` いずれも
   1 unit/ページ（既定の日次上限 10,000 unit）。コメント収集は動画単位キャッシュで
   中断・再開できるため、大規模チャンネルでも複数日に分割して収集できる
