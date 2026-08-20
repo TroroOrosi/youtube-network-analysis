@@ -632,3 +632,97 @@ comparisons, and export contracts.
 specifications require asking first: which Web framework, HTTP/session stack,
 and dependency set to adopt. The non-engineer UI acceptance requirements are
 recorded in `SPEC-channel-connections.md`.
+
+## Verified milestone: analysis-api and web-ui
+
+Branch: `feature/multi-channel-analytics`
+
+Date: 2026-08-21
+
+Verified implementation HEAD: `f1cd207`
+
+The user approved the recommended stack (FastAPI, Uvicorn, Jinja2 server-rendered
+templates, no frontend build step) and approved building the remaining
+capabilities, so both were implemented.
+
+### analysis-api (`6e5fb82`)
+
+`SPEC-analysis-api.md` plus a standard-library module over `channel-data` and
+`analytics-core`:
+
+- filtered analysis runs paged by single-use cursors bound to workspace, query,
+  and the accepted snapshot/inventory generation;
+- workspace-shared saved views with idempotent save and delete;
+- a bounded multi-channel comparison that reports each channel's readiness
+  reason instead of failing the whole request;
+- a deterministic UTF-8 CSV export with BOM behind the separate
+  `analysis.export` permission;
+- every segment and filter rule delegated to `analytics-core`; the module adds
+  no analytics logic of its own.
+
+### web-ui (`f1cd207`)
+
+First layer in this repository with third-party dependencies, pinned in
+`web_ui/requirements.txt`: fastapi 0.141.1, uvicorn 0.52.4, jinja2 3.1.6,
+python-multipart 0.0.32, httpx 0.28.1 (tests only). Domain modules remain
+standard-library only.
+
+- Guided Japanese flow: login, create workspace, connect channel, collect,
+  analyse, export; one clear primary action per step.
+- Session cookie is `HttpOnly`, `Secure`, `SameSite=Lax`, and revocable through
+  `workspace-access`. Every POST requires a `SameSite=Strict` double-submit CSRF
+  token. Every response carries CSP with `frame-ancestors 'none'`,
+  `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, and
+  `Referrer-Policy: no-referrer`.
+- Errors render a stable Japanese message plus the next action; no provider
+  response, credential, or internal identifier reaches a page.
+- The workspace cookie is only a hint: each request re-resolves a real
+  `WorkspaceContext` and each module checks its own permission.
+- Provider access is a synthetic in-process gateway (`web_ui/demo_provider.py`)
+  and the consent screen states that it is a demo. No request leaves the
+  process, no real credential exists, and no YouTube quota is consumed.
+- `ChannelConnectionsService` now takes its authorization host allowlist as
+  configuration so a deployment can point it at Google while the demo points at
+  its own host. The default remains `accounts.google.com`.
+
+### Verification evidence
+
+- web-ui 15, analysis-api 19, collection-jobs 82, channel-connections 145,
+  channel-data 35, workspace-access 40, subscriber analytics 29 — all passed;
+- compile of all seven packages, Markdown fences, `git diff --check`, and a
+  staged credential-shaped-value scan passed;
+- web tests cover the whole flow end to end, CSRF rejection, unauthenticated
+  redirect, security headers, readiness guidance before collection, filters,
+  CSV download, disconnect-keeps-data, foreign workspace cookie isolation, and
+  that no page renders a token, state, or vault slot;
+- the application was started under real TLS with `uvicorn` and answered
+  `GET /login` with 200 over HTTPS.
+
+### Known verification gap
+
+Interactive verification in a real Chrome window was **not** completed. The
+local server needs TLS because the session cookie is `Secure`, and the browser
+tooling cannot click through the self-signed-certificate interstitial. Options
+for the next session, in order of preference:
+
+1. install a locally trusted development certificate (for example `mkcert`) and
+   repeat the guided flow in Chrome;
+2. run behind a TLS-terminating proxy the machine already trusts;
+3. keep automated coverage only, and treat browser usability and accessibility
+   review as an explicit outstanding acceptance item.
+
+Static page snapshots were rendered for layout review but the visual pass was
+stopped before completion at the user's request.
+
+### Remaining work
+
+- Browser usability and accessibility verification (above).
+- Real identity provider for login; the current login accepts a display name and
+  is a demo placeholder.
+- Real Google OAuth client registration, consent verification, and provider
+  HTTP/SDK adapters to replace `web_ui/demo_provider.py`.
+- Persistence, background workers for collection, managed credential vault or
+  KMS, rate limiting, and deployment TLS.
+- `CAPABILITY_MAP.md` now has all seven capabilities implemented as reference
+  modules; nothing in the repository performs a real provider call or stores a
+  real credential.
