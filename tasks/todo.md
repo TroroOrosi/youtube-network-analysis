@@ -18,27 +18,27 @@ every port protocol.
 
 **Acceptance criteria:**
 
-- [ ] Public records are immutable/slotted; `ConnectionProvider`,
+- [x] Public records are immutable/slotted; `ConnectionProvider`,
   `ConnectionStatus`, audit actions, and the twelve error codes have stable
   machine values, and no HTTP, provider SDK, database, or analytics type leaks
   into them.
-- [ ] Boundary validation rejects empty/oversized identifiers, titles, callback
+- [x] Boundary validation rejects empty/oversized identifiers, titles, callback
   values, and idempotency keys, naive datetimes, out-of-range page limits, and
   unknown enum values; datetimes normalize to UTC.
-- [ ] `RedactedSecret`, `ProviderCredential`, and `VerifiedProviderGrant` stay
+- [x] `RedactedSecret`, `ProviderCredential`, and `VerifiedProviderGrant` stay
   out of the package root, always render redacted in `str`/`repr`, and no
   public protocol exposes a credential-returning method.
-- [ ] `ConnectionReader`, `ConnectionManager`,
+- [x] `ConnectionReader`, `ConnectionManager`,
   `ConnectionPrivacyAdministrator`, `Clock`, `TokenGenerator`,
   `EphemeralSecretStore`, `CredentialVault`, `YouTubeAuthorizationGateway`, and
   the audit sink require `WorkspaceContext` on every tenant operation.
 
 **Verification:**
 
-- [ ] RED then GREEN: `python -m unittest channel_connections.tests.test_models -v`
-- [ ] Workspace-access, channel-data, and subscriber analytics regression
+- [x] RED then GREEN: `python -m unittest channel_connections.tests.test_models -v`
+- [x] Workspace-access, channel-data, and subscriber analytics regression
   suites pass.
-- [ ] Compile, public-signature inspection, redacted-rendering check, and
+- [x] Compile, public-signature inspection, redacted-rendering check, and
   `git diff --check` pass.
 
 **Dependencies:** None
@@ -62,26 +62,26 @@ S256, and fixed provider configuration before any other operation reuses them.
 
 **Acceptance criteria:**
 
-- [ ] `begin_authorization` requires `channel.manage_connection`, binds
+- [x] `begin_authorization` requires `channel.manage_connection`, binds
   workspace, user, session, operation, redirect URI identifier, and provider
   from trusted state, and returns only `intent_id`, the gateway authorization
   URL, and `expires_at`.
-- [ ] The intent stores a state digest rather than the raw state, holds its
+- [x] The intent stores a state digest rather than the raw state, holds its
   PKCE verifier in the ephemeral store with a S256 challenge, requests exactly
   `youtube.readonly`, and expires at exactly 10 minutes.
-- [ ] Exact idempotent replay returns the original unexpired result; changed
+- [x] Exact idempotent replay returns the original unexpired result; changed
   actor, workspace, session, operation, or canonical payload fails atomically,
   and one idempotency key creates at most one intent under concurrency.
-- [ ] The command cannot influence provider host, scope, redirect URI, return
+- [x] The command cannot influence provider host, scope, redirect URI, return
   route, workspace, or user, and a member without the permission is denied.
 
 **Verification:**
 
-- [ ] RED then GREEN:
+- [x] RED then GREEN:
   `python -m unittest channel_connections.tests.test_authorization -v`
-- [ ] Full channel-connections, workspace-access, channel-data, and analytics
+- [x] Full channel-connections, workspace-access, channel-data, and analytics
   suites pass.
-- [ ] Two-workspace runtime fixture, compile, secret scan, and integrity checks
+- [x] Two-workspace runtime fixture, compile, secret scan, and integrity checks
   pass.
 
 **Dependencies:** Task 1
@@ -103,37 +103,37 @@ publication, and bounded exact replay.
 
 **Acceptance criteria:**
 
-- [ ] Completion hashes the raw state, requires an unexpired intent, resolves a
+- [x] Completion hashes the raw state, requires an unexpired intent, resolves a
   fresh `channel.manage_connection` context, and fails identically for missing,
   expired, foreign, or wrongly bound workspace/user/session values.
-- [ ] The intent is claimed atomically before any exchange; an in-flight
+- [x] The intent is claimed atomically before any exchange; an in-flight
   duplicate receives a stable retryable conflict and the gateway records
   exactly one exchange under concurrency.
-- [ ] Publication requires a refresh token, exactly the approved scope set,
+- [x] Publication requires a refresh token, exactly the approved scope set,
   exactly one `mine=true` channel, and a successful `mySubscribers=true` probe;
   zero/multiple channels, extra scopes, missing refresh token, malformed
   provider values, and probe failure each fail closed with a safe code and
   revoke the grant.
-- [ ] The active uniqueness key and credential slot are reserved atomically
+- [x] The active uniqueness key and credential slot are reserved atomically
   before visibility, a duplicate active provider channel fails as
   `CONNECTION_ALREADY_EXISTS`, and a failed vault put releases the reservation
   and leaves explicit cleanup state.
-- [ ] Ephemeral secrets are deleted on success, denial, and error; the consumed
+- [x] Ephemeral secrets are deleted on success, denial, and error; the consumed
   intent retains only a secret-free replay result, exact duplicate callbacks
   return the original connection without a second exchange, and changed
   actor/session/digest/operation/payload fails as `CALLBACK_CONFLICT`.
-- [ ] No public value, error, or audit event contains a token, code, state,
+- [x] No public value, error, or audit event contains a token, code, state,
   verifier, vault slot, provider payload, provider error text, or candidate
   channel list.
 
 **Verification:**
 
-- [ ] RED then GREEN across
+- [x] RED then GREEN across
   `channel_connections.tests.test_authorization` and
   `channel_connections.tests.test_connections`
-- [ ] Full channel-connections, workspace-access, channel-data, and analytics
+- [x] Full channel-connections, workspace-access, channel-data, and analytics
   suites pass.
-- [ ] Concurrency, denial, malformed-provider, and representation-inspection
+- [x] Concurrency, denial, malformed-provider, and representation-inspection
   fixtures, compile, secret scan, and `git diff --check` pass.
 
 **Dependencies:** Task 2
@@ -150,10 +150,10 @@ publication, and bounded exact replay.
 
 ## Checkpoint A: Contract and authorization boundary
 
-- [ ] Tasks 1-3 are independently committed and pushed.
-- [ ] Contract, permission, intent-binding, one-time claim, provider
+- [x] Tasks 1-3 are independently committed and pushed.
+- [x] Contract, permission, intent-binding, one-time claim, provider
   verification, and replay fixtures pass with no foreign existence signal.
-- [ ] No dependency, Web route, real provider call, persistence, credential, or
+- [x] No dependency, Web route, real provider call, persistence, credential, or
   real data introduced.
 
 ## Task 4: Read connections with bounded pagination

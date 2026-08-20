@@ -409,3 +409,68 @@ Recommended next-session skills: `planning-and-task-breakdown`, then
 `incremental-implementation` and `test-driven-development`; use
 `api-and-interface-design` and `security-and-hardening` for their distinct
 domain responsibilities. Use the code-review graph before codebase exploration.
+
+## Verified milestone: channel-connections Checkpoint A
+
+Branch: `feature/multi-channel-analytics`
+
+Verified implementation HEAD: `51d51a4`
+
+Completed commits:
+
+- `5734a33` breaks the approved reference slice into nine ordered TDD tasks with
+  three checkpoints and ignores the reproducible local RepoWise cache.
+- `1c2f915` freezes immutable connection, authorization-start, page, audit, and
+  retention values, the stable safe error contract, bounded callback commands,
+  the internal credential-boundary values, and every port protocol.
+- `294d3e7` adds the tenant-scoped service seam and `begin_authorization`:
+  exact permission checks, one lock per transition, actor/session/payload-bound
+  idempotency, state digests, PKCE S256, fixed scope/redirect configuration, and
+  10-minute expiry.
+- `51d51a4` adds `complete_authorization` with the approved callback gates,
+  provider verification, deterministic credential slots, atomic publication,
+  revocation of rejected grants, and 24-hour exact replay.
+
+Verification evidence at this checkpoint:
+
+- channel-connections suite: 78 tests passed;
+- workspace-access suite: 40 tests passed;
+- channel-data suite: 35 tests passed;
+- subscriber analytics suite: 29 tests passed;
+- `python -m compileall -q channel_connections workspace_access channel_data
+  subscriber_analytics`: passed;
+- `git diff --check` and a staged credential-shaped-value scan: passed;
+- concurrency fixtures proved one intent per idempotency key and exactly one
+  provider exchange for concurrent callbacks.
+
+Design decisions taken during implementation, to be reflected in the living
+specification at Task 9:
+
+1. `ConnectionManager.report_credential_invalidation` is the named seam for a
+   detected revoked or expired grant; it carries no provider payload.
+2. Reauthorization completes through the existing `complete_authorization`,
+   because the intent already carries its operation and target connection.
+3. `IDEMPOTENCY_CONFLICT` joins the initial error codes so a reused mutation key
+   is distinguishable from invalid input for a later HTTP mapping.
+4. `EphemeralSecretStore` gains `peek`. The authorization URL embeds the
+   one-time state, so it is stored as an ephemeral secret and deleted with the
+   intent instead of being retained in domain state or the 90-day idempotency
+   record. A test asserts the raw state never appears in service state.
+5. The verified credential is written to its deterministic vault slot
+   immediately after exchange, so every later rejection path can revoke through
+   the approved `revoke(workspace_id, credential_slot_id)` port and delete the
+   slot rather than discarding an unrevoked grant.
+6. `ProviderRejected(reason)` and `ProviderUnavailable` are the gateway's only
+   failure contract. A rejection carries a safe reason enum; an unknown outcome
+   keeps a secret-free cleanup record, stays retryable, and never publishes.
+7. The redacted secret wrapper reuses `workspace_access.models.AccessSecret`
+   rather than adding a second implementation.
+
+The implementation plan and task list are still recorded as `proposed`. Human
+approval of those seven decisions and of the nine-task ordering is the open
+gate; no further specification change was made.
+
+No Web route, HTTP adapter, real OAuth call, Google SDK, database, migration,
+job, UI, dependency, real credential, or real channel data was introduced.
+Remaining tasks are pagination, reauthorization, disconnect and invalidation,
+tenant isolation proofs, retention and cascades, then integration review.
