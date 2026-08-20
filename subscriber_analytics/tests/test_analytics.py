@@ -374,6 +374,28 @@ class AnalyticsTests(unittest.TestCase):
                     extract_silent.main()
             shared_analyze.assert_not_called()
 
+    def test_notebook_uses_shared_core_without_legacy_calculation_calls(self):
+        notebook_path = MODULE_DIR / "subscriber_analytics.ipynb"
+        notebook = json.loads(notebook_path.read_text(encoding="utf-8"))
+        code_cells = [
+            "".join(cell.get("source", []))
+            for cell in notebook["cells"]
+            if cell.get("cell_type") == "code"
+        ]
+        notebook_code = "\n".join(code_cells)
+
+        self.assertIn("analytics_core.analyze(", notebook_code)
+        for legacy_call in (
+            "extract_silent.build_table(",
+            "extract_silent.add_segments(",
+            "extract_silent.apply_filters(",
+            "extract_silent.format_output(",
+        ):
+            with self.subTest(legacy_call=legacy_call):
+                self.assertNotIn(legacy_call, notebook_code)
+        for index, source in enumerate(code_cells):
+            compile(source, f"subscriber_analytics.ipynb:cell-{index}", "exec")
+
 
 if __name__ == "__main__":
     unittest.main()
