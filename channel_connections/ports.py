@@ -101,6 +101,12 @@ class EphemeralSecretStore(Protocol):
 
     def delete(self, workspace_id: str, slot_id: str) -> None: ...
 
+    def slot_ids(self, workspace_id: str) -> tuple[str, ...]: ...
+
+    def expired_slot_ids(
+        self, reference_time: datetime
+    ) -> tuple[tuple[str, str], ...]: ...
+
 
 class CredentialVault(Protocol):
     """Opaque credential custody; it never returns credential material here."""
@@ -113,6 +119,8 @@ class CredentialVault(Protocol):
     ) -> None: ...
 
     def delete(self, workspace_id: str, slot_id: str) -> None: ...
+
+    def slot_ids(self, workspace_id: str) -> tuple[str, ...]: ...
 
 
 class YouTubeAuthorizationGateway(Protocol):

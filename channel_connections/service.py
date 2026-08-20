@@ -43,9 +43,11 @@ from .models import (
     ConnectionAuditAction,
     ConnectionPage,
     ConnectionPageRequest,
+    ConnectionRetentionReport,
     ConnectionAuditEvent,
     ConnectionProvider,
     ConnectionStatus,
+    DeleteWorkspaceConnections,
     DisconnectConnection,
     IDEMPOTENCY_TTL,
     RevocationOutcome,
@@ -323,6 +325,137 @@ class ChannelConnectionsService:
                 connection_id=connection.connection_id,
             )
             return invalidated
+
+    # Privacy administration
+
+    def delete_workspace_connections(
+        self, context: WorkspaceContext, command: DeleteWorkspaceConnections
+    ) -> None:
+        _require(context, Permission.WORKSPACE_DELETE)
+        with self._lock:
+            now = self._now()
+            workspace_id = context.workspace_id
+            record_key = (
+                workspace_id,
+                context.user_id,
+                "delete_workspace",
+                command.idempotency_key,
+            )
+            payload = {"workspace_id": workspace_id}
+            if self._replay(record_key, payload, now) is not None:
+                return None
+
+            for connection_key in [
+                key
+                for key, connection in self._state.connections.items()
+                if connection.workspace_id == workspace_id
+            ]:
+                del self._state.connections[connection_key]
+                slot_id = self._state.credential_slots.pop(connection_key, None)
+                if slot_id is not None:
+                    self._vault.delete(workspace_id, slot_id)
+            for slot_id in self._vault.slot_ids(workspace_id):
+                self._vault.delete(workspace_id, slot_id)
+            for intent in [
+                intent
+                for intent in self._state.intents.values()
+                if intent.workspace_id == workspace_id
+            ]:
+                self._forget_intent(workspace_id, intent.intent_id)
+            for slot_id in self._ephemeral.slot_ids(workspace_id):
+                self._ephemeral.delete(workspace_id, slot_id)
+
+            self._state.active_keys = {
+                key: value
+                for key, value in self._state.active_keys.items()
+                if key[0] != workspace_id
+            }
+            self._state.cursors = {
+                token: record
+                for token, record in self._state.cursors.items()
+                if record.workspace_id != workspace_id
+            }
+            self._state.cleanups = {
+                cleanup_id: record
+                for cleanup_id, record in self._state.cleanups.items()
+                if record.workspace_id != workspace_id
+            }
+            self._state.idempotency = {
+                key: record
+                for key, record in self._state.idempotency.items()
+                if key[0] != workspace_id
+            }
+            self._bump_revision(workspace_id)
+            self._remember(record_key, payload, CompletedMutation(""), now, IDEMPOTENCY_TTL)
+            self._record_audit(
+                context,
+                action=ConnectionAuditAction.WORKSPACE_CONNECTIONS_DELETED,
+                occurred_at=now,
+            )
+            return None
+
+    def purge_retention(
+        self, context: WorkspaceContext, reference_time: datetime
+    ) -> ConnectionRetentionReport:
+        _require(context, Permission.CHANNEL_MANAGE_CONNECTION)
+        if (
+            not isinstance(reference_time, datetime)
+            or reference_time.utcoffset() is None
+        ):
+            raise _safe_error(ErrorCode.INVALID_INPUT, field="reference_time")
+        with self._lock:
+            workspace_id = context.workspace_id
+            intents_removed = 0
+            for intent in [
+                intent
+                for intent in self._state.intents.values()
+                if intent.workspace_id == workspace_id
+                and intent.expires_at <= reference_time
+            ]:
+                self._forget_intent(workspace_id, intent.intent_id)
+                intents_removed += 1
+
+            replays_removed = 0
+            records_removed = 0
+            for key in [
+                key
+                for key, record in self._state.idempotency.items()
+                if key[0] == workspace_id and record.expires_at <= reference_time
+            ]:
+                if key[2] == "complete":
+                    replays_removed += 1
+                else:
+                    records_removed += 1
+                del self._state.idempotency[key]
+
+            ephemeral_removed = 0
+            for stored_workspace, slot_id in self._ephemeral.expired_slot_ids(
+                reference_time
+            ):
+                if stored_workspace != workspace_id:
+                    continue
+                self._ephemeral.delete(stored_workspace, slot_id)
+                ephemeral_removed += 1
+
+            referenced = {
+                slot_id
+                for connection_key, slot_id in self._state.credential_slots.items()
+                if connection_key.startswith(f"{workspace_id}\x1f")
+            }
+            credentials_removed = 0
+            for slot_id in self._vault.slot_ids(workspace_id):
+                if slot_id in referenced:
+                    continue
+                self._vault.delete(workspace_id, slot_id)
+                credentials_removed += 1
+
+            return ConnectionRetentionReport(
+                intents_removed=intents_removed,
+                callback_replays_removed=replays_removed,
+                idempotency_records_removed=records_removed,
+                ephemeral_slots_removed=ephemeral_removed,
+                credential_slots_removed=credentials_removed,
+            )
 
     # Reads
 

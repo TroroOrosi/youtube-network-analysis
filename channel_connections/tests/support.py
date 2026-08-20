@@ -108,6 +108,12 @@ class RecordingEphemeralStore:
         self.deleted.append((workspace_id, slot_id))
         self._delegate.delete(workspace_id, slot_id)
 
+    def slot_ids(self, workspace_id: str) -> tuple[str, ...]:
+        return self._delegate.slot_ids(workspace_id)
+
+    def expired_slot_ids(self, reference_time: datetime) -> tuple[tuple[str, str], ...]:
+        return self._delegate.expired_slot_ids(reference_time)
+
     def slot_ids_left(self) -> tuple[tuple[str, str], ...]:
         return tuple(sorted(self._delegate._slots))
 
