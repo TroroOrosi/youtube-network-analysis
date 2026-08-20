@@ -474,3 +474,80 @@ No Web route, HTTP adapter, real OAuth call, Google SDK, database, migration,
 job, UI, dependency, real credential, or real channel data was introduced.
 Remaining tasks are pagination, reauthorization, disconnect and invalidation,
 tenant isolation proofs, retention and cascades, then integration review.
+
+## Verified milestone: channel-connections complete
+
+Branch: `feature/multi-channel-analytics`
+
+Verified implementation HEAD: `bc3497d`
+
+Completed slices after Checkpoint A:
+
+- `8d44fa7` records the user's approval of the nine-task ordering and the seven
+  Checkpoint A decisions.
+- `e16ece3` adds bounded pagination with single-use opaque cursors bound to
+  workspace, query, and the captured workspace revision.
+- `3b5b555` adds reauthorization with exact provider-channel matching and
+  credential rotation that commits the new slot before deleting the old one.
+- `9c07fb9` adds workspace-scoped retention at the exact 10-minute, 24-hour, and
+  90-day boundaries, orphan slot reconciliation, and the workspace cascade.
+- `d8974ff` proves tenant isolation under a worst-case colliding token
+  generator; no production change was required.
+- `bc3497d` adds the real-context integration suite, the module README, the
+  eight approved specification clarifications, one function split, and removal
+  of two unused helpers.
+
+Final verification evidence:
+
+- channel-connections suite: 131 tests passed;
+- workspace-access suite: 40 tests passed;
+- channel-data suite: 35 tests passed;
+- subscriber analytics suite: 29 tests passed;
+- `python -m compileall -q channel_connections workspace_access channel_data
+  subscriber_analytics`: passed;
+- Notebook JSON parsed and every code cell compiled;
+- Markdown fence validation, staged credential-shaped-value scan, and
+  `git diff --check`: passed;
+- integration fixtures resolved genuine `workspace_access` sessions, contexts,
+  and memberships rather than constructed contexts;
+- concurrency fixtures proved one intent per idempotency key and exactly one
+  provider exchange for four concurrent callbacks;
+- colliding-identifier fixtures proved two workspaces with identical connection,
+  intent, and credential slot identifiers never share reads, callbacks, cursors,
+  credentials, cascades, or audit attribution;
+- retention fixtures exercised each boundary one second before and exactly at
+  the cutoff.
+
+Five-axis review verdict: no unresolved Critical or Required finding.
+Correctness covers intent binding, atomic claim, provider verification,
+rotation, disconnect ordering, pagination, retention, and cascade boundaries.
+Security covers digest-only state storage, PKCE S256, permission checks on every
+public operation, non-enumerating errors, workspace-prefixed keys, redacted
+secret rendering, revocation of every rejected grant, and fail-closed unknown
+outcomes. Production functions are at most 65 lines. Two unused helpers were
+deleted; the protocols and the audit sink are intentional seams, not dead code.
+
+One implementation bug was found and fixed by its own regression test: the
+authorization URL embeds the one-time state, so retaining an `AuthorizationStart`
+in the 90-day idempotency record kept a live secret in domain state. The URL is
+now an ephemeral secret deleted with its intent.
+
+No Web route, HTTP adapter, real OAuth call, Google SDK, database, migration,
+background job, UI, dependency, real credential, or real channel data was
+introduced. The in-memory ephemeral store and credential vault are documented
+fakes; an approved managed vault or KMS, key rotation, access auditing, and
+backup erasure remain production gates.
+
+### Next session
+
+The next capability in the build order is `collection-jobs`, which depends on
+`channel-connections` and `channel-data`. Before it starts, two contracts are
+still unspecified and must be approved separately:
+
+1. a workspace-bound execution authority that lets a background job act without
+   a browser context, and
+2. a brokered provider-operation interface, because no caller may request a raw
+   credential from this module.
+
+The hosted Web/API and non-engineer UI slice also remains unspecified; its
+acceptance requirements are recorded in `SPEC-channel-connections.md`.

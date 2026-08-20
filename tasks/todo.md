@@ -163,24 +163,24 @@ server-side cursors bound to the authorized query.
 
 **Acceptance criteria:**
 
-- [ ] Reads require `channel.read`, so a member can see safe metadata; missing
+- [x] Reads require `channel.read`, so a member can see safe metadata; missing
   and foreign connections share
   `CONNECTION_NOT_FOUND_OR_FORBIDDEN`.
-- [ ] Limits enforce 1-100 with default 50, ordering is `connected_at`
+- [x] Limits enforce 1-100 with default 50, ordering is `connected_at`
   descending then `connection_id` ascending, and full traversal returns no
   duplicate or missing row.
-- [ ] Cursors are opaque, bound to workspace, ordering, limit, and the captured
+- [x] Cursors are opaque, bound to workspace, ordering, limit, and the captured
   result; tampered, reused, cross-workspace, and cross-query tokens fail as
   `INVALID_CURSOR` while superseded captures fail as `CURSOR_EXPIRED`, and no
   cursor contains provider metadata or credentials.
 
 **Verification:**
 
-- [ ] RED then GREEN:
+- [x] RED then GREEN:
   `python -m unittest channel_connections.tests.test_connections -v`
-- [ ] Full channel-connections, workspace-access, channel-data, and analytics
+- [x] Full channel-connections, workspace-access, channel-data, and analytics
   suites pass.
-- [ ] Multi-page traversal, tamper, and concurrent-change fixtures, compile,
+- [x] Multi-page traversal, tamper, and concurrent-change fixtures, compile,
   and integrity checks pass.
 
 **Dependencies:** Task 3
@@ -202,25 +202,25 @@ provider channel matching.
 
 **Acceptance criteria:**
 
-- [ ] `begin_reauthorization` requires `channel.manage_connection` and an
+- [x] `begin_reauthorization` requires `channel.manage_connection` and an
   existing connection in the current workspace; a missing or foreign target
   fails non-enumerably.
-- [ ] A verified provider channel that differs from the target fails as
+- [x] A verified provider channel that differs from the target fails as
   `REAUTH_CHANNEL_MISMATCH` without replacing, deleting, or invalidating the
   current credential.
-- [ ] A successful reauthorization rotates the credential slot, updates the
+- [x] A successful reauthorization rotates the credential slot, updates the
   connection atomically from a reader's perspective, deletes the old slot only
   after the new revision commits, and returns `REAUTH_REQUIRED` to `ACTIVE`.
-- [ ] Failed old-slot cleanup is tracked by a secret-free cleanup identifier
+- [x] Failed old-slot cleanup is tracked by a secret-free cleanup identifier
   for retry and never by copied token material.
 
 **Verification:**
 
-- [ ] RED then GREEN:
+- [x] RED then GREEN:
   `python -m unittest channel_connections.tests.test_connections -v`
-- [ ] Full channel-connections, workspace-access, channel-data, and analytics
+- [x] Full channel-connections, workspace-access, channel-data, and analytics
   suites pass.
-- [ ] Rotation, mismatch, recovery, and concurrent reauthorization fixtures,
+- [x] Rotation, mismatch, recovery, and concurrent reauthorization fixtures,
   compile, secret scan, and integrity checks pass.
 
 **Dependencies:** Task 4
@@ -242,27 +242,27 @@ the plan.
 
 **Acceptance criteria:**
 
-- [ ] Disconnect requires `channel.manage_connection` and follows the approved
+- [x] Disconnect requires `channel.manage_connection` and follows the approved
   order: mark unavailable, request revocation, delete the credential slot
   regardless of revocation confirmation, remove metadata and the active
   uniqueness key, and retain only secret-free evidence.
-- [ ] An unconfirmed or failed provider revocation is recorded as a secret-free
+- [x] An unconfirmed or failed provider revocation is recorded as a secret-free
   cleanup outcome, no token is retained for retry, and exact disconnect replay
   is idempotent while a changed payload conflicts.
-- [ ] `report_credential_invalidation` deletes the slot, publishes
+- [x] `report_credential_invalidation` deletes the slot, publishes
   `REAUTH_REQUIRED`, emits `CONNECTION_REAUTH_REQUIRED`, accepts no provider
   payload or token, and leaves no usable credential.
-- [ ] Disconnecting the same provider channel frees the active key for a new
+- [x] Disconnecting the same provider channel frees the active key for a new
   connection ID, does not delete `channel-data`, and racing disconnect,
   connect, and reauthorization never overwrite or resurrect a credential slot.
 
 **Verification:**
 
-- [ ] RED then GREEN:
+- [x] RED then GREEN:
   `python -m unittest channel_connections.tests.test_connections -v`
-- [ ] Full channel-connections, workspace-access, channel-data, and analytics
+- [x] Full channel-connections, workspace-access, channel-data, and analytics
   suites pass.
-- [ ] Revocation-uncertainty, replay, invalidation, and two-thread race
+- [x] Revocation-uncertainty, replay, invalidation, and two-thread race
   fixtures plus a `channel-data` non-deletion check pass.
 
 **Dependencies:** Task 5
@@ -278,10 +278,10 @@ the plan.
 
 ## Checkpoint B: Connection lifecycle
 
-- [ ] Tasks 4-6 are independently committed and pushed.
-- [ ] Rotation, disconnect, and invalidation leave no usable or orphaned
+- [x] Tasks 4-6 are independently committed and pushed.
+- [x] Rotation, disconnect, and invalidation leave no usable or orphaned
   credential slot.
-- [ ] Collected `channel-data` remains intact after disconnect.
+- [x] Collected `channel-data` remains intact after disconnect.
 
 ## Task 7: Prove tenant isolation across every operation
 
@@ -292,22 +292,22 @@ administration, and fix any leak the fixtures expose.
 
 **Acceptance criteria:**
 
-- [ ] The same provider channel is independently connectable in two workspaces
+- [x] The same provider channel is independently connectable in two workspaces
   and neither connection, credential, intent, cursor, idempotency record, nor
   audit event is readable, replayable, or mutable from the other.
-- [ ] A callback bound to one workspace cannot be completed from the other even
+- [x] A callback bound to one workspace cannot be completed from the other even
   with an identical state value, and foreign identifiers produce byte-identical
   safe errors.
-- [ ] A cascade, retention purge, disconnect, or invalidation in one workspace
+- [x] A cascade, retention purge, disconnect, or invalidation in one workspace
   leaves the identically named foreign records untouched.
 
 **Verification:**
 
-- [ ] RED then GREEN:
+- [x] RED then GREEN:
   `python -m unittest channel_connections.tests.test_tenant_isolation -v`
-- [ ] Full channel-connections, workspace-access, channel-data, and analytics
+- [x] Full channel-connections, workspace-access, channel-data, and analytics
   suites pass.
-- [ ] Identical-ID cross-tenant fixtures, compile, secret scan, and integrity
+- [x] Identical-ID cross-tenant fixtures, compile, secret scan, and integrity
   checks pass.
 
 **Dependencies:** Task 6
@@ -328,28 +328,28 @@ inspection.
 
 **Acceptance criteria:**
 
-- [ ] `purge_retention` requires `channel.manage_connection` and removes
+- [x] `purge_retention` requires `channel.manage_connection` and removes
   unclaimed intents and PKCE slots at exactly 10 minutes, consumed replay
   records at exactly 24 hours, and terminal idempotency and resolved cleanup
   records at exactly 90 days without deleting unresolved operations.
-- [ ] Orphan ephemeral and unreferenced credential slots are reconciled without
+- [x] Orphan ephemeral and unreferenced credential slots are reconciled without
   reading secret material, and the report exposes only safe counts.
-- [ ] `delete_workspace_connections` requires `workspace.delete` and removes
+- [x] `delete_workspace_connections` requires `workspace.delete` and removes
   connections, intents, cursors, replay and idempotency records, cleanup state,
   ephemeral secrets, and credential slots for that workspace only, with
   idempotent replay.
-- [ ] Every audit event contains only actor, workspace, action, opaque
+- [x] Every audit event contains only actor, workspace, action, opaque
   target/intent ID, outcome, timestamp, and correlation ID; export inspection
   finds no credential slot, digest, provider error, or scope beyond the fixed
   product constant.
 
 **Verification:**
 
-- [ ] RED then GREEN:
+- [x] RED then GREEN:
   `python -m unittest channel_connections.tests.test_privacy -v`
-- [ ] Full channel-connections, workspace-access, channel-data, and analytics
+- [x] Full channel-connections, workspace-access, channel-data, and analytics
   suites pass.
-- [ ] Exact-cutoff, orphan-reconciliation, two-thread cascade, and
+- [x] Exact-cutoff, orphan-reconciliation, two-thread cascade, and
   no-secret representation fixtures, compile, and integrity checks pass.
 
 **Dependencies:** Task 7
@@ -365,10 +365,10 @@ inspection.
 
 ## Checkpoint C: Isolation and privacy lifecycle
 
-- [ ] Tasks 7-8 are independently committed and pushed.
-- [ ] Retention and cascade tests cover every exact cutoff and every secret
+- [x] Tasks 7-8 are independently committed and pushed.
+- [x] Retention and cascade tests cover every exact cutoff and every secret
   store copy.
-- [ ] Graph impact/flow/test queries have no parser failure; an unavailable or
+- [x] Graph impact/flow/test queries have no parser failure; an unavailable or
   empty graph is recorded rather than misreported as coverage evidence.
 
 ## Task 9: Integrate, review, and document channel-connections
@@ -379,27 +379,27 @@ public boundary, conduct the full review, and preserve continuation state.
 
 **Acceptance criteria:**
 
-- [ ] An integration fixture resolves real owner and member contexts, publishes
+- [x] An integration fixture resolves real owner and member contexts, publishes
   a ready connection, exposes it to a `channel-data` style consumer by opaque
   connection and provider channel ID only, and changes no CLI, Notebook, or
   analytics behavior.
-- [ ] README documents safe usage, the permission matrix, the authorization and
+- [x] README documents safe usage, the permission matrix, the authorization and
   callback lifecycle, reauthorization, disconnect versus data deletion,
   retention boundaries, in-memory fake limits, production vault/KMS gates, and
   exact verification commands.
-- [ ] Five-axis, security, and simplification review has no unresolved Critical
+- [x] Five-axis, security, and simplification review has no unresolved Critical
   or Required finding, and durable progress records the verified HEAD and the
   next module.
-- [ ] The living specification is updated with the two approved
+- [x] The living specification is updated with the two approved
   interface-sequencing clarifications.
 
 **Verification:**
 
-- [ ] Focused channel-connections, workspace-access, channel-data, and
+- [x] Focused channel-connections, workspace-access, channel-data, and
   subscriber analytics suites pass.
-- [ ] Compile, Notebook code-cell, runtime integration, Markdown fence,
+- [x] Compile, Notebook code-cell, runtime integration, Markdown fence,
   staged-secret, public-interface, and `git diff --check` checks pass.
-- [ ] Worktree is clean, all task commits are pushed, and local/upstream HEADs
+- [x] Worktree is clean, all task commits are pushed, and local/upstream HEADs
   match.
 
 **Dependencies:** Task 8
@@ -417,8 +417,8 @@ public boundary, conduct the full review, and preserve continuation state.
 
 ## Final checkpoint: channel-connections complete
 
-- [ ] All nine tasks and three intermediate checkpoints are complete.
-- [ ] Every approved specification success criterion has direct evidence.
-- [ ] No Web route, real provider call, SDK, database, migration, job, UI,
+- [x] All nine tasks and three intermediate checkpoints are complete.
+- [x] Every approved specification success criterion has direct evidence.
+- [x] No Web route, real provider call, SDK, database, migration, job, UI,
   dependency, real credential, or real channel data was introduced.
-- [ ] Branch is pushed and ready to specify the hosted API/UI slice.
+- [x] Branch is pushed and ready to specify the hosted API/UI slice.
