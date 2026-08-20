@@ -47,17 +47,17 @@ rotation/revocation, logout, and logout-all.
 
 **Acceptance criteria:**
 
-- [ ] Verified `(issuer, subject)` maps to one local user without using email as
+- [x] Verified `(issuer, subject)` maps to one local user without using email as
   authority; disabled/deleted users fail closed.
-- [ ] Raw secrets are returned once, never stored/audited, and idle/absolute
+- [x] Raw secrets are returned once, never stored/audited, and idle/absolute
   limits are evaluated exactly in UTC.
-- [ ] Revocation is idempotent and a user can revoke only their own sessions.
+- [x] Revocation is idempotent and a user can revoke only their own sessions.
 
 **Verification:**
 
-- [ ] RED then GREEN: `python -m unittest workspace_access.tests.test_sessions -v`
-- [ ] Full workspace and analytics suites pass.
-- [ ] Compile, secret-value scan, and `git diff --check` pass.
+- [x] RED then GREEN: `python -m unittest workspace_access.tests.test_sessions -v`
+- [x] Full workspace and analytics suites pass.
+- [x] Compile, secret-value scan, and `git diff --check` pass.
 
 **Dependencies:** Task 1
 

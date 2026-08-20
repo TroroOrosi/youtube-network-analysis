@@ -22,6 +22,7 @@ from .models import (
     WorkspaceAccessError,
     permissions_for_role,
 )
+from .service import WorkspaceAccessService
 
 __all__ = [
     "AccessSecret",
@@ -43,5 +44,6 @@ __all__ = [
     "WorkspaceSelection",
     "WorkspaceSummary",
     "WorkspaceAccessError",
+    "WorkspaceAccessService",
     "permissions_for_role",
 ]
