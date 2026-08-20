@@ -26,6 +26,19 @@ class IdempotencyRecord:
     fingerprint: str
     result: object
     recorded_at: datetime
+    expires_at: datetime
+
+
+@dataclass(slots=True)
+class CleanupRecord:
+    """Secret-free evidence that an external effect needs reconciliation."""
+
+    cleanup_id: str
+    workspace_id: str
+    kind: str
+    credential_slot_id: str | None
+    recorded_at: datetime
+    resolved_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +81,8 @@ class MemoryState:
         default_factory=dict
     )
     connections: dict[str, ChannelConnection] = field(default_factory=dict)
+    credential_slots: dict[str, str] = field(default_factory=dict)
+    cleanups: dict[str, CleanupRecord] = field(default_factory=dict)
     active_keys: dict[tuple[str, str, str], str] = field(default_factory=dict)
     audit_events: list[ConnectionAuditEvent] = field(default_factory=list)
 

@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from threading import RLock
 from typing import Any
 from urllib.parse import urlsplit
@@ -22,26 +23,38 @@ from workspace_access.models import AuditOutcome, Permission, WorkspaceContext
 from .errors import ChannelConnectionsError, ErrorCode
 from .memory import (
     AuthorizationIntent,
+    CleanupRecord,
     IdempotencyRecord,
     MemoryState,
     StartedIntentRef,
 )
 from .models import (
     APPROVED_SCOPES,
+    AuthorizationFailureReason,
     AuthorizationOperation,
     AuthorizationStart,
     BeginAuthorization,
+    CALLBACK_REPLAY_TTL,
+    ChannelConnection,
+    CompleteAuthorization,
     ConnectionAuditAction,
     ConnectionAuditEvent,
     ConnectionProvider,
+    ConnectionStatus,
+    IDEMPOTENCY_TTL,
+    RevocationOutcome,
     INTENT_TTL,
+    MAX_IDENTIFIER_LENGTH,
     RedactedSecret,
+    VerifiedProviderGrant,
 )
 from .ports import (
     Clock,
     ConnectionAuditSink,
     CredentialVault,
     EphemeralSecretStore,
+    ProviderRejected,
+    ProviderUnavailable,
     TokenGenerator,
     YouTubeAuthorizationGateway,
 )
@@ -97,6 +110,16 @@ def _fingerprint(payload: dict[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _provider_failure(reason: AuthorizationFailureReason) -> ChannelConnectionsError:
+    if reason is AuthorizationFailureReason.SUBSCRIBER_CAPABILITY_MISSING:
+        return _safe_error(ErrorCode.PROVIDER_CAPABILITY_MISSING, reason_code=reason.value)
+    return _safe_error(ErrorCode.PROVIDER_AUTHORIZATION_FAILED, reason_code=reason.value)
+
+
+def _credential_slot(intent: AuthorizationIntent) -> str:
+    return f"cred_{intent.intent_id}"
+
+
 def _allowlisted_authorization_url(value: object) -> str:
     if not isinstance(value, str):
         raise _safe_error(ErrorCode.PROVIDER_AUTHORIZATION_FAILED)
@@ -150,6 +173,55 @@ class ChannelConnectionsService:
             target_connection_id=None,
             idempotency_key=command.idempotency_key,
         )
+
+    def complete_authorization(
+        self, context: WorkspaceContext, command: CompleteAuthorization
+    ) -> ChannelConnection:
+        _require(context, Permission.CHANNEL_MANAGE_CONNECTION)
+        with self._lock:
+            now = self._now()
+            state_digest = _digest(command.state.reveal())
+            record_key = (
+                context.workspace_id,
+                context.user_id,
+                "complete",
+                command.idempotency_key,
+            )
+            payload = {
+                "session_id": context.session_id,
+                "state_digest": state_digest,
+                "code_digest": (
+                    _digest(command.code.reveal()) if command.code is not None else None
+                ),
+                "provider_error": command.provider_error,
+            }
+            replayed = self._replay(
+                record_key, payload, now, conflict=ErrorCode.CALLBACK_CONFLICT
+            )
+            if replayed is not None:
+                return replayed
+
+            intent = self._claim_intent(context, state_digest, now)
+            if command.provider_error is not None:
+                self._consume_intent(intent)
+                raise _safe_error(
+                    ErrorCode.PROVIDER_AUTHORIZATION_FAILED,
+                    reason_code=AuthorizationFailureReason.PROVIDER_DENIED.value,
+                )
+
+            grant = self._exchange(intent, command, now)
+            connection = self._publish(context, intent, grant, now)
+            self._remember(record_key, payload, connection, now, CALLBACK_REPLAY_TTL)
+            return connection
+
+    # Reads
+
+    def get_connection(
+        self, context: WorkspaceContext, connection_id: str
+    ) -> ChannelConnection:
+        _require(context, Permission.CHANNEL_READ)
+        with self._lock:
+            return self._connection(context.workspace_id, connection_id)
 
     # Internal orchestration
 
@@ -233,6 +305,7 @@ class ChannelConnectionsService:
                 payload,
                 StartedIntentRef(intent_id=intent_id, expires_at=expires_at),
                 now,
+                IDEMPOTENCY_TTL,
             )
             self._record_audit(
                 context,
@@ -247,6 +320,175 @@ class ChannelConnectionsService:
             )
             return start
 
+    def _claim_intent(
+        self, context: WorkspaceContext, state_digest: str, now: datetime
+    ) -> AuthorizationIntent:
+        intent_key = self._state.intents_by_state.get(state_digest)
+        intent = None if intent_key is None else self._state.intents.get(intent_key)
+        if intent is None:
+            raise _safe_error(ErrorCode.INTENT_NOT_FOUND_OR_EXPIRED)
+        if intent.expires_at <= now:
+            self._forget_intent(intent.workspace_id, intent.intent_id)
+            raise _safe_error(ErrorCode.INTENT_NOT_FOUND_OR_EXPIRED)
+        if intent.workspace_id != context.workspace_id:
+            raise _safe_error(ErrorCode.INTENT_NOT_FOUND_OR_EXPIRED)
+        if not (
+            hmac.compare_digest(intent.user_id, context.user_id)
+            and hmac.compare_digest(intent.session_id, context.session_id)
+        ):
+            raise _safe_error(ErrorCode.CALLBACK_CONFLICT)
+        if intent.claimed_at is not None:
+            raise _safe_error(ErrorCode.OPERATION_IN_PROGRESS, retryable=True)
+        intent.claimed_at = now
+        return intent
+
+    def _exchange(
+        self,
+        intent: AuthorizationIntent,
+        command: CompleteAuthorization,
+        now: datetime,
+    ) -> VerifiedProviderGrant:
+        workspace_id = intent.workspace_id
+        try:
+            verifier = self._ephemeral.take(workspace_id, intent.verifier_slot_id)
+        except LookupError:
+            self._consume_intent(intent)
+            raise _safe_error(ErrorCode.INTENT_NOT_FOUND_OR_EXPIRED) from None
+
+        try:
+            grant = self._gateway.exchange_and_verify(
+                code=command.code,
+                code_verifier=verifier,
+                redirect_uri_id=intent.redirect_uri_id,
+            )
+        except ProviderRejected as rejected:
+            self._consume_intent(intent)
+            raise _provider_failure(rejected.reason) from None
+        except BaseException:
+            self._record_cleanup(
+                workspace_id, "PROVIDER_OUTCOME_UNKNOWN", _credential_slot(intent), now
+            )
+            raise _safe_error(
+                ErrorCode.PROVIDER_AUTHORIZATION_FAILED,
+                retryable=True,
+                reason_code=AuthorizationFailureReason.PROVIDER_UNAVAILABLE.value,
+            ) from None
+
+        if not isinstance(grant, VerifiedProviderGrant):
+            self._consume_intent(intent)
+            raise _provider_failure(AuthorizationFailureReason.INVALID_PROVIDER_RESPONSE)
+        return grant
+
+    def _publish(
+        self,
+        context: WorkspaceContext,
+        intent: AuthorizationIntent,
+        grant: VerifiedProviderGrant,
+        now: datetime,
+    ) -> ChannelConnection:
+        workspace_id = context.workspace_id
+        slot_id = _credential_slot(intent)
+        try:
+            self._vault.put(workspace_id, slot_id, grant.credential)
+        except BaseException:
+            self._consume_intent(intent)
+            self._record_cleanup(workspace_id, "CREDENTIAL_WRITE_UNKNOWN", slot_id, now)
+            raise _safe_error(
+                ErrorCode.PROVIDER_AUTHORIZATION_FAILED, retryable=True
+            ) from None
+
+        failure = self._verify_grant(grant, intent)
+        if failure is not None:
+            self._revoke_slot(workspace_id, slot_id, now)
+            self._consume_intent(intent)
+            raise failure
+
+        active_key = (workspace_id, grant.provider.value, grant.provider_channel_id)
+        if active_key in self._state.active_keys:
+            self._revoke_slot(workspace_id, slot_id, now)
+            self._consume_intent(intent)
+            raise _safe_error(ErrorCode.CONNECTION_ALREADY_EXISTS)
+
+        connection_id = f"connection_{self._tokens.new_token()}"
+        connection = ChannelConnection(
+            connection_id=connection_id,
+            workspace_id=workspace_id,
+            provider=grant.provider,
+            provider_channel_id=grant.provider_channel_id,
+            channel_title=grant.channel_title,
+            status=ConnectionStatus.ACTIVE,
+            connected_at=now,
+            updated_at=now,
+        )
+        connection_key = _key(workspace_id, connection_id)
+        self._state.connections[connection_key] = connection
+        self._state.credential_slots[connection_key] = slot_id
+        self._state.active_keys[active_key] = connection_id
+        self._consume_intent(intent)
+        self._record_audit(
+            context,
+            action=ConnectionAuditAction.CONNECTION_ESTABLISHED,
+            occurred_at=now,
+            intent_id=intent.intent_id,
+            connection_id=connection_id,
+        )
+        return connection
+
+    def _verify_grant(
+        self, grant: VerifiedProviderGrant, intent: AuthorizationIntent
+    ) -> ChannelConnectionsError | None:
+        if grant.provider is not intent.provider:
+            return _provider_failure(AuthorizationFailureReason.INVALID_PROVIDER_RESPONSE)
+        if tuple(grant.granted_scopes) != APPROVED_SCOPES:
+            return _provider_failure(AuthorizationFailureReason.SCOPE_NOT_GRANTED)
+        if grant.credential.refresh_token is None:
+            return _provider_failure(AuthorizationFailureReason.OFFLINE_CREDENTIAL_MISSING)
+        if not grant.subscriber_capability_verified:
+            return _provider_failure(
+                AuthorizationFailureReason.SUBSCRIBER_CAPABILITY_MISSING
+            )
+        return None
+
+    def _revoke_slot(self, workspace_id: str, slot_id: str, now: datetime) -> None:
+        try:
+            outcome = self._gateway.revoke(workspace_id, slot_id)
+        except BaseException:
+            outcome = None
+        if outcome is not RevocationOutcome.REVOKED:
+            self._record_cleanup(workspace_id, "REVOCATION_UNCONFIRMED", slot_id, now)
+        self._vault.delete(workspace_id, slot_id)
+
+    def _record_cleanup(
+        self,
+        workspace_id: str,
+        kind: str,
+        credential_slot_id: str | None,
+        now: datetime,
+    ) -> None:
+        cleanup_id = f"cleanup_{self._tokens.new_token()}"
+        self._state.cleanups[cleanup_id] = CleanupRecord(
+            cleanup_id=cleanup_id,
+            workspace_id=workspace_id,
+            kind=kind,
+            credential_slot_id=credential_slot_id,
+            recorded_at=now,
+        )
+
+    def _consume_intent(self, intent: AuthorizationIntent) -> None:
+        self._forget_intent(intent.workspace_id, intent.intent_id)
+
+    def _connection(self, workspace_id: str, connection_id: object) -> ChannelConnection:
+        if (
+            not isinstance(connection_id, str)
+            or not connection_id
+            or len(connection_id) > MAX_IDENTIFIER_LENGTH
+        ):
+            raise _safe_error(ErrorCode.CONNECTION_NOT_FOUND_OR_FORBIDDEN)
+        connection = self._state.connections.get(_key(workspace_id, connection_id))
+        if connection is None:
+            raise _safe_error(ErrorCode.CONNECTION_NOT_FOUND_OR_FORBIDDEN)
+        return connection
+
     def _now(self) -> datetime:
         now = self._clock.now()
         if not isinstance(now, datetime) or now.utcoffset() is None:
@@ -258,14 +500,16 @@ class ChannelConnectionsService:
         record_key: tuple[str, str, str, str],
         payload: dict[str, Any],
         now: datetime,
+        conflict: ErrorCode = ErrorCode.IDEMPOTENCY_CONFLICT,
     ) -> Any:
         record = self._state.idempotency.get(record_key)
         if record is None:
             return None
         if record.fingerprint != _fingerprint(payload):
-            raise _safe_error(
-                ErrorCode.IDEMPOTENCY_CONFLICT, field="idempotency_key"
-            )
+            raise _safe_error(conflict, field="idempotency_key")
+        if record.expires_at <= now:
+            del self._state.idempotency[record_key]
+            return None
         result = record.result
         if isinstance(result, StartedIntentRef):
             return self._restore_start(record_key, result, now)
@@ -299,11 +543,13 @@ class ChannelConnectionsService:
         payload: dict[str, Any],
         result: Any,
         now: datetime,
+        ttl: timedelta,
     ) -> None:
         self._state.idempotency[record_key] = IdempotencyRecord(
             fingerprint=_fingerprint(payload),
             result=result,
             recorded_at=now,
+            expires_at=now + ttl,
         )
 
     def _forget_intent(self, workspace_id: str, intent_id: str) -> None:

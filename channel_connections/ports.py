@@ -8,6 +8,7 @@ from typing import Protocol
 from workspace_access.models import WorkspaceContext
 
 from .models import (
+    AuthorizationFailureReason,
     AuthorizationStart,
     BeginAuthorization,
     BeginReauthorization,
@@ -25,6 +26,18 @@ from .models import (
     RevocationOutcome,
     VerifiedProviderGrant,
 )
+
+
+class ProviderRejected(Exception):
+    """A gateway definitively refused, carrying only a safe reason enum."""
+
+    def __init__(self, reason: AuthorizationFailureReason) -> None:
+        super().__init__(reason.value)
+        self.reason = reason
+
+
+class ProviderUnavailable(Exception):
+    """A gateway could not determine the provider outcome, such as a timeout."""
 
 
 class ConnectionReader(Protocol):

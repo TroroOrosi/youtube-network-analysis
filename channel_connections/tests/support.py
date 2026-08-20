@@ -11,6 +11,7 @@ from datetime import UTC, datetime, timedelta
 
 from channel_connections.models import (
     APPROVED_SCOPES,
+    CompleteAuthorization,
     ConnectionProvider,
     ProviderCredential,
     RedactedSecret,
@@ -107,6 +108,9 @@ class RecordingEphemeralStore:
         self.deleted.append((workspace_id, slot_id))
         self._delegate.delete(workspace_id, slot_id)
 
+    def slot_ids_left(self) -> tuple[tuple[str, str], ...]:
+        return tuple(sorted(self._delegate._slots))
+
     def stored_secret(self, workspace_id: str, slot_id: str) -> str | None:
         for put in self.puts:
             if put.workspace_id == workspace_id and put.slot_id == slot_id:
@@ -129,11 +133,23 @@ class ExchangeCall:
     redirect_uri_id: str
 
 
-class GatewayFailure(Exception):
-    """Raised by the fake gateway to model an untrusted provider outcome."""
+class FailingCredentialVault:
+    """Vault fake whose put always fails, modelling an unavailable store."""
 
-    def __init__(self, detail: str = "provider said no: token abc123") -> None:
-        super().__init__(detail)
+    def __init__(self) -> None:
+        self.deleted: list[tuple[str, str]] = []
+
+    def put(self, workspace_id: str, slot_id: str, credential: object) -> None:
+        raise RuntimeError("credential vault is unavailable")
+
+    def delete(self, workspace_id: str, slot_id: str) -> None:
+        self.deleted.append((workspace_id, slot_id))
+
+    def contains(self, workspace_id: str, slot_id: str) -> bool:
+        return False
+
+    def slot_ids(self, workspace_id: str) -> tuple[str, ...]:
+        return ()
 
 
 class FakeYouTubeGateway:
@@ -224,4 +240,23 @@ def grant(
         granted_scopes=granted_scopes,
         credential=provider_credential or credential(),
         subscriber_capability_verified=subscriber_capability_verified,
+    )
+
+
+def latest_state(gateway: FakeYouTubeGateway) -> RedactedSecret:
+    return RedactedSecret(gateway.authorization_calls[-1].state)
+
+
+def callback(
+    gateway: FakeYouTubeGateway,
+    *,
+    idempotency_key: str = "callback-1",
+    code: str | None = "synthetic-authorization-code",
+    provider_error: str | None = None,
+) -> CompleteAuthorization:
+    return CompleteAuthorization(
+        state=latest_state(gateway),
+        code=RedactedSecret(code) if code else None,
+        provider_error=provider_error,
+        idempotency_key=idempotency_key,
     )

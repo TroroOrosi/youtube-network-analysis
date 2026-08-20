@@ -240,3 +240,99 @@ class BeginAuthorizationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CompleteAuthorizationBindingTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.service, self.clock, self.gateway, self.ephemeral = build_service()
+        self.owner = context()
+        self.service.begin_authorization(
+            self.owner, BeginAuthorization(idempotency_key="begin-1")
+        )
+
+    def callback(self, **overrides):
+        from channel_connections.tests.support import callback
+
+        return callback(self.gateway, **overrides)
+
+    def test_an_unknown_state_is_indistinguishable_from_an_expired_one(self) -> None:
+        from channel_connections.models import CompleteAuthorization, RedactedSecret
+
+        unknown = CompleteAuthorization(
+            state=RedactedSecret("never-issued-state"),
+            code=RedactedSecret("synthetic-authorization-code"),
+            idempotency_key="callback-1",
+        )
+        with self.assertRaises(ChannelConnectionsError) as unknown_raised:
+            self.service.complete_authorization(self.owner, unknown)
+
+        self.clock.advance(INTENT_TTL + timedelta(seconds=1))
+        with self.assertRaises(ChannelConnectionsError) as expired_raised:
+            self.service.complete_authorization(self.owner, self.callback())
+
+        self.assertEqual(unknown_raised.exception.code, "INTENT_NOT_FOUND_OR_EXPIRED")
+        self.assertEqual(
+            unknown_raised.exception.message, expired_raised.exception.message
+        )
+        self.assertEqual(self.gateway.exchanges, [])
+
+    def test_a_foreign_workspace_cannot_complete_the_callback(self) -> None:
+        with self.assertRaises(ChannelConnectionsError) as raised:
+            self.service.complete_authorization(context("workspace-2"), self.callback())
+
+        self.assertEqual(raised.exception.code, "INTENT_NOT_FOUND_OR_EXPIRED")
+        self.assertEqual(self.gateway.exchanges, [])
+
+    def test_another_owner_or_session_cannot_complete_the_callback(self) -> None:
+        other_user = context("workspace-1", *self.owner.permissions, user_id="user-2")
+        with self.assertRaises(ChannelConnectionsError) as user_raised:
+            self.service.complete_authorization(other_user, self.callback())
+
+        other_session = context(
+            "workspace-1", *self.owner.permissions, session_id="another-session"
+        )
+        with self.assertRaises(ChannelConnectionsError) as session_raised:
+            self.service.complete_authorization(other_session, self.callback())
+
+        self.assertEqual(user_raised.exception.code, "CALLBACK_CONFLICT")
+        self.assertEqual(session_raised.exception.code, "CALLBACK_CONFLICT")
+        self.assertEqual(self.gateway.exchanges, [])
+
+    def test_completion_requires_the_manage_permission(self) -> None:
+        member = context("workspace-1", Permission.CHANNEL_READ)
+
+        with self.assertRaises(ChannelConnectionsError) as raised:
+            self.service.complete_authorization(member, self.callback())
+
+        self.assertEqual(raised.exception.code, "PERMISSION_DENIED")
+        self.assertEqual(self.gateway.exchanges, [])
+
+    def test_expired_intents_remove_their_ephemeral_secrets(self) -> None:
+        self.clock.advance(INTENT_TTL + timedelta(seconds=1))
+
+        with self.assertRaises(ChannelConnectionsError):
+            self.service.complete_authorization(self.owner, self.callback())
+
+        self.assertEqual(self.service._state.intents, {})
+        self.assertEqual(self.ephemeral.slot_ids_left(), ())
+
+    def test_only_one_exchange_runs_for_concurrent_callbacks(self) -> None:
+        command = self.callback()
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            outcomes = list(
+                pool.map(
+                    lambda _: self._attempt(command),
+                    range(4),
+                )
+            )
+
+        connections = [item for item in outcomes if not isinstance(item, Exception)]
+        self.assertEqual(len(self.gateway.exchanges), 1)
+        self.assertEqual({result.connection_id for result in connections}, {connections[0].connection_id})
+
+    def _attempt(self, command):
+        try:
+            return self.service.complete_authorization(self.owner, command)
+        except ChannelConnectionsError as error:
+            return error
