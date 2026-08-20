@@ -785,3 +785,49 @@ The following seven choices are approved:
 7. This slice implements contracts, deterministic fakes, lifecycle behavior,
    privacy cascades, and tests only—no Web routes, provider calls, SDK changes,
    database, jobs, encryption, real credentials, or real channel data.
+
+## Approved implementation clarifications
+
+The reference implementation was approved on 2026-08-20 together with the
+following eight clarifications. They refine, and do not weaken, the seven
+approved review decisions above.
+
+1. **Detected credential invalidation has a named seam.**
+   `ConnectionManager.report_credential_invalidation(context, command)` requires
+   `channel.manage_connection`, deletes the credential slot, publishes
+   `REAUTH_REQUIRED`, and emits `CONNECTION_REAUTH_REQUIRED`. It accepts no
+   provider payload, error text, or token. Without it, success criterion 8 and
+   the `CONNECTION_REAUTH_REQUIRED` audit action were unreachable.
+2. **Reauthorization completes through `complete_authorization`.** The intent
+   already carries operation `REAUTHORIZE` and its target connection id, so no
+   separate completion method exists.
+3. **`IDEMPOTENCY_CONFLICT` joins the initial error codes.** A mutation key
+   reused with a different canonical payload is a conflict, not invalid input,
+   so a later HTTP mapping can distinguish 409 from 400. `CALLBACK_CONFLICT`
+   remains specific to callback replay.
+4. **`EphemeralSecretStore` gains `peek`, and the authorization URL is an
+   ephemeral secret.** The URL embeds the one-time state value, so retaining it
+   in domain state or in a 90-day idempotency record would defeat digest-only
+   state storage. It is stored in the ephemeral secret store, read back for
+   exact begin replay, and deleted with the intent. A regression test asserts
+   the raw state never appears in service state.
+5. **The verified credential is written to its deterministic vault slot
+   immediately after exchange.** Every later rejection path then revokes through
+   the approved `revoke(workspace_id, credential_slot_id)` port and deletes the
+   slot, instead of discarding an unrevoked grant that the specification
+   requires to be revoked.
+6. **The gateway signals failure with exactly two exceptions.**
+   `ProviderRejected(reason)` carries a safe `AuthorizationFailureReason` enum;
+   `ProviderUnavailable` marks an unknown outcome, which records a secret-free
+   cleanup entry, stays retryable, and publishes nothing. No provider text ever
+   crosses the boundary.
+7. **The redacted secret wrapper reuses `workspace_access.models.AccessSecret`**
+   rather than adding a second implementation of the same guarantee.
+8. **`EphemeralSecretStore` and `CredentialVault` expose slot listing.** The
+   specification requires a retention reconciler for expired ephemeral slots and
+   unreferenced credential slots, which is impossible without enumeration. The
+   listing returns slot identifiers only and never credential material.
+
+Pagination limits, ordering, retention boundaries, the permission matrix, the
+scope constant, connection ownership, and disconnect-versus-data-deletion
+behavior are unchanged.

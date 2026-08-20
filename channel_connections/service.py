@@ -548,60 +548,17 @@ class ChannelConnectionsService:
             if replayed is not None:
                 return replayed
 
-            intent_id = f"intent_{self._tokens.new_token()}"
-            raw_state = self._tokens.new_token()
-            verifier = self._tokens.new_token()
-            slot_id = f"pkce_{intent_id}"
-            expires_at = now + INTENT_TTL
-
-            self._ephemeral.put(
-                context.workspace_id, slot_id, RedactedSecret(verifier), expires_at
-            )
-            try:
-                url = self._gateway.authorization_url(
-                    state=RedactedSecret(raw_state),
-                    code_challenge=_s256_challenge(verifier),
-                    redirect_uri_id=self._redirect_uri_id,
-                    scopes=APPROVED_SCOPES,
-                )
-                start = AuthorizationStart(
-                    intent_id=intent_id,
-                    authorization_url=_allowlisted_authorization_url(url),
-                    expires_at=expires_at,
-                )
-            except BaseException:
-                self._ephemeral.delete(context.workspace_id, slot_id)
-                raise
-
-            url_slot_id = f"url_{intent_id}"
-            self._ephemeral.put(
-                context.workspace_id,
-                url_slot_id,
-                RedactedSecret(start.authorization_url),
-                expires_at,
-            )
-            state_digest = _digest(raw_state)
-            intent = AuthorizationIntent(
-                intent_id=intent_id,
-                workspace_id=context.workspace_id,
-                user_id=context.user_id,
-                session_id=context.session_id,
+            start, intent = self._new_intent(
+                context,
                 operation=operation,
-                provider=self._provider,
-                redirect_uri_id=self._redirect_uri_id,
                 target_connection_id=target_connection_id,
-                state_digest=state_digest,
-                verifier_slot_id=slot_id,
-                created_at=now,
-                expires_at=expires_at,
+                now=now,
             )
-            intent_key = _key(context.workspace_id, intent_id)
-            self._state.intents[intent_key] = intent
-            self._state.intents_by_state[state_digest] = intent_key
+            intent_id = intent.intent_id
             self._remember(
                 record_key,
                 payload,
-                StartedIntentRef(intent_id=intent_id, expires_at=expires_at),
+                StartedIntentRef(intent_id=intent_id, expires_at=intent.expires_at),
                 now,
                 IDEMPOTENCY_TTL,
             )
@@ -617,6 +574,67 @@ class ChannelConnectionsService:
                 connection_id=target_connection_id,
             )
             return start
+
+    def _new_intent(
+        self,
+        context: WorkspaceContext,
+        *,
+        operation: AuthorizationOperation,
+        target_connection_id: str | None,
+        now: datetime,
+    ) -> tuple[AuthorizationStart, AuthorizationIntent]:
+        """Create one transaction: PKCE slot, allowlisted URL, digest-only state."""
+        workspace_id = context.workspace_id
+        intent_id = f"intent_{self._tokens.new_token()}"
+        raw_state = self._tokens.new_token()
+        verifier = self._tokens.new_token()
+        verifier_slot_id = f"pkce_{intent_id}"
+        expires_at = now + INTENT_TTL
+
+        self._ephemeral.put(
+            workspace_id, verifier_slot_id, RedactedSecret(verifier), expires_at
+        )
+        try:
+            url = self._gateway.authorization_url(
+                state=RedactedSecret(raw_state),
+                code_challenge=_s256_challenge(verifier),
+                redirect_uri_id=self._redirect_uri_id,
+                scopes=APPROVED_SCOPES,
+            )
+            start = AuthorizationStart(
+                intent_id=intent_id,
+                authorization_url=_allowlisted_authorization_url(url),
+                expires_at=expires_at,
+            )
+        except BaseException:
+            self._ephemeral.delete(workspace_id, verifier_slot_id)
+            raise
+
+        self._ephemeral.put(
+            workspace_id,
+            f"url_{intent_id}",
+            RedactedSecret(start.authorization_url),
+            expires_at,
+        )
+        state_digest = _digest(raw_state)
+        intent = AuthorizationIntent(
+            intent_id=intent_id,
+            workspace_id=workspace_id,
+            user_id=context.user_id,
+            session_id=context.session_id,
+            operation=operation,
+            provider=self._provider,
+            redirect_uri_id=self._redirect_uri_id,
+            target_connection_id=target_connection_id,
+            state_digest=state_digest,
+            verifier_slot_id=verifier_slot_id,
+            created_at=now,
+            expires_at=expires_at,
+        )
+        intent_key = _key(workspace_id, intent_id)
+        self._state.intents[intent_key] = intent
+        self._state.intents_by_state[state_digest] = intent_key
+        return start, intent
 
     def _claim_intent(
         self, context: WorkspaceContext, state_digest: str, now: datetime

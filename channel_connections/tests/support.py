@@ -117,12 +117,6 @@ class RecordingEphemeralStore:
     def slot_ids_left(self) -> tuple[tuple[str, str], ...]:
         return tuple(sorted(self._delegate._slots))
 
-    def stored_secret(self, workspace_id: str, slot_id: str) -> str | None:
-        for put in self.puts:
-            if put.workspace_id == workspace_id and put.slot_id == slot_id:
-                return put.secret.reveal()
-        return None
-
 
 @dataclass
 class AuthorizationCall:
@@ -150,9 +144,6 @@ class FailingCredentialVault:
 
     def delete(self, workspace_id: str, slot_id: str) -> None:
         self.deleted.append((workspace_id, slot_id))
-
-    def contains(self, workspace_id: str, slot_id: str) -> bool:
-        return False
 
     def slot_ids(self, workspace_id: str) -> tuple[str, ...]:
         return ()

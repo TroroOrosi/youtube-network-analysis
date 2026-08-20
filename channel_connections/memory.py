@@ -163,9 +163,6 @@ class InMemoryCredentialVault:
     def delete(self, workspace_id: str, slot_id: str) -> None:
         self._slots.pop((workspace_id, slot_id), None)
 
-    def contains(self, workspace_id: str, slot_id: str) -> bool:
-        return (workspace_id, slot_id) in self._slots
-
     def slot_ids(self, workspace_id: str) -> tuple[str, ...]:
         return tuple(
             slot_id for stored, slot_id in self._slots if stored == workspace_id
