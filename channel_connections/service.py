@@ -142,7 +142,9 @@ def _credential_slot(intent: AuthorizationIntent) -> str:
     return f"cred_{intent.intent_id}"
 
 
-def _allowlisted_authorization_url(value: object) -> str:
+def _allowlisted_authorization_url(
+    value: object, hosts: tuple[str, ...] = PROVIDER_AUTHORIZATION_HOSTS
+) -> str:
     if not isinstance(value, str):
         raise _safe_error(ErrorCode.PROVIDER_AUTHORIZATION_FAILED)
     parts = urlsplit(value)
@@ -150,7 +152,7 @@ def _allowlisted_authorization_url(value: object) -> str:
         parts.scheme != "https"
         or parts.username is not None
         or parts.password is not None
-        or parts.hostname not in PROVIDER_AUTHORIZATION_HOSTS
+        or parts.hostname not in hosts
         or parts.port is not None
     ):
         raise _safe_error(ErrorCode.PROVIDER_AUTHORIZATION_FAILED)
@@ -172,6 +174,7 @@ class ChannelConnectionsService:
         audit_sink: ConnectionAuditSink | None = None,
         redirect_uri_id: str = DEFAULT_REDIRECT_URI_ID,
         provider: ConnectionProvider = ConnectionProvider.YOUTUBE,
+        authorization_hosts: tuple[str, ...] = PROVIDER_AUTHORIZATION_HOSTS,
     ) -> None:
         self._clock = clock
         self._tokens = tokens
@@ -182,6 +185,7 @@ class ChannelConnectionsService:
         self._audit_sink = audit_sink
         self._redirect_uri_id = redirect_uri_id
         self._provider = provider
+        self._authorization_hosts = authorization_hosts
         self._lock = RLock()
         self._state = MemoryState()
 
@@ -781,7 +785,9 @@ class ChannelConnectionsService:
             )
             start = AuthorizationStart(
                 intent_id=intent_id,
-                authorization_url=_allowlisted_authorization_url(url),
+                authorization_url=_allowlisted_authorization_url(
+                    url, self._authorization_hosts
+                ),
                 expires_at=expires_at,
             )
         except BaseException:

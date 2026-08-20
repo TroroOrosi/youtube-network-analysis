@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}チャンネルの認可 | YouTube 分析{% endblock %}
+{% block content %}
+<h2>チャンネルへのアクセスを許可</h2>
+<p>この画面は <strong>デモ用の同意画面</strong> です。実際の Google 認可画面ではありません。</p>
+<p>許可する権限は「YouTube データの読み取り（youtube.readonly）」のみです。</p>
+<form method="post" action="/oauth/callback">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <input type="hidden" name="state" value="{{ state }}">
+  <p>
+    <button type="submit" name="decision" value="approve">許可して接続する</button>
+    <button type="submit" name="decision" value="deny" class="secondary">中止する</button>
+  </p>
+</form>
+{% endblock %}

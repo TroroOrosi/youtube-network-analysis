@@ -1,0 +1,8 @@
+# Reference hosted application (approved 2026-08-21).
+# Domain modules stay standard-library only; these serve the web layer.
+fastapi==0.141.1
+uvicorn==0.52.4
+jinja2==3.1.6
+python-multipart==0.0.32
+# Test client only
+httpx==0.28.1

@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}ワークスペース作成 | YouTube 分析{% endblock %}
+{% block content %}
+<h2>最初のワークスペースを作成</h2>
+<p>ワークスペースは、チャンネルと分析結果をまとめる単位です。</p>
+<form method="post" action="/workspaces">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <label for="name">ワークスペース名</label>
+  <input id="name" name="name" required maxlength="80">
+  <p><button type="submit">作成する</button></p>
+</form>
+{% endblock %}

@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}ログイン | YouTube 分析{% endblock %}
+{% block content %}
+<h2>ログイン</h2>
+<p>表示名を入力すると、この端末用の作業セッションを開始します。</p>
+<form method="post" action="/login">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <label for="display_name">表示名</label>
+  <input id="display_name" name="display_name" required maxlength="80"
+         autocomplete="nickname">
+  <p><button type="submit">はじめる</button></p>
+</form>
+{% endblock %}

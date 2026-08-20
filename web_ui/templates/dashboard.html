@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}ホーム | YouTube 分析{% endblock %}
+{% block content %}
+<h2>接続中のチャンネル</h2>
+{% if connections %}
+<table>
+  <caption class="limits">接続の状態と次にできる操作</caption>
+  <thead>
+    <tr><th scope="col">チャンネル</th><th scope="col">状態</th><th scope="col">操作</th></tr>
+  </thead>
+  <tbody>
+  {% for item in connections %}
+    <tr>
+      <th scope="row">{{ item.title }}</th>
+      <td>{{ item.status_label }}</td>
+      <td>
+        <form method="post" action="/connections/{{ item.connection_id }}/collect" class="inline">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit">データを収集する</button>
+        </form>
+        <a href="/analysis?channel_id={{ item.channel_id }}">分析を見る</a>
+        <form method="post" action="/connections/{{ item.connection_id }}/disconnect" class="inline">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="secondary">接続を解除</button>
+        </form>
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p>まだチャンネルを接続していません。次の手順は「チャンネルを接続する」です。</p>
+{% endif %}
+
+<form method="post" action="/connections/start">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <p><button type="submit">チャンネルを接続する</button></p>
+</form>
+
+<h2>最近の収集</h2>
+{% if runs %}
+<table>
+  <thead>
+    <tr><th scope="col">種類</th><th scope="col">結果</th><th scope="col">使用量</th></tr>
+  </thead>
+  <tbody>
+  {% for run in runs %}
+    <tr><td>{{ run.kind }}</td><td>{{ run.status }}</td><td>{{ run.quota_spent }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p>収集の履歴はまだありません。</p>
+{% endif %}
+{% endblock %}
