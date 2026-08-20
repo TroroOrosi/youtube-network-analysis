@@ -16,19 +16,19 @@ This first slice must already answer the core silent-subscriber question.
 
 **Acceptance criteria:**
 
-- [ ] Immutable records, stable enums, `AnalysisValidationError`, and the public
+- [x] Immutable records, stable enums, `AnalysisValidationError`, and the public
   `analyze` entry point match the approved specification.
-- [ ] A fixed reference time and fixture produce `NEW_SILENT`, `OLD_SILENT`,
+- [x] A fixed reference time and fixture produce `NEW_SILENT`, `OLD_SILENT`,
   `DORMANT`, and `ACTIVE`, plus correct scope/filtered silent totals.
-- [ ] Results include the public-subscriptions limitation, do no I/O, and do not
+- [x] Results include the public-subscriptions limitation, do no I/O, and do not
   mutate caller-owned inputs.
 
 **Verification:**
 
-- [ ] RED then GREEN: `python -m unittest subscriber_analytics.tests.test_analytics_core -v`
-- [ ] Regression: `python -m unittest discover -s subscriber_analytics/tests -v`
-- [ ] Compile: `python -m compileall -q subscriber_analytics`
-- [ ] Integrity: `git diff --check`
+- [x] RED then GREEN: `python -m unittest subscriber_analytics.tests.test_analytics_core -v`
+- [x] Regression: `python -m unittest discover -s subscriber_analytics/tests -v`
+- [x] Compile: `python -m compileall -q subscriber_analytics`
+- [x] Integrity: `git diff --check`
 
 **Dependencies:** None
 
@@ -46,19 +46,19 @@ cutoff boundary, validation error, and deterministic ordering rule.
 
 **Acceptance criteria:**
 
-- [ ] Subscription windows/dates, never-commented, no-comment-within, latest
+- [x] Subscription windows/dates, never-commented, no-comment-within, latest
   observation, and segment filters use inclusive boundaries and AND semantics.
-- [ ] Duplicate IDs, invalid activity/counts/ranges, naive times, and invalid
+- [x] Duplicate IDs, invalid activity/counts/ranges, naive times, and invalid
   windows raise the specified stable error codes without partial results.
-- [ ] Permuting equivalent input yields identical ordered rows and summaries;
+- [x] Permuting equivalent input yields identical ordered rows and summaries;
   non-subscriber comment activity is safely ignored.
 
 **Verification:**
 
-- [ ] RED then GREEN: `python -m unittest subscriber_analytics.tests.test_analytics_core -v`
-- [ ] Regression: `python -m unittest discover -s subscriber_analytics/tests -v`
-- [ ] Compile: `python -m compileall -q subscriber_analytics`
-- [ ] Integrity: `git diff --check`
+- [x] RED then GREEN: `python -m unittest subscriber_analytics.tests.test_analytics_core -v`
+- [x] Regression: `python -m unittest discover -s subscriber_analytics/tests -v`
+- [x] Compile: `python -m compileall -q subscriber_analytics`
+- [x] Integrity: `git diff --check`
 
 **Dependencies:** Task 1
 
@@ -71,10 +71,10 @@ cutoff boundary, validation error, and deterministic ordering rule.
 
 ## Checkpoint A: Core contract
 
-- [ ] Tasks 1-2 acceptance criteria are all checked with evidence.
-- [ ] Focused and full tests pass from a clean command invocation.
-- [ ] Code-review graph is rebuilt and shows the new module without parse errors.
-- [ ] Contract/core commits are pushed before adapter migration starts.
+- [x] Tasks 1-2 acceptance criteria are all checked with evidence.
+- [x] Focused and full tests pass from a clean command invocation.
+- [x] Code-review graph is rebuilt and shows the new module without parse errors.
+- [x] Contract/core commits are pushed before adapter migration starts.
 
 ## Task 3: Migrate the CLI and preserve silent-analysis output
 

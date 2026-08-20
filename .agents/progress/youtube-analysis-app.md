@@ -53,6 +53,32 @@ Verification evidence:
 - source-tree OAuth client/API-key pattern scan — no matches.
 - code-review-graph incremental rebuild — 66 nodes / 801 edges, no parse errors.
 
+## Verified milestone: analytics-core Checkpoint A
+
+Branch: `feature/multi-channel-analytics`
+
+Verified HEAD: `761ea34b8d091db3ef9f0781ce7c04697ad2d829`
+
+Completed commits:
+
+- `10bab3b` approves the ordered analytics-core task breakdown.
+- `ca2226f` adds the immutable pure core contract and default four-segment
+  analysis, including silent totals and the public-subscriptions limitation.
+- `761ea34` adds every approved filter, UTC boundary rule, typed validation,
+  empty-input handling, and permutation-independent ordering.
+
+Verification evidence at this checkpoint:
+
+- focused core suite: 14 tests passed;
+- full subscriber analytics suite: 25 tests passed;
+- `python -m compileall -q subscriber_analytics`: passed;
+- `git diff --check`: passed;
+- code-review graph: 44 nodes and 618 edges updated with no parse errors;
+- graph search found all 14 core test nodes and direct tests for `analyze`.
+
+No OAuth flow, YouTube API collection, production data, database, HTTP API, UI,
+or new dependency was used or added. CLI and Notebook migration remain pending.
+
 ## Decisions and constraints
 
 - OAuth scope remains `youtube.readonly`; no write/delete/upload permission.
@@ -83,3 +109,16 @@ Recommended process skills: `spec-driven-development`, then
 `incremental-implementation` + `test-driven-development`; use
 `api-and-interface-design` for public contracts and `security-and-hardening`
 before OAuth/token persistence.
+
+## Current next steps
+
+1. Migrate `extract_silent.py` to `analytics_core.analyze` while preserving the
+   fail-closed comment-coverage gate, CLI flags, ordered CSV columns, and
+   Japanese labels.
+2. Add a fixture-backed CLI regression covering never-commented,
+   no-comment-within, and new/old silent output without credentials or network.
+3. Migrate the Notebook to the same core only after the CLI adapter checkpoint.
+
+Continue with `incremental-implementation`, `test-driven-development`, and
+`git-workflow-and-versioning`; use the code-review graph before inspecting or
+removing legacy helper callers.
