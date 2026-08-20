@@ -218,6 +218,40 @@ pagination/indexes belong to later persistence/API modules. No dependency,
 database, endpoint, provider/OAuth flow, credential, real user/channel data, or
 production deployment was introduced.
 
+## Verified milestone: channel-data contract and tenant boundary
+
+Branch: `feature/multi-channel-analytics`
+
+Verified implementation HEAD: `da25f80`
+
+Completed commits:
+
+- `b6bd654` defines the stable, safe channel-data error contract.
+- `cb8a2ff` adds bounded immutable external input values and UTC normalization.
+- `fa78ff0` freezes output, command, page/query, retention, and repository port
+  contracts with `WorkspaceContext` on every tenant operation.
+- `da25f80` adds the locked in-memory facade for authorized, actor/payload-bound
+  idempotent collection starts and identical-ID cross-workspace isolation.
+
+Verification evidence:
+
+- channel-data suite: 16 tests passed;
+- workspace-access regression suite: 40 tests passed;
+- subscriber analytics regression suite: 29 tests passed;
+- `python -m compileall -q channel_data workspace_access subscriber_analytics`:
+  passed;
+- public protocol signature and two-workspace runtime fixtures: passed;
+- `git diff --check` and credential-value scan: passed;
+- code-review graph rebuilt without parser errors; no registered flow was
+  affected, while its conservative private-helper/static test attribution is
+  not treated as executed coverage evidence.
+
+Candidate subscriber/video/comment data remains non-public until an exact
+`finish_collection(COMPLETE)` promotion. No database, migration, endpoint,
+OAuth, provider call, job, UI, dependency, credential, or real channel data was
+introduced. Next work is collection transitions/freshness (Task 3), followed by
+subscriber and owner-video/comment accepted generations (Tasks 4-5).
+
 ## Decisions and constraints
 
 - OAuth scope remains `youtube.readonly`; no write/delete/upload permission.
@@ -251,11 +285,11 @@ before OAuth/token persistence.
 
 ## Current next steps
 
-1. Specify `channel-data` tenant-scoped subscriber snapshots, registry entries,
-   videos, comments, freshness, and collection-state repository contracts.
-2. Keep storage implementation fixture/in-memory until repository interfaces,
-   uniqueness, retention/deletion, and workspace-context enforcement are
-   approved.
+1. Implement `channel-data` collection transitions, accepted generations,
+   pagination, retention, deletion, and analytics integration from the approved
+   spec and task plan.
+2. Keep storage fixture/in-memory; persistence, jobs, endpoints, and OAuth stay
+   gated behind later capability specifications.
 3. Threat-model `channel-connections` before any Web OAuth or credential storage;
    do not collect real channel data without explicit owner-authorized execution.
 
