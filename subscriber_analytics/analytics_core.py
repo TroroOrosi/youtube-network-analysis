@@ -139,6 +139,179 @@ def _sorted_rows(
     )
 
 
+def _validate_time_window(value: timedelta | None, field_name: str) -> None:
+    if value is not None and (
+        not isinstance(value, timedelta) or value <= timedelta(0)
+    ):
+        raise AnalysisValidationError(
+            "INVALID_TIME_WINDOW",
+            field_name,
+            f"{field_name} must be a positive duration",
+        )
+
+
+def _validate_request(request: AnalysisRequest) -> datetime:
+    reference_time = _to_utc(request.reference_time, "request.reference_time")
+    _validate_time_window(
+        request.segment_policy.recent_subscriber_window,
+        "request.segment_policy.recent_subscriber_window",
+    )
+    _validate_time_window(
+        request.segment_policy.recent_activity_window,
+        "request.segment_policy.recent_activity_window",
+    )
+    _validate_time_window(
+        request.filters.subscribed_within,
+        "request.filters.subscribed_within",
+    )
+    _validate_time_window(
+        request.filters.no_comment_within,
+        "request.filters.no_comment_within",
+    )
+    if (
+        request.filters.subscribed_since is not None
+        and request.filters.subscribed_until is not None
+        and request.filters.subscribed_since > request.filters.subscribed_until
+    ):
+        raise AnalysisValidationError(
+            "INVALID_DATE_RANGE",
+            "request.filters.subscribed_since",
+            "subscribed_since must not be later than subscribed_until",
+        )
+    return reference_time
+
+
+def _normalize_subscribers(
+    subscribers: Sequence[SubscriberRecord],
+) -> list[tuple[SubscriberRecord, datetime | None, datetime, datetime]]:
+    normalized = []
+    seen_channel_ids: set[str] = set()
+    for index, subscriber in enumerate(subscribers):
+        channel_field = f"subscribers[{index}].channel_id"
+        if not subscriber.channel_id.strip():
+            raise AnalysisValidationError(
+                "EMPTY_CHANNEL_ID",
+                channel_field,
+                f"{channel_field} must not be empty",
+            )
+        if subscriber.channel_id in seen_channel_ids:
+            raise AnalysisValidationError(
+                "DUPLICATE_SUBSCRIBER",
+                channel_field,
+                f"{channel_field} must be unique",
+            )
+        seen_channel_ids.add(subscriber.channel_id)
+        api_published_at = (
+            _to_utc(
+                subscriber.api_published_at,
+                f"subscribers[{index}].api_published_at",
+            )
+            if subscriber.api_published_at is not None
+            else None
+        )
+        normalized.append(
+            (
+                subscriber,
+                api_published_at,
+                _to_utc(
+                    subscriber.first_seen_at,
+                    f"subscribers[{index}].first_seen_at",
+                ),
+                _to_utc(
+                    subscriber.last_seen_at,
+                    f"subscribers[{index}].last_seen_at",
+                ),
+            )
+        )
+    return normalized
+
+
+def _normalize_comment_activity(
+    comment_activity: Sequence[CommentActivity],
+) -> dict[str, CommentActivity]:
+    normalized = {}
+    for index, activity in enumerate(comment_activity):
+        channel_field = f"comment_activity[{index}].author_channel_id"
+        if not activity.author_channel_id.strip():
+            raise AnalysisValidationError(
+                "EMPTY_CHANNEL_ID",
+                channel_field,
+                f"{channel_field} must not be empty",
+            )
+        if activity.author_channel_id in normalized:
+            raise AnalysisValidationError(
+                "DUPLICATE_COMMENT_ACTIVITY",
+                channel_field,
+                f"{channel_field} must be unique",
+            )
+        count_field = f"comment_activity[{index}].comment_count"
+        if (
+            isinstance(activity.comment_count, bool)
+            or not isinstance(activity.comment_count, int)
+            or activity.comment_count < 0
+        ):
+            raise AnalysisValidationError(
+                "INVALID_COMMENT_COUNT",
+                count_field,
+                f"{count_field} must be a non-negative integer",
+            )
+        last_comment_field = f"comment_activity[{index}].last_comment_at"
+        has_last_comment = activity.last_comment_at is not None
+        if (activity.comment_count > 0) != has_last_comment:
+            raise AnalysisValidationError(
+                "INCONSISTENT_COMMENT_ACTIVITY",
+                last_comment_field,
+                "last_comment_at must be present exactly when comment_count is positive",
+            )
+        last_comment_at = (
+            _to_utc(activity.last_comment_at, last_comment_field)
+            if activity.last_comment_at is not None
+            else None
+        )
+        normalized[activity.author_channel_id] = CommentActivity(
+            author_channel_id=activity.author_channel_id,
+            comment_count=activity.comment_count,
+            last_comment_at=last_comment_at,
+        )
+    return normalized
+
+
+def _utc_date_start(value: date) -> datetime:
+    return datetime(value.year, value.month, value.day, tzinfo=UTC)
+
+
+def _matches_filters(
+    row: AnalyzedSubscriber,
+    filters: AnalysisFilters,
+    reference_time: datetime,
+) -> bool:
+    if (
+        filters.subscribed_within is not None
+        and row.subscribed_at < reference_time - filters.subscribed_within
+    ):
+        return False
+    if (
+        filters.subscribed_since is not None
+        and row.subscribed_at < _utc_date_start(filters.subscribed_since)
+    ):
+        return False
+    if (
+        filters.subscribed_until is not None
+        and row.subscribed_at
+        >= _utc_date_start(filters.subscribed_until) + timedelta(days=1)
+    ):
+        return False
+    if filters.never_commented and row.comment_count != 0:
+        return False
+    if filters.no_comment_within is not None:
+        comment_cutoff = reference_time - filters.no_comment_within
+        if row.comment_count > 0 and row.last_comment_at >= comment_cutoff:
+            return False
+    if filters.segments and row.segment not in filters.segments:
+        return False
+    return True
+
+
 def analyze(
     subscribers: Sequence[SubscriberRecord],
     comment_activity: Sequence[CommentActivity],
@@ -146,30 +319,9 @@ def analyze(
 ) -> AnalysisResult:
     """Return deterministic subscriber analysis without I/O or input mutation."""
 
-    reference_time = _to_utc(request.reference_time, "request.reference_time")
-    activity_by_channel = {
-        activity.author_channel_id: activity for activity in comment_activity
-    }
-    normalized_subscribers = [
-        (
-            subscriber,
-            _to_utc(
-                subscriber.api_published_at,
-                f"subscribers[{index}].api_published_at",
-            )
-            if subscriber.api_published_at is not None
-            else None,
-            _to_utc(
-                subscriber.first_seen_at,
-                f"subscribers[{index}].first_seen_at",
-            ),
-            _to_utc(
-                subscriber.last_seen_at,
-                f"subscribers[{index}].last_seen_at",
-            ),
-        )
-        for index, subscriber in enumerate(subscribers)
-    ]
+    reference_time = _validate_request(request)
+    normalized_subscribers = _normalize_subscribers(subscribers)
+    activity_by_channel = _normalize_comment_activity(comment_activity)
     latest_observation = max(
         (last_seen_at for _, _, _, last_seen_at in normalized_subscribers),
         default=None,
@@ -192,14 +344,7 @@ def analyze(
 
         activity = activity_by_channel.get(subscriber.channel_id)
         comment_count = activity.comment_count if activity is not None else 0
-        last_comment_at = (
-            _to_utc(
-                activity.last_comment_at,
-                f"comment_activity[{subscriber.channel_id}].last_comment_at",
-            )
-            if activity is not None and activity.last_comment_at is not None
-            else None
-        )
+        last_comment_at = activity.last_comment_at if activity is not None else None
         if comment_count > 0 and last_comment_at is not None:
             segment = (
                 Segment.ACTIVE
@@ -234,7 +379,12 @@ def analyze(
         scope_rows = [row for row in analyzed_rows if row.is_in_latest_observation]
         excluded_not_seen_latest_count = len(analyzed_rows) - len(scope_rows)
 
-    rows = _sorted_rows(scope_rows)
+    filtered_rows = [
+        row
+        for row in scope_rows
+        if _matches_filters(row, request.filters, reference_time)
+    ]
+    rows = _sorted_rows(filtered_rows)
     scope_segment_counts = _segment_counts(scope_rows)
     filtered_segment_counts = _segment_counts(rows)
     return AnalysisResult(
