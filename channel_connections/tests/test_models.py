@@ -73,6 +73,7 @@ class ErrorContractTests(unittest.TestCase):
                 "CONNECTION_ALREADY_EXISTS",
                 "INTENT_NOT_FOUND_OR_EXPIRED",
                 "CALLBACK_CONFLICT",
+                "IDEMPOTENCY_CONFLICT",
                 "OPERATION_IN_PROGRESS",
                 "PROVIDER_AUTHORIZATION_FAILED",
                 "PROVIDER_CAPABILITY_MISSING",

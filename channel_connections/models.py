@@ -7,7 +7,7 @@ treat a secret or a raw provider result as public API.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import Enum
 
@@ -376,13 +376,14 @@ class ProviderCredential:
     """Internal credential bundle handed only to the credential vault."""
 
     access_token: RedactedSecret
-    refresh_token: RedactedSecret
+    refresh_token: RedactedSecret | None
     expires_at: datetime
-    scopes: tuple[str, ...] = field(default=APPROVED_SCOPES)
+    scopes: tuple[str, ...] = APPROVED_SCOPES
 
     def __post_init__(self) -> None:
         _secret(self.access_token, "access_token")
-        _secret(self.refresh_token, "refresh_token")
+        if self.refresh_token is not None:
+            _secret(self.refresh_token, "refresh_token")
         object.__setattr__(self, "expires_at", _utc(self.expires_at, "expires_at"))
         object.__setattr__(self, "scopes", _approved_scopes(self.scopes, "scopes"))
 
