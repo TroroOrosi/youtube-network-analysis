@@ -21,6 +21,7 @@ from .memory import (
     SubscriberCandidate,
     VideoCandidate,
 )
+from .ports import Clock, TokenGenerator
 from .models import (
     AuthorCommentActivity,
     ChannelDataFreshness,
@@ -105,8 +106,8 @@ class ChannelDataService:
     def __init__(
         self,
         state: MemoryState | None = None,
-        token_generator: object | None = None,
-        clock: object | None = None,
+        token_generator: TokenGenerator | None = None,
+        clock: Clock | None = None,
     ) -> None:
         self._state = state or MemoryState()
         self._lock = RLock()
@@ -166,7 +167,8 @@ class ChannelDataService:
 
             accepted_generation_id = None
             if command.status is CollectionStatus.COMPLETE:
-                if self._candidate_generation_id(current) is None:
+                accepted_generation_id = self._candidate_generation_id(current)
+                if accepted_generation_id is None:
                     raise _safe_error(ErrorCode.INVALID_COLLECTION_TRANSITION)
                 self._validate_candidate_finish(current, command)
 
@@ -184,20 +186,9 @@ class ChannelDataService:
                 accepted_generation_id=accepted_generation_id,
             )
             if command.status is CollectionStatus.COMPLETE:
-                accepted_generation_id = self._promote_candidate(current)
-                finished = CollectionState(
-                    collection_id=finished.collection_id,
-                    workspace_id=finished.workspace_id,
-                    channel_id=finished.channel_id,
-                    kind=finished.kind,
-                    status=finished.status,
-                    started_at=finished.started_at,
-                    completed_at=finished.completed_at,
-                    progress_current=finished.progress_current,
-                    progress_total=finished.progress_total,
-                    failure_code=finished.failure_code,
-                    accepted_generation_id=accepted_generation_id,
-                )
+                promoted_generation_id = self._promote_candidate(current)
+                if promoted_generation_id != accepted_generation_id:
+                    raise RuntimeError("candidate generation changed during promotion")
             else:
                 self._discard_candidate(current)
             self._state.collections[key] = finished
@@ -684,7 +675,7 @@ class ChannelDataService:
             if self._token_generator is None:
                 token = secrets.token_urlsafe(24)
             else:
-                token = self._token_generator.new_token()  # type: ignore[attr-defined]
+                token = self._token_generator.new_token()
             if (
                 isinstance(token, str)
                 and token
@@ -695,7 +686,7 @@ class ChannelDataService:
         raise _safe_error(ErrorCode.OPERATION_IN_PROGRESS, retryable=True)
 
     def _now(self) -> datetime:
-        value = datetime.now(UTC) if self._clock is None else self._clock.now()  # type: ignore[attr-defined]
+        value = datetime.now(UTC) if self._clock is None else self._clock.now()
         if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
             raise RuntimeError("clock must return a timezone-aware datetime")
         return value.astimezone(UTC)

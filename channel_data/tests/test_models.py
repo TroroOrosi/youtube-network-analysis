@@ -379,6 +379,21 @@ class ChannelDataValueContractTests(unittest.TestCase):
                 None,
                 "intent-2",
             )
+        with self.assertRaises(ChannelDataError) as caught:
+            CollectionState(
+                "collection-1",
+                "workspace-1",
+                "channel-1",
+                CollectionKind.SUBSCRIBERS,
+                CollectionStatus.COMPLETE,
+                NOW,
+                NOW,
+                1,
+                1,
+                None,
+                None,
+            )
+        self.assertEqual(caught.exception.field, "accepted_generation_id")
         with self.assertRaises(ChannelDataError):
             FinishCollection(
                 "channel-1",

@@ -157,6 +157,14 @@ class PrivacyLifecycleTests(unittest.TestCase):
             ),
         )
 
+        reader = context("workspace-1", Permission.ANALYSIS_READ)
+        first_page = self.service.list_subscriber_snapshots(
+            reader,
+            SubscriberSnapshotQuery("channel-1"),
+            PageRequest(limit=1),
+        )
+        self.assertIsNotNone(first_page.next_cursor)
+
         report = self.service.purge_retention(
             context("workspace-1", Permission.CHANNEL_MANAGE_CONNECTION),
             NOW,
@@ -178,6 +186,13 @@ class PrivacyLifecycleTests(unittest.TestCase):
         self.assertNotIn(("workspace-1", "terminal-cutoff"), self.service._state.collections)
         self.assertIn(("workspace-1", "terminal-recent"), self.service._state.collections)
         self.assertIn(("workspace-1", "finish-terminal-recent"), self.service._state.idempotency)
+        with self.assertRaises(ChannelDataError) as caught:
+            self.service.list_subscriber_snapshots(
+                reader,
+                SubscriberSnapshotQuery("channel-1"),
+                PageRequest(cursor=first_page.next_cursor, limit=1),
+            )
+        self.assertEqual(caught.exception.code, "INVALID_CURSOR")
 
     def test_channel_delete_cascades_all_copies_preserves_foreign_tenant_and_replays(self) -> None:
         self.accept_snapshot("workspace-1", "left", NOW)

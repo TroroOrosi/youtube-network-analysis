@@ -427,6 +427,14 @@ class CollectionState:
                 raise _invalid("failure_code", "failed state requires a failure code")
             if self.status is not CollectionStatus.FAILED and self.failure_code is not None:
                 raise _invalid("failure_code", "only failed state carries a failure code")
+            if (
+                self.status is CollectionStatus.COMPLETE
+                and self.accepted_generation_id is None
+            ):
+                raise _invalid(
+                    "accepted_generation_id",
+                    "complete state requires an accepted generation",
+                )
             if self.status is not CollectionStatus.COMPLETE and self.accepted_generation_id is not None:
                 raise _invalid("accepted_generation_id", "only complete state accepts a generation")
         object.__setattr__(self, "started_at", started)

@@ -235,4 +235,6 @@ class MemoryState:
         ]
         for key in idempotency_keys:
             self.idempotency.pop(key, None)
+        if snapshot_keys or collection_keys or idempotency_keys:
+            self._drop_keys(self.cursors, lambda key, _: key[0] == workspace_id)
         return len(snapshot_keys), len(collection_keys), len(idempotency_keys)
