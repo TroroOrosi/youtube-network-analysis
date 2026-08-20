@@ -1,6 +1,6 @@
 # Task List: channel-connections
 
-Status: proposed
+Status: approved
 Plan: [`tasks/plan.md`](plan.md)
 Spec: [`SPEC-channel-connections.md`](../SPEC-channel-connections.md)
 

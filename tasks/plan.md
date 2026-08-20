@@ -1,6 +1,6 @@
 # Implementation Plan: channel-connections
 
-Status: proposed
+Status: approved
 Date: 2026-08-20
 Specification: [`SPEC-channel-connections.md`](../SPEC-channel-connections.md)
 Capability: [`channel-connections`](../CAPABILITY_MAP.md)
