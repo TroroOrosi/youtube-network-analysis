@@ -51,10 +51,12 @@ from .models import (
     CreateSchedule,
     DEFAULT_DAILY_QUOTA_UNITS,
     DeleteSchedule,
+    DeleteWorkspaceJobs,
     EnqueueRun,
     ExecuteRun,
     JobsPage,
     JobsPageRequest,
+    JobsRetentionReport,
     MAX_ATTEMPTS,
     MAX_IDENTIFIER_LENGTH,
     RunFailureReason,
@@ -66,6 +68,7 @@ from .models import (
 
 ESTIMATED_CALL_UNITS = 3
 IDEMPOTENCY_TTL = timedelta(days=90)
+RETENTION_TTL = timedelta(days=90)
 
 _MESSAGES = {
     ErrorCode.INVALID_INPUT: "The request contains an unsupported value",
@@ -282,6 +285,103 @@ class CollectionJobsService:
             self._store(cancelled)
             self._remember(record_key, payload, cancelled, now)
             return cancelled
+
+    # Privacy administration
+
+    def delete_workspace_jobs(
+        self, context: WorkspaceContext, command: DeleteWorkspaceJobs
+    ) -> None:
+        _require(context, Permission.WORKSPACE_DELETE)
+        with self._lock:
+            now = self._now()
+            workspace_id = context.workspace_id
+            record_key = (
+                workspace_id,
+                context.user_id,
+                "delete_workspace_jobs",
+                command.idempotency_key,
+            )
+            payload = {"workspace_id": workspace_id}
+            if self._replay(record_key, payload, now) is not None:
+                return None
+
+            self._state.runs = {
+                key: run
+                for key, run in self._state.runs.items()
+                if run.workspace_id != workspace_id
+            }
+            self._state.schedules = {
+                key: schedule
+                for key, schedule in self._state.schedules.items()
+                if schedule.workspace_id != workspace_id
+            }
+            self._state.quota = {
+                key: entry
+                for key, entry in self._state.quota.items()
+                if key[0] != workspace_id
+            }
+            self._state.cursors = {
+                token: record
+                for token, record in self._state.cursors.items()
+                if record.workspace_id != workspace_id
+            }
+            self._state.idempotency = {
+                key: record
+                for key, record in self._state.idempotency.items()
+                if key[0] != workspace_id
+            }
+            self._bump_revision(workspace_id)
+            self._remember(record_key, payload, command.idempotency_key, now)
+            return None
+
+    def purge_retention(
+        self, context: WorkspaceContext, reference_time: datetime
+    ) -> JobsRetentionReport:
+        _require(context, Permission.COLLECTION_RUN)
+        if (
+            not isinstance(reference_time, datetime)
+            or reference_time.utcoffset() is None
+        ):
+            raise _safe_error(ErrorCode.INVALID_INPUT, field="reference_time")
+        with self._lock:
+            workspace_id = context.workspace_id
+            runs_removed = 0
+            for key in [
+                key
+                for key, run in self._state.runs.items()
+                if run.workspace_id == workspace_id
+                and run.finished_at is not None
+                and run.finished_at + RETENTION_TTL <= reference_time
+            ]:
+                del self._state.runs[key]
+                runs_removed += 1
+
+            quota_removed = 0
+            for key in [
+                key
+                for key, entry in self._state.quota.items()
+                if key[0] == workspace_id
+                and entry.first_used_at + RETENTION_TTL <= reference_time
+            ]:
+                del self._state.quota[key]
+                quota_removed += 1
+
+            records_removed = 0
+            for key in [
+                key
+                for key, record in self._state.idempotency.items()
+                if key[0] == workspace_id and record.expires_at <= reference_time
+            ]:
+                del self._state.idempotency[key]
+                records_removed += 1
+
+            if runs_removed or quota_removed:
+                self._bump_revision(workspace_id)
+            return JobsRetentionReport(
+                runs_removed=runs_removed,
+                quota_entries_removed=quota_removed,
+                idempotency_records_removed=records_removed,
+            )
 
     # Schedules
 
@@ -562,17 +662,9 @@ class CollectionJobsService:
         now: datetime,
     ) -> CollectionRun:
         videos_collection = f"{run.run_id}-a{run.attempt}-videos"
-        self._channel_data.start_collection(
-            context,
-            StartCollection(
-                channel_id=run.provider_channel_id,
-                collection_id=videos_collection,
-                kind=CollectionKind.VIDEOS,
-                started_at=now,
-                idempotency_key=f"{videos_collection}-start",
-            ),
+        videos = self._collect_inventory(
+            context, run, authority, now, videos_collection
         )
-        videos = self._traverse(context, authority, ProviderOperation.LIST_VIDEOS, None)
         if videos.reason is not None:
             self._finish_collection(context, run, videos_collection, now, videos)
             return self._terminal(
@@ -600,16 +692,46 @@ class CollectionJobsService:
             ),
         )
         self._finish_collection(context, run, videos_collection, now, videos)
+        return self._cover_comments(context, run, authority, now, videos, inventory_id)
 
-        comments_collection = f"{run.run_id}-a{run.attempt}-comments"
+    def _collect_inventory(
+        self,
+        context: WorkspaceContext,
+        run: CollectionRun,
+        authority: ExecutionAuthority,
+        now: datetime,
+        collection_id: str,
+    ) -> TraversalOutcome:
         self._channel_data.start_collection(
             context,
             StartCollection(
                 channel_id=run.provider_channel_id,
-                collection_id=comments_collection,
+                collection_id=collection_id,
+                kind=CollectionKind.VIDEOS,
+                started_at=now,
+                idempotency_key=f"{collection_id}-start",
+            ),
+        )
+        return self._traverse(context, authority, ProviderOperation.LIST_VIDEOS, None)
+
+    def _cover_comments(
+        self,
+        context: WorkspaceContext,
+        run: CollectionRun,
+        authority: ExecutionAuthority,
+        now: datetime,
+        videos: TraversalOutcome,
+        inventory_id: str,
+    ) -> CollectionRun:
+        collection_id = f"{run.run_id}-a{run.attempt}-comments"
+        self._channel_data.start_collection(
+            context,
+            StartCollection(
+                channel_id=run.provider_channel_id,
+                collection_id=collection_id,
                 kind=CollectionKind.COMMENTS,
                 started_at=now,
-                idempotency_key=f"{comments_collection}-start",
+                idempotency_key=f"{collection_id}-start",
             ),
         )
         pages = videos.pages
@@ -626,7 +748,7 @@ class CollectionJobsService:
             spent += activity.quota_spent
             if activity.reason is not None:
                 self._finish_partial(
-                    context, run, comments_collection, now, activity.reason, covered
+                    context, run, collection_id, now, activity.reason, covered
                 )
                 return self._terminal(
                     run, now, activity.reason, pages=pages, spent=spent
@@ -635,7 +757,7 @@ class CollectionJobsService:
                 context,
                 ReplaceVideoCommentActivity(
                     channel_id=run.provider_channel_id,
-                    collection_id=comments_collection,
+                    collection_id=collection_id,
                     inventory_id=inventory_id,
                     video_id=video.video_id,
                     replaced_at=now,
@@ -647,7 +769,7 @@ class CollectionJobsService:
                         )
                         for row in activity.rows
                     ),
-                    idempotency_key=f"{comments_collection}-{video.video_id}",
+                    idempotency_key=f"{collection_id}-{video.video_id}",
                 ),
             )
             covered += 1
@@ -656,13 +778,13 @@ class CollectionJobsService:
             context,
             FinishCollection(
                 channel_id=run.provider_channel_id,
-                collection_id=comments_collection,
+                collection_id=collection_id,
                 status=CollectionStatus.COMPLETE,
                 completed_at=now,
                 progress_current=covered,
                 progress_total=covered,
                 failure_code=None,
-                idempotency_key=f"{comments_collection}-finish",
+                idempotency_key=f"{collection_id}-finish",
             ),
         )
         return self._terminal(run, now, None, pages=pages, spent=spent)

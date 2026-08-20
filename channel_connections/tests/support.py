@@ -284,9 +284,9 @@ class FakeYouTubeDataGateway:
             SubscriberRow(
                 subscriber_channel_id=f"UC_sub_{index}",
                 title=f"視聴者{index}",
-                api_published_at=NOW - timedelta(days=index),
+                api_published_at=NOW - timedelta(days=age_days),
             )
-            for index in range(1, 6)
+            for index, age_days in enumerate((1, 5, 10, 200, 400), start=1)
         )
         self.videos = tuple(
             VideoRow(
