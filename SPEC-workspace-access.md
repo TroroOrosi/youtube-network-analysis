@@ -1,6 +1,6 @@
 # Spec: workspace-access
 
-Status: proposed for review
+Status: approved
 Date: 2026-08-20
 Capability map id: `workspace-access`
 

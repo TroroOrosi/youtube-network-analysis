@@ -1,186 +1,164 @@
-# Implementation Plan: analytics-core
+# Implementation Plan: workspace-access
 
 Status: approved
 Date: 2026-08-20
-Specification: [`SPEC-analytics-core.md`](../SPEC-analytics-core.md)
-Capability: [`analytics-core`](../CAPABILITY_MAP.md)
+Specification: [`SPEC-workspace-access.md`](../SPEC-workspace-access.md)
+Capability: [`workspace-access`](../CAPABILITY_MAP.md)
 
 ## Overview
 
-Extract the calculation path from `subscriber_analytics/extract_silent.py` into
-a pure typed module, then migrate the CLI and Notebook to it without changing
-their public controls or CSV format. The first complete slice must already
-classify and total silent subscribers; later slices add all filters, strict
-validation, and adapter compatibility.
-
-This plan does not add a database, HTTP API, frontend, OAuth flow, background
-worker, or dependency. Those belong to later capability modules.
+Implement the approved tenant/session boundary as a standard-library Python
+module backed by deterministic in-memory state. The slice proves identity
+mapping, secure session handling, workspace selection, role authorization,
+membership invariants, export/deletion, retention, and audit redaction without
+choosing a database, HTTP framework, authentication provider, or OAuth flow.
 
 ## Architecture decisions
 
-- `subscriber_analytics/analytics_core.py` owns the immutable input/output
-  records, validation errors, segment enums, and the single `analyze` function.
-- Public contracts contain standard-library values only. pandas remains behind
-  the CLI/Notebook adapter boundary.
-- Segment IDs are stable English machine values. Existing Japanese labels and
-  CSV columns stay in `extract_silent.py` as presentation compatibility.
-- Silent totals are computed by the core as `NEW_SILENT + OLD_SILENT`; adapters
-  do not reimplement that rule.
-- Core analysis trusts normalized records but validates their invariants at its
-  public boundary. File parsing and comment-coverage checks remain adapter
-  responsibilities.
-- UTC conversion happens once at the core boundary. Naive datetimes and invalid
-  ranges fail with typed errors.
-- Tests use fixture records and a fixed reference time. No test contacts
-  YouTube or reads credentials.
+- `workspace_access.models` owns immutable public records, commands, stable enum
+  values, role permissions, and typed errors.
+- `workspace_access.service.WorkspaceAccessService` is the sole orchestration
+  interface. Consumers cannot construct authority from a bare workspace ID.
+- `workspace_access.ports` contains only the small clock/token/audit boundaries
+  needed to make tests deterministic. No framework or persistence type crosses
+  the public contract.
+- The first adapter is process-local in-memory state protected by one reentrant
+  lock. Commands that protect the last owner or claim idempotency execute under
+  that lock. A later `channel-data` plan may replace state with atomic storage.
+- Session secrets use at least 256 random bits, are returned once with redacted
+  `repr`, and only SHA-256 digests are retained. Hashing is safe here because
+  tokens are uniformly random high-entropy secrets, not passwords.
+- Session authorization is not cached across calls. Context resolution reads
+  current user, session, membership, role, and authorization revision.
+- All times are timezone-aware UTC. Tests use a fixed clock and deterministic
+  token/ID source; no test uses environment variables, network, files, OAuth,
+  real users, or production credentials.
 
 ## Dependency graph
 
 ```text
-Golden behavior fixture
-        |
-        v
-Typed contract + validation
-        |
-        v
-Default segmentation + silent totals
-        |
-        v
-Filters + deterministic ordering
-        |
-        +-------------------+
-        v                   v
-CLI/file adapter       Notebook adapter
-        |                   |
-        +---------+---------+
+Immutable contracts and permission matrix
+                  |
                   v
-          Compatibility review
+       Identity and session lifecycle
+                  |
+                  v
+   Workspace creation/list/context resolution
+                  |
+                  v
+ Membership administration and last-owner safety
+                  |
+                  v
+    Export, deletion, retention, audit redaction
+                  |
+                  v
+        Security and compatibility review
 ```
 
-The contract and default analysis are sequential foundations. CLI and Notebook
-migrations depend on the full core contract; they may be implemented in either
-order but are kept as separate checkpoints because Notebook JSON is a distinct
-risk surface.
+## Implementation sequence
 
-## Proposed implementation sequence
+### Phase 1: Contract and session foundation
 
-### Phase 1: Characterize and build the smallest complete core
+1. Add immutable identifiers, identity/session/workspace records, commands,
+   stable errors, closed roles, and the exact permission matrix.
+2. Add deterministic ports and session establishment/authentication with secret
+   redaction, idle/absolute cutoff handling, revocation, and logout-all.
 
-1. Freeze a compact golden fixture covering all four segments, API subscription
-   time precedence, latest-observation exclusion, and silent totals.
-2. Add immutable contract records, stable enums, typed validation errors, and a
-   failing-then-passing default `analyze` path.
-3. Verify that default output includes new-silent, old-silent, dormant, active,
-   total silent, deterministic rows, and the public-subscriptions limitation.
+Checkpoint: focused contract/session tests and the existing analytics suite pass;
+no raw secret is retained or rendered.
 
-Checkpoint: focused core tests pass; existing subscriber tests still pass; the
-module performs no I/O.
+### Phase 2: Tenant authorization
 
-### Phase 2: Complete filters and boundary behavior
+1. Add atomic workspace creation, stable accessible-workspace listing, explicit
+   selection, one-workspace fallback, stale preference fallback, and ambiguous
+   selection failure.
+2. Add permission resolution into a one-request `WorkspaceContext`, uniform
+   missing/foreign errors, and next-request role/revocation effects.
 
-1. Add exact-cutoff tests and implementation for subscription and activity
-   windows.
-2. Add inclusive since/until dates, never-commented, no-comment-within, segment,
-   and latest-observation filters with AND semantics.
-3. Add duplicate, invalid-count, inconsistent-activity, naive-time, invalid
-   range, input mutation, and permutation determinism tests.
+Checkpoint: cross-workspace negative tests demonstrate that no foreign record or
+existence signal reaches the caller.
 
-Checkpoint: every specification error code and filter has a focused test; full
-suite and compile check pass.
+### Phase 3: Membership administration
 
-### Phase 3: Migrate the CLI adapter
+1. Add owner-only grant, role change, revocation, and self-removal.
+2. Claim idempotency keys atomically, reject payload mismatch, and preserve at
+   least one owner under concurrent attempts.
 
-1. Convert registry/comment DataFrames into core records after the existing
-   file and comment-coverage validation steps.
-2. Map core segment IDs back to current Japanese labels and preserve the exact
-   `OUTPUT_COLUMNS`, CLI flags, inclusive date behavior, and output note.
-3. Add a golden CLI adapter regression proving silent-subscriber output and
-   segment summaries match the pre-extraction behavior.
+Checkpoint: membership tests pass, including two-thread last-owner attempts and
+current authorization revision checks.
 
-Checkpoint: focused adapter test and full suite pass; a fixture-backed CLI run
-produces the expected CSV without API or credential access.
+### Phase 4: Privacy lifecycle and completion
 
-### Phase 4: Migrate the Notebook adapter
+1. Add allowlisted account-access export, sole-owner deletion block, immediate
+   session revocation, user tombstoning, retention selection, and secret-free
+   audit records.
+2. Review graph impact/test coverage, run the security checklist, document the
+   public module, update durable progress, and remove only concrete review
+   findings within this module.
 
-1. Replace direct calls to `build_table`, `add_segments`, and `apply_filters`
-   with the same core interface used by the CLI.
-2. Keep all existing Notebook controls and Japanese presentation labels.
-3. Parse the Notebook as JSON and compile every code cell in addition to the
-   normal test suite.
-
-Checkpoint: CLI and Notebook have one calculation implementation and no direct
-segment/filter business logic remains outside `analytics_core.py`.
-
-### Phase 5: Review and checkpoint
-
-1. Rebuild the code-review graph and inspect impact, affected flows, callers,
-   and test coverage.
-2. Run the five-axis code review, remove only newly orphaned calculation code,
-   and confirm no dependency or secret changes.
-3. Update the durable progress record with verification evidence, commit atomic
-   milestones, and push the feature branch.
-
-Final checkpoint: all specification success criteria and the project Definition
-of Done are satisfied; the branch is ready for human review before any merge.
+Final checkpoint: every success criterion in the approved specification is
+covered by a focused test or an explicit deferred adapter boundary.
 
 ## Verification commands
 
 ```powershell
-# Focused core suite
-python -m unittest subscriber_analytics.tests.test_analytics_core -v
+# Focused workspace-access suite
+python -m unittest discover -s workspace_access/tests -v
 
-# Full subscriber analytics suite
+# Existing analytics regression suite
 python -m unittest discover -s subscriber_analytics/tests -v
 
-# Python compile check
-python -m compileall -q subscriber_analytics
+# Python syntax/bytecode validation
+python -m compileall -q workspace_access subscriber_analytics
 
-# Notebook JSON and code-cell syntax check
+# Notebook JSON/code-cell syntax validation
 python -c "import json,pathlib; p=pathlib.Path('subscriber_analytics/subscriber_analytics.ipynb'); nb=json.loads(p.read_text(encoding='utf-8')); [compile(''.join(c.get('source', [])), f'{p.name}:cell-{i}', 'exec') for i,c in enumerate(nb['cells']) if c.get('cell_type') == 'code']"
 
 # Patch integrity
 git diff --check
 ```
 
-For the CLI runtime checkpoint, use only a temporary fixture directory created
-by the test. Do not use the ignored real `subscriber_analytics/data/` directory.
+There is no configured formatter, linter, type checker, CI workflow, or native
+dependency audit. No dependency is added in this plan.
 
 ## Checkpoint policy
 
-- Run focused tests after each red-green-refactor cycle.
-- Run the full suite and compile check after every two implementation tasks and
-  before every commit.
-- Keep contract/core, CLI adapter, and Notebook adapter changes in separate
-  commits when each verified slice is coherent.
-- Do not push a broken checkpoint. A blocked progress record must label failures
-  explicitly.
+- Every behavior uses red-green-refactor; record the expected RED reason before
+  adding production code.
+- Run the focused suite after each behavior slice and existing analytics tests
+  before each code commit.
+- Keep contract, sessions, authorization, membership, and privacy changes in
+  separate verified commits.
+- Use only explicit repository paths when staging. Push only clean, verified
+  milestones to `origin/feature/multi-channel-analytics`.
+- Update `.agents/progress/youtube-analysis-app.md` after coherent verified
+  milestones and before moving to the next capability module.
 
 ## Risks and mitigations
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| Golden expectations accidentally encode a new implementation instead of current behavior | High | Write expected fixture results before core implementation and compare the existing calculation path first |
-| Stricter timezone/input validation rejects dirty historical CSV rows | Medium | Keep parsing/coercion in the file adapter; pass only normalized records to the core and test the failure message |
-| CLI Japanese labels or column order change during enum migration | High | Keep explicit adapter mapping and assert the entire ordered column list plus label values |
-| Silent users are falsely inferred from incomplete/public-only comments | High | Preserve `validate_comment_collection` before core invocation and retain the default fail-closed behavior |
-| Latest-observation logic is mistaken for confirmed unsubscribe status | Medium | Use `is_in_latest_observation` terminology and preserve the user-facing caveat |
-| Notebook duplicates logic after CLI migration | Medium | Make Notebook call `analyze`; graph-query remaining callers of old helpers before removal |
-| Record conversion adds unnecessary complexity | Low | Keep conversion in one adapter helper and avoid repository/DTO abstractions until `channel-data` is specified |
+| In-memory behavior accidentally becomes a production persistence promise | High | Keep persistence explicitly out of public records; specify atomic semantics that a later adapter must preserve |
+| Session token appears in repr, audit, or errors | High | Secret wrapper with constant redacted repr plus allowlist tests over every returned/audited record |
+| Authorization context stays valid after membership change | High | Resolve current membership per call and reject stale authorization revisions on mutations |
+| Guessed IDs reveal cross-workspace existence | High | Same stable errors and tenant-scoped lookup tests for absent and foreign resources |
+| Concurrent owner changes leave zero owners | High | Check invariant and mutate under the same lock; exercise two-thread test |
+| Broad account deletion damages owned workspaces | High | Fail before mutation when any sole-owned workspace remains; revoke only after preconditions pass |
+| Framework concerns leak into domain API | Medium | Public interface accepts typed records only; cookie/CSRF/HTTP enforcement remains a future adapter contract |
 
 ## Scope discipline
 
-Intentionally untouched in this plan:
+Intentionally untouched:
 
-- OAuth and token storage.
-- YouTube collection and quota behavior.
-- Workspace/tenant identity.
-- Database schemas and migrations.
-- HTTP endpoints and UI components.
-- CI, packaging, formatter, linter, or type-checker setup.
+- Database schema, migration, ORM, cache, or queue.
+- HTTP endpoints, middleware, cookie emission, CSRF library, or UI.
+- Passwords, authentication-provider SDKs, invitations, SSO, or account linking.
+- Google/YouTube OAuth and connected-channel credentials.
+- Background-job authority, channel data, or real user/channel collection.
+- Existing CLI/Notebook behavior and dependency manifests.
 
 ## Open questions
 
-No blocking questions remain for `analytics-core`. The four contract decisions
-in the specification and the explicit silent-subscriber requirement are treated
-as approved. Detailed tasks will be written to `tasks/todo.md` after this plan
-is reviewed.
+No blocking questions remain for the approved in-memory slice. Cookie behavior,
+authentication provider, database, and background-job authority remain explicit
+review gates for their owning modules.
