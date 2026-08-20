@@ -32,12 +32,24 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import date, datetime
 from pathlib import Path
 
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import common  # noqa: E402
+from analytics_core import (  # noqa: E402
+    AnalysisFilters,
+    AnalysisRequest,
+    AnalysisResult,
+    CommentActivity,
+    Segment,
+    SegmentPolicy,
+    SubscriberRecord,
+    SubscriptionTimeSource,
+    analyze,
+)
 
 OUTPUT_COLUMNS = [
     "channel_id",
@@ -55,6 +67,18 @@ SEG_NEW_SILENT = "新規サイレント"
 SEG_OLD_SILENT = "古参サイレント"
 SEG_DORMANT = "休眠"
 SEG_ACTIVE = "アクティブ"
+
+SEGMENT_LABELS = {
+    Segment.NEW_SILENT: SEG_NEW_SILENT,
+    Segment.OLD_SILENT: SEG_OLD_SILENT,
+    Segment.DORMANT: SEG_DORMANT,
+    Segment.ACTIVE: SEG_ACTIVE,
+}
+
+SUBSCRIPTION_SOURCE_LABELS = {
+    SubscriptionTimeSource.API_PUBLISHED_AT: "api_published_at",
+    SubscriptionTimeSource.FIRST_SEEN_AT: "first_seen_at",
+}
 
 
 def _to_utc(series: pd.Series) -> pd.Series:
@@ -226,6 +250,127 @@ def format_output(table: pd.DataFrame) -> pd.DataFrame:
     return out[OUTPUT_COLUMNS]
 
 
+def _optional_datetime(value) -> datetime | None:
+    if value is None or pd.isna(value) or str(value).strip() == "":
+        return None
+    if isinstance(value, pd.Timestamp):
+        return value.to_pydatetime()
+    if isinstance(value, datetime):
+        return value
+    return common.parse_ts(str(value))
+
+
+def _required_datetime(value, field_name: str) -> datetime:
+    parsed = _optional_datetime(value)
+    if parsed is None:
+        raise ValueError(f"{field_name} is required")
+    return parsed
+
+
+def _subscriber_records(registry: pd.DataFrame) -> list[SubscriberRecord]:
+    return [
+        SubscriberRecord(
+            channel_id=row.channel_id,
+            title=row.title,
+            api_published_at=_optional_datetime(row.api_published_at),
+            first_seen_at=_required_datetime(row.first_seen_at, "first_seen_at"),
+            last_seen_at=_required_datetime(row.last_seen_at, "last_seen_at"),
+        )
+        for row in registry.itertuples(index=False)
+    ]
+
+
+def _comment_activity_records(
+    comment_stats: pd.DataFrame,
+) -> list[CommentActivity]:
+    return [
+        CommentActivity(
+            author_channel_id=row.author_channel_id,
+            comment_count=int(row.comment_count),
+            last_comment_at=_optional_datetime(row.last_comment_at),
+        )
+        for row in comment_stats.itertuples(index=False)
+    ]
+
+
+def _analysis_request(args, now: datetime) -> AnalysisRequest:
+    subscribed_within = (
+        common.parse_duration(args.subscribed_within)
+        if args.subscribed_within
+        else None
+    )
+    no_comment_within = (
+        common.parse_duration(args.no_comment_within)
+        if args.no_comment_within
+        else None
+    )
+    return AnalysisRequest(
+        reference_time=now,
+        filters=AnalysisFilters(
+            subscribed_within=subscribed_within,
+            subscribed_since=(
+                date.fromisoformat(args.subscribed_since)
+                if args.subscribed_since
+                else None
+            ),
+            subscribed_until=(
+                date.fromisoformat(args.subscribed_until)
+                if args.subscribed_until
+                else None
+            ),
+            never_commented=args.never_commented,
+            no_comment_within=no_comment_within,
+            include_not_seen_latest=args.include_unsubscribed,
+        ),
+        segment_policy=SegmentPolicy(
+            recent_subscriber_window=subscribed_within
+            or common.parse_duration("90d"),
+            recent_activity_window=no_comment_within
+            or common.parse_duration("90d"),
+        ),
+    )
+
+
+def _applied_filter_labels(args, request: AnalysisRequest) -> list[str]:
+    applied = []
+    if args.subscribed_within:
+        cutoff = request.reference_time - request.filters.subscribed_within
+        applied.append(
+            f"登録が直近 {args.subscribed_within} 以内（{common.format_ts(cutoff)} 以降）"
+        )
+    if args.subscribed_since:
+        applied.append(f"登録日 {args.subscribed_since} 以降")
+    if args.subscribed_until:
+        applied.append(f"登録日 {args.subscribed_until} 以前")
+    if args.never_commented:
+        applied.append("一度もコメントしていない")
+    if args.no_comment_within:
+        applied.append(f"直近 {args.no_comment_within} コメントなし")
+    return applied
+
+
+def _format_analysis_output(result: AnalysisResult) -> pd.DataFrame:
+    rows = [
+        {
+            "channel_id": row.channel_id,
+            "title": row.title,
+            "subscribed_at": common.format_ts(row.subscribed_at),
+            "subscribed_at_source": SUBSCRIPTION_SOURCE_LABELS[
+                row.subscribed_at_source
+            ],
+            "first_seen_at": common.format_ts(row.first_seen_at),
+            "last_seen_at": common.format_ts(row.last_seen_at),
+            "comment_count": row.comment_count,
+            "last_comment_at": (
+                common.format_ts(row.last_comment_at) if row.last_comment_at else ""
+            ),
+            "segment": SEGMENT_LABELS[row.segment],
+        }
+        for row in result.rows
+    ]
+    return pd.DataFrame(rows, columns=OUTPUT_COLUMNS)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="サイレント登録者の抽出（ローカルのみ・クォータ消費ゼロ）"
@@ -265,14 +410,7 @@ def main() -> None:
         allow_incomplete=args.allow_incomplete_comments,
     )
 
-    # 既定では最新スナップショットに出現した人（現役の公開登録者）のみを対象にする。
-    # レジストリには解約済みの人も last_seen_at が古いまま残るため。
-    excluded_unsubscribed = 0
     latest_seen = registry["last_seen_at"].max() if len(registry) else ""
-    if not args.include_unsubscribed and latest_seen:
-        current = registry["last_seen_at"] == latest_seen
-        excluded_unsubscribed = int((~current).sum())
-        registry = registry[current]
 
     comment_stats, n_comment_files = load_comment_stats(args.data_dir)
     if n_comment_files == 0 and int(comment_state.get("videos_listed", 0)) > 0:
@@ -281,31 +419,36 @@ def main() -> None:
             "collect_comments.py を再実行してください。"
         )
 
-    table = build_table(registry, comment_stats)
-    recent_window = common.parse_duration(args.subscribed_within or "90d")
-    activity_window = common.parse_duration(args.no_comment_within or "90d")
-    table = add_segments(table, now, recent_window, activity_window)
-
-    filtered, applied = apply_filters(table, args, now)
+    request = _analysis_request(args, now)
+    result = analyze(
+        _subscriber_records(registry),
+        _comment_activity_records(comment_stats),
+        request,
+    )
+    applied = _applied_filter_labels(args, request)
     out_path = args.out or (
         common.OUTPUT_DIR / f"silent_subscribers_{now.strftime('%Y%m%d')}.csv"
     )
-    common.atomic_write_csv(format_output(filtered), out_path)
+    common.atomic_write_csv(_format_analysis_output(result), out_path)
 
     scope = "現役登録者" if not args.include_unsubscribed else "レジストリ全体"
-    print(f"=== セグメント集計（{scope} {len(table)} 人 / 基準時刻 {common.format_ts(now)}） ===")
-    if excluded_unsubscribed:
+    print(
+        f"=== セグメント集計（{scope} {result.scope_count} 人 / "
+        f"基準時刻 {common.format_ts(result.reference_time)}） ==="
+    )
+    if result.excluded_not_seen_latest_count:
         print(
-            f"  ※最新スナップショット（{latest_seen}）に出現しなかった {excluded_unsubscribed} 人"
+            f"  ※最新スナップショット（{latest_seen}）に出現しなかった "
+            f"{result.excluded_not_seen_latest_count} 人"
             "（解約の可能性）を除外済み。含めるには --include-unsubscribed"
         )
-    for name in (SEG_NEW_SILENT, SEG_OLD_SILENT, SEG_DORMANT, SEG_ACTIVE):
-        print(f"  {name}: {int((table['segment'] == name).sum())} 人")
+    for segment in Segment:
+        print(f"  {SEGMENT_LABELS[segment]}: {result.scope_segment_counts[segment]} 人")
     if applied:
         print("適用フィルタ: " + " AND ".join(applied))
     else:
         print("適用フィルタ: なし（全登録者をセグメント付きで出力）")
-    print(f"出力: {len(filtered)} 人 → {out_path}")
+    print(f"出力: {result.filtered_count} 人 → {out_path}")
     print("注記: 対象は登録を公開しているユーザーのみのため、実際の人数の下限値です。")
 
 

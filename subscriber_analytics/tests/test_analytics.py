@@ -5,6 +5,8 @@ import os
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
@@ -16,6 +18,7 @@ sys.path.insert(0, str(MODULE_DIR))
 import collect_comments  # noqa: E402
 import collect_subscribers  # noqa: E402
 import common  # noqa: E402
+import analytics_core  # noqa: E402
 import extract_silent  # noqa: E402
 
 
@@ -67,6 +70,75 @@ class FakeYouTube:
 
 
 class AnalyticsTests(unittest.TestCase):
+    def write_analysis_fixture(self, data_dir: Path) -> None:
+        registry = pd.DataFrame(
+            [
+                [
+                    "UC_NEW",
+                    "new silent",
+                    "2026-07-21T12:00:00Z",
+                    "2026-08-15T12:00:00Z",
+                    "2026-08-20T12:00:00Z",
+                    "1",
+                ],
+                [
+                    "UC_OLD",
+                    "old silent",
+                    "",
+                    "2026-04-22T12:00:00Z",
+                    "2026-08-20T12:00:00Z",
+                    "1",
+                ],
+                [
+                    "UC_DORMANT",
+                    "dormant",
+                    "",
+                    "2026-07-31T12:00:00Z",
+                    "2026-08-20T12:00:00Z",
+                    "1",
+                ],
+                [
+                    "UC_ACTIVE",
+                    "active",
+                    "",
+                    "2026-02-01T12:00:00Z",
+                    "2026-08-20T12:00:00Z",
+                    "1",
+                ],
+                [
+                    "UC_STALE",
+                    "not latest",
+                    "",
+                    "2026-08-10T12:00:00Z",
+                    "2026-08-19T12:00:00Z",
+                    "1",
+                ],
+            ],
+            columns=collect_subscribers.REGISTRY_COLUMNS,
+        )
+        registry.to_csv(common.registry_path(data_dir), index=False)
+        comments_dir = common.comments_dir(data_dir)
+        comments_dir.mkdir(parents=True)
+        pd.DataFrame(
+            [
+                ["UC_DORMANT", "2026-05-21T12:00:00Z"],
+                ["UC_ACTIVE", "2026-08-10T12:00:00Z"],
+            ],
+            columns=["author_channel_id", "published_at"],
+        ).to_csv(comments_dir / "video-1.csv", index=False)
+        common.comment_state_path(data_dir).write_text(
+            json.dumps(
+                {
+                    "status": "complete",
+                    "coverage_scope": common.COMMENT_COVERAGE_OWNER,
+                    "videos_listed": 1,
+                    "videos_missing": 0,
+                    "comment_coverage_complete": True,
+                }
+            ),
+            encoding="utf-8",
+        )
+
     def test_registry_preserves_first_seen_and_updates_last_seen(self):
         registry = pd.DataFrame(
             [["UC1", "old", "", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", "1"]],
@@ -193,6 +265,114 @@ class AnalyticsTests(unittest.TestCase):
                     token_file=data_dir / "token.json",
                 )
             self.assertIn("Codespaces", str(raised.exception))
+
+    def test_cli_uses_shared_core_and_preserves_csv_compatibility(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            self.write_analysis_fixture(data_dir)
+            output_path = data_dir / "all.csv"
+
+            with patch.object(
+                extract_silent,
+                "analyze",
+                wraps=analytics_core.analyze,
+            ) as shared_analyze, patch.object(
+                sys,
+                "argv",
+                [
+                    "extract_silent.py",
+                    "--data-dir",
+                    str(data_dir),
+                    "--out",
+                    str(output_path),
+                    "--now",
+                    "2026-08-20T12:00:00Z",
+                ],
+            ), redirect_stdout(StringIO()):
+                extract_silent.main()
+
+            result = pd.read_csv(output_path, dtype=str).fillna("")
+            self.assertEqual(list(result.columns), extract_silent.OUTPUT_COLUMNS)
+            self.assertEqual(
+                list(result["channel_id"]),
+                ["UC_DORMANT", "UC_NEW", "UC_OLD", "UC_ACTIVE"],
+            )
+            self.assertEqual(
+                dict(zip(result["channel_id"], result["segment"])),
+                {
+                    "UC_DORMANT": extract_silent.SEG_DORMANT,
+                    "UC_NEW": extract_silent.SEG_NEW_SILENT,
+                    "UC_OLD": extract_silent.SEG_OLD_SILENT,
+                    "UC_ACTIVE": extract_silent.SEG_ACTIVE,
+                },
+            )
+            self.assertEqual(
+                result.loc[result["channel_id"] == "UC_NEW", "subscribed_at_source"].item(),
+                "api_published_at",
+            )
+            shared_analyze.assert_called_once()
+
+    def test_cli_silent_filters_use_shared_core(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            self.write_analysis_fixture(data_dir)
+            cases = [
+                ("--never-commented", {"UC_NEW", "UC_OLD"}),
+                (
+                    "--no-comment-within",
+                    {"UC_NEW", "UC_OLD", "UC_DORMANT"},
+                ),
+            ]
+            for index, (flag, expected_channels) in enumerate(cases):
+                with self.subTest(flag=flag):
+                    output_path = data_dir / f"filtered-{index}.csv"
+                    argv = [
+                        "extract_silent.py",
+                        "--data-dir",
+                        str(data_dir),
+                        "--out",
+                        str(output_path),
+                        "--now",
+                        "2026-08-20T12:00:00Z",
+                        flag,
+                    ]
+                    if flag == "--no-comment-within":
+                        argv.append("90d")
+                    with patch.object(sys, "argv", argv), redirect_stdout(StringIO()):
+                        extract_silent.main()
+
+                    result = pd.read_csv(output_path, dtype=str).fillna("")
+                    self.assertEqual(set(result["channel_id"]), expected_channels)
+
+    def test_cli_rejects_incomplete_comments_before_shared_analysis(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            pd.DataFrame(
+                [
+                    [
+                        "UC1",
+                        "one",
+                        "",
+                        "2026-08-01T00:00:00Z",
+                        "2026-08-20T00:00:00Z",
+                        "1",
+                    ]
+                ],
+                columns=collect_subscribers.REGISTRY_COLUMNS,
+            ).to_csv(common.registry_path(data_dir), index=False)
+
+            with patch.object(
+                extract_silent,
+                "analyze",
+                create=True,
+            ) as shared_analyze, patch.object(
+                sys,
+                "argv",
+                ["extract_silent.py", "--data-dir", str(data_dir)],
+            ):
+                with self.assertRaises(SystemExit):
+                    extract_silent.main()
+            shared_analyze.assert_not_called()
 
 
 if __name__ == "__main__":
