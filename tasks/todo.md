@@ -1,213 +1,318 @@
-# Task List: workspace-access
+# Task List: channel-data
 
-Status: approved
+Status: proposed for review
 Plan: [`tasks/plan.md`](plan.md)
-Spec: [`SPEC-workspace-access.md`](../SPEC-workspace-access.md)
+Spec: [`SPEC-channel-data.md`](../SPEC-channel-data.md)
 
 Complete tasks in order. Every behavior task uses red-green-refactor: add a
 focused failing test, confirm the expected failure, implement the smallest
-change, then run focused and regression verification before committing.
+complete behavior, then run focused and regression verification before
+committing.
 
-## Task 1: Freeze immutable access contracts
+## Task 1: Freeze immutable channel-data contracts
 
-**Description:** Add the smallest public contract foundation: opaque IDs,
-verified identity, roles, permissions, sessions, workspaces, memberships,
-commands, stable errors, and safe secret wrappers.
+**Description:** Define the smallest public foundation for subscriber,
+inventory, activity, collection, pagination, freshness, readiness, retention,
+command, error, and repository protocol values.
 
 **Acceptance criteria:**
 
-- [x] Public records are immutable/slotted and accept only timezone-aware values
-  at service boundaries.
-- [x] `OWNER` and `MEMBER` resolve to the approved exact permission matrix.
-- [x] Session evidence/issued secrets have constant redacted repr/str and errors
-  contain stable non-sensitive codes.
+- [ ] Public records are immutable/slotted; enums and error fields have stable
+  machine values and no pandas/provider/database/HTTP types leak into them.
+- [ ] Boundary validation rejects empty/oversized identifiers and text, naive
+  times, booleans as counts, invalid counts/ranges, duplicate input keys, and
+  forbidden coverage combinations.
+- [ ] Repository protocols require `WorkspaceContext` for every tenant
+  operation and expose the approved permission-specific interfaces.
 
 **Verification:**
 
-- [x] RED then GREEN: `python -m unittest workspace_access.tests.test_models -v`
-- [x] Regression: `python -m unittest discover -s subscriber_analytics/tests -v`
-- [x] Compile and `git diff --check` pass.
+- [ ] RED then GREEN: `python -m unittest channel_data.tests.test_models -v`
+- [ ] Workspace and subscriber analytics regression suites pass.
+- [ ] Compile, public-signature inspection, and `git diff --check` pass.
 
 **Dependencies:** None
 
 **Files likely touched:**
 
-- `workspace_access/__init__.py`
-- `workspace_access/models.py`
-- `workspace_access/tests/__init__.py`
-- `workspace_access/tests/test_models.py`
+- `channel_data/__init__.py`
+- `channel_data/models.py`
+- `channel_data/errors.py`
+- `channel_data/ports.py`
+- `channel_data/tests/test_models.py`
 
-**Estimated scope:** Medium (4 files)
+**Estimated scope:** Medium (5 files)
 
-## Task 2: Establish and revoke secure sessions
+## Task 2: Start tenant-scoped collection intents safely
 
-**Description:** Implement deterministic identity mapping, one-time session
-secret issuance, digest-only retention, authentication, exact expiry cutoffs,
-rotation/revocation, logout, and logout-all.
+**Description:** Add the in-memory facade/state seam through one authorized
+collection-start path, establishing tenant keys, permission checks, safe lookup,
+locking, and actor/payload-bound idempotency before other mutations reuse them.
 
 **Acceptance criteria:**
 
-- [x] Verified `(issuer, subject)` maps to one local user without using email as
-  authority; disabled/deleted users fail closed.
-- [x] Raw secrets are returned once, never stored/audited, and idle/absolute
-  limits are evaluated exactly in UTC.
-- [x] Revocation is idempotent and a user can revoke only their own sessions.
+- [ ] Starting a collection requires `collection.run`, stores every key under
+  the context workspace, and returns immutable `IN_PROGRESS` state.
+- [ ] Exact idempotent replay returns the original result; changed actor,
+  workspace, operation, or canonical payload fails atomically.
+- [ ] Identical channel/resource IDs in two workspaces remain independent, and
+  missing/foreign public error fields are identical and non-enumerating.
 
 **Verification:**
 
-- [x] RED then GREEN: `python -m unittest workspace_access.tests.test_sessions -v`
-- [x] Full workspace and analytics suites pass.
-- [x] Compile, secret-value scan, and `git diff --check` pass.
+- [ ] RED then GREEN: `python -m unittest channel_data.tests.test_tenant_isolation -v`
+- [ ] Full channel-data, workspace, and analytics suites pass.
+- [ ] Two-workspace runtime fixture, compile, secret scan, and integrity checks
+  pass.
 
 **Dependencies:** Task 1
 
 **Files likely touched:**
 
-- `workspace_access/models.py`
-- `workspace_access/ports.py`
-- `workspace_access/service.py`
-- `workspace_access/tests/test_sessions.py`
+- `channel_data/__init__.py`
+- `channel_data/models.py`
+- `channel_data/memory.py`
+- `channel_data/service.py`
+- `channel_data/tests/test_tenant_isolation.py`
 
-**Estimated scope:** Medium (4 files)
+**Estimated scope:** Medium (5 files)
 
-## Checkpoint A: Session boundary
+## Checkpoint A: Contract and tenant boundary
 
-- [x] Tasks 1-2 are independently committed and pushed.
-- [x] No dependency, framework, persistence, OAuth, or real data introduced.
-- [x] Graph rebuild has no parser error and focused/full tests pass.
+- [ ] Tasks 1-2 are independently committed and pushed.
+- [ ] Contract, permission, idempotency, and identical-ID isolation fixtures
+  pass with no foreign existence signal.
+- [ ] No dependency, persistence, job, OAuth, network, or real data introduced.
 
-## Task 3: Resolve one authorized workspace context
+## Task 3: Track collection transitions and freshness
 
-**Description:** Implement workspace creation/listing and fail-closed context
-resolution for explicit, implicit, stale, ambiguous, absent, and foreign
-workspace selections.
+**Description:** Add monotonic terminal transition validation and queryable
+freshness/history while keeping latest attempt distinct from latest accepted
+success; data-bearing complete promotion remains fail-closed until Tasks 4-5
+provide a staged candidate.
 
 **Acceptance criteria:**
 
-- [x] Workspace creation atomically creates the first owner; accessible lists
-  include only current memberships with stable ordering.
-- [x] Every successful context contains current role, permissions, session, and
-  authorization revision for exactly one workspace.
-- [x] Missing and foreign selectors produce the same non-enumerating error and
-  no client-supplied authority is trusted.
+- [ ] Only `IN_PROGRESS -> COMPLETE | PARTIAL | FAILED` is structurally valid;
+  terminal replay is idempotent and other transitions fail without mutation.
+- [ ] Partial/failed attempts retain safe progress/failure codes and never erase
+  prior success; `COMPLETE` without the exact staged candidate fails atomically.
+- [ ] Freshness/history require `collection.read`, order deterministically,
+  and expose no provider exception, title, author, payload, or credential data.
 
 **Verification:**
 
-- [x] RED then GREEN: `python -m unittest workspace_access.tests.test_authorization -v`
-- [x] Full workspace and analytics suites pass.
-- [x] Cross-tenant negative runtime fixture, compile, and integrity checks pass.
+- [ ] RED then GREEN:
+  `python -m unittest channel_data.tests.test_collection_state -v`
+- [ ] Full channel-data, workspace, and analytics suites pass.
+- [ ] Transition permutation/concurrency fixture, compile, and integrity checks
+  pass.
 
 **Dependencies:** Task 2
 
 **Files likely touched:**
 
-- `workspace_access/models.py`
-- `workspace_access/service.py`
-- `workspace_access/tests/test_authorization.py`
+- `channel_data/models.py`
+- `channel_data/memory.py`
+- `channel_data/service.py`
+- `channel_data/tests/test_collection_state.py`
 
-**Estimated scope:** Medium (3 files)
+**Estimated scope:** Medium (4 files)
 
-## Task 4: Enforce membership and last-owner invariants
+## Task 4: Publish subscriber snapshots and fold registry
 
-**Description:** Add owner-only membership grant/change/revoke commands with
-idempotency and atomic last-owner protection.
+**Description:** Stage complete public-subscriber observations, atomically
+promote them when the matching collection finishes, and fold them into a
+deterministic cumulative tenant registry.
 
 **Acceptance criteria:**
 
-- [x] Members cannot administer memberships; owners can grant, promote, demote,
-  revoke, and self-remove when not the last owner.
-- [x] Same idempotency key/payload replays the result; a changed payload fails
-  with `IDEMPOTENCY_CONFLICT`.
-- [x] Serial and concurrent operations cannot leave a workspace with zero
-  owners; role/revocation changes affect the next authorization call.
+- [ ] Candidate staging requires a matching in-progress subscriber attempt,
+  mandatory public-only/provider-cap limitations, unique rows, and exposes no
+  current snapshot before finish.
+- [ ] Registry first/last/count/title/published-time rules handle exact replay,
+  out-of-order snapshots, and permutations deterministically.
+- [ ] Exact `COMPLETE` finish promotes candidate plus registry fold atomically;
+  absence never marks unsubscribe, partial attempts promote nothing, and an
+  identical foreign ID cannot affect counts or lookup.
 
 **Verification:**
 
-- [x] RED then GREEN: `python -m unittest workspace_access.tests.test_memberships -v`
-- [x] Full workspace and analytics suites pass.
-- [x] Two-thread invariant fixture, compile, and integrity checks pass.
+- [ ] RED then GREEN:
+  `python -m unittest channel_data.tests.test_subscribers -v`
+- [ ] Full channel-data, workspace, and analytics suites pass.
+- [ ] Replay/concurrency/permutation fixtures, compile, secret scan, and
+  `git diff --check` pass.
 
 **Dependencies:** Task 3
 
 **Files likely touched:**
 
-- `workspace_access/models.py`
-- `workspace_access/service.py`
-- `workspace_access/tests/test_memberships.py`
+- `channel_data/models.py`
+- `channel_data/memory.py`
+- `channel_data/service.py`
+- `channel_data/tests/test_subscribers.py`
 
-**Estimated scope:** Medium (3 files)
+**Estimated scope:** Medium (4 files)
 
-## Checkpoint B: Tenant isolation
+## Task 5: Publish videos and fail-closed comment readiness
 
-- [x] Tasks 3-4 are independently committed and pushed.
-- [x] Permission matrix and negative isolation cases are fully exercised.
-- [x] Graph review finds no unexpected existing-code impact.
-
-## Task 5: Complete privacy and audit lifecycle
-
-**Description:** Implement account-access export, sole-owner deletion blocking,
-session revocation/tombstoning, retention selection, and allowlisted audit
-events.
+**Description:** Stage video inventories and per-video author activity,
+atomically promote complete coverage, and expose fail-closed silent-analysis
+dataset loading.
 
 **Acceptance criteria:**
 
-- [x] Export contains only the user's approved account/membership/workspace
-  fields and excludes session/provider secrets and other-user PII.
-- [x] Account deletion fails without partial mutation for sole owners; otherwise
-  revokes all sessions, removes memberships, and tombstones direct identifiers.
-- [x] Retention selection follows approved 30/90/365-day boundaries and audit
-  records contain no raw secrets/assertions/payloads.
+- [ ] Inventory and per-video candidates remain invisible before finish;
+  activity accepts positive aggregate rows or explicit empty coverage and never
+  retains forbidden raw comment/name/reply fields.
+- [ ] Coverage is bound to the exact accepted inventory and reaches complete
+  only when every listed video, including empty/disabled videos, is covered.
+- [ ] Exact `COMPLETE` finish atomically promotes inventory/activity only with
+  complete coverage; silent loading requires `analysis.read` and fails with
+  each stable reason for partial/public/old-inventory coverage.
 
 **Verification:**
 
-- [x] RED then GREEN: `python -m unittest workspace_access.tests.test_privacy -v`
-- [x] Full workspace and analytics suites pass.
-- [x] Compile, secret-value scan, and `git diff --check` pass.
+- [ ] RED then GREEN: `python -m unittest channel_data.tests.test_comments -v`
+- [ ] Full channel-data, workspace, and analytics suites pass.
+- [ ] Empty/disabled/stale/public/partial runtime fixtures, record-field
+  allowlist, compile, and integrity checks pass.
 
 **Dependencies:** Task 4
 
 **Files likely touched:**
 
-- `workspace_access/models.py`
-- `workspace_access/service.py`
-- `workspace_access/tests/test_privacy.py`
+- `channel_data/models.py`
+- `channel_data/memory.py`
+- `channel_data/service.py`
+- `channel_data/tests/test_comments.py`
 
-**Estimated scope:** Medium (3 files)
+**Estimated scope:** Medium (4 files)
 
-## Task 6: Review and document the completed module
+## Checkpoint B: Accepted analysis data
 
-**Description:** Run graph-backed and five-axis review, simplify only concrete
-findings, document the stable public boundary, and preserve continuation state.
+- [ ] Tasks 3-5 are independently committed and pushed.
+- [ ] Partial/failed replacement cannot disturb the last accepted dataset.
+- [ ] Ready dataset evidence includes exact subscriber limitations and complete
+  owner-video coverage for its accepted inventory.
+
+## Task 6: Provide bounded deterministic pagination
+
+**Description:** Add paginated collection-history, snapshot, and registry reads
+using opaque server-side continuation state bound to the authorized query.
 
 **Acceptance criteria:**
 
-- [x] README/module docs describe public contracts, safe usage, limitations, and
-  exact verification commands without implying production authentication.
-- [x] Graph impact/test queries and security review show no unresolved high-risk
-  finding, orphaned public behavior, or missing critical test.
-- [x] Durable progress identifies verified HEAD and the next capability module.
+- [ ] Limits enforce 1-500 and fixed datasets follow every approved sort and
+  tie-break rule without duplicate or missing rows.
+- [ ] Cursors are opaque and bound to workspace, query, ordering, and captured
+  generation; tampered/cross-workspace/cross-query tokens fail identically.
+- [ ] Concurrent generation change either preserves the captured result page or
+  returns `CURSOR_EXPIRED`; it never silently mixes generations.
 
 **Verification:**
 
-- [x] Focused workspace and full analytics suites pass.
-- [x] Compile, Notebook code-cell, secret scan, and `git diff --check` pass.
-- [x] Worktree is clean and verified commits are pushed.
+- [ ] RED then GREEN across
+  `channel_data.tests.test_tenant_isolation` and
+  `channel_data.tests.test_collection_state`
+- [ ] Full channel-data, workspace, and analytics suites pass.
+- [ ] Full multi-page traversal/tamper/concurrency fixtures, compile, and
+  integrity checks pass.
 
-**Dependencies:** Task 5
+**Dependencies:** Tasks 4-5
 
 **Files likely touched:**
 
-- `workspace_access/README.md`
+- `channel_data/models.py`
+- `channel_data/memory.py`
+- `channel_data/service.py`
+- `channel_data/tests/test_tenant_isolation.py`
+- `channel_data/tests/test_collection_state.py`
+
+**Estimated scope:** Medium (5 files)
+
+## Task 7: Enforce retention and deletion cascades
+
+**Description:** Remove expired/superseded data and every in-memory copy during
+authorized channel/workspace deletion while preserving other tenants.
+
+**Acceptance criteria:**
+
+- [ ] Retention removes superseded video/activity candidates immediately,
+  snapshot headers/observations at exactly 365 days, and terminal
+  attempts/idempotency records at exactly 90 days without silently deleting
+  unresolved in-flight attempts.
+- [ ] Channel deletion removes data, state, cursors, and idempotency records;
+  workspace cascade removes all its channels and no identical foreign record.
+- [ ] Delete/replay and concurrent publish/delete behavior is atomic,
+  non-enumerating, immediately inaccessible, and reports only safe counts.
+
+**Verification:**
+
+- [ ] RED then GREEN: `python -m unittest channel_data.tests.test_privacy -v`
+- [ ] Full channel-data, workspace, and analytics suites pass.
+- [ ] Exact-cutoff and two-thread cascade fixtures, no-PII/error scan, compile,
+  and integrity checks pass.
+
+**Dependencies:** Task 6
+
+**Files likely touched:**
+
+- `channel_data/errors.py`
+- `channel_data/memory.py`
+- `channel_data/service.py`
+- `channel_data/tests/test_privacy.py`
+
+**Estimated scope:** Medium (4 files)
+
+## Checkpoint C: Query and privacy lifecycle
+
+- [ ] Tasks 6-7 are independently committed and pushed.
+- [ ] All tenant copies are covered by retention/cascade tests at exact cutoffs.
+- [ ] Graph impact/flow/test queries have no parser failure; an unavailable or
+  empty graph is recorded rather than misreported as coverage evidence.
+
+## Task 8: Integrate, review, and document channel-data
+
+**Description:** Prove the accepted dataset feeds the existing analytics core,
+document the stable public boundary, conduct the full review, and preserve
+continuation state for `channel-connections`.
+
+**Acceptance criteria:**
+
+- [ ] Fixture mapping reproduces `NEW_SILENT`, `OLD_SILENT`, `DORMANT`,
+  and `ACTIVE` plus mandatory public-subscription limitations without changing
+  CLI/Notebook results.
+- [ ] README documents safe usage, permissions, coverage/freshness, pagination,
+  retention, deletion, in-memory limits, and exact verification commands.
+- [ ] Five-axis/security/simplification review has no unresolved Critical or
+  Required finding and durable progress identifies verified HEAD/next module.
+
+**Verification:**
+
+- [ ] Focused channel-data, workspace, and subscriber analytics suites pass.
+- [ ] Compile, Notebook code-cell, runtime integration, Markdown fence,
+  staged-secret, public-interface, and `git diff --check` checks pass.
+- [ ] Worktree is clean, all task commits are pushed, and local/upstream HEADs
+  match.
+
+**Dependencies:** Task 7
+
+**Files likely touched:**
+
+- `channel_data/README.md`
+- `channel_data/tests/test_integration.py`
 - `.agents/progress/youtube-analysis-app.md`
 - `tasks/todo.md`
-- Concrete review-fix files only, capped at five files.
+- Concrete review-fix file only when required.
 
-**Estimated scope:** Medium (3-5 files)
+**Estimated scope:** Medium (4-5 files)
 
-## Final checkpoint: workspace-access complete
+## Final checkpoint: channel-data complete
 
-- [x] All six tasks and both intermediate checkpoints are complete.
-- [x] Approved specification success criteria have verification evidence.
-- [x] No database, endpoint, OAuth, external authentication, dependency, real
-  user data, or production behavior was introduced.
-- [x] Branch is pushed and ready to specify `channel-data`.
+- [ ] All eight tasks and three intermediate checkpoints are complete.
+- [ ] Every approved specification success criterion has direct evidence.
+- [ ] No database, migration, endpoint, OAuth, job, UI, dependency, real
+  credential, or real channel data was introduced.
+- [ ] Branch is pushed and ready to specify `channel-connections`.
