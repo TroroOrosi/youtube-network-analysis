@@ -252,6 +252,34 @@ OAuth, provider call, job, UI, dependency, credential, or real channel data was
 introduced. Next work is collection transitions/freshness (Task 3), followed by
 subscriber and owner-video/comment accepted generations (Tasks 4-5).
 
+## Verified milestone: channel-data accepted analysis dataset
+
+Verified implementation HEAD: `576138b`
+
+- `1df0ec1` adds monotonic collection transitions, deterministic history, and
+  latest-attempt versus latest-accepted freshness.
+- `b314f03` stages subscriber snapshots and atomically folds exact COMPLETE
+  generations into a cumulative, permutation-independent registry.
+- `576138b` stages video inventories and minimized per-video/author comment
+  aggregates, promotes only complete exact-inventory coverage, and exposes a
+  fail-closed silent-analysis dataset.
+
+Verification evidence:
+
+- channel-data suite: 28 tests passed;
+- workspace-access suite: 40 tests passed;
+- subscriber analytics suite: 29 tests passed;
+- transition/concurrency, out-of-order registry, explicit empty-video,
+  stale-inventory, public-scope, partial-replacement, and record allowlist
+  fixtures passed;
+- all four readiness reasons (`NO_SUBSCRIBER_SNAPSHOT`, `NO_VIDEO_INVENTORY`,
+  `PUBLIC_VIDEO_SCOPE_ONLY`, `COMMENTS_INCOMPLETE`) were exercised;
+- compile, graph rebuild, credential scan, and `git diff --check` passed.
+
+Only public subscriber observations are represented. Stored comment activity
+has no comment text, author display name, reply/parent relation, or comment ID.
+Next work is bounded cursor pagination, then exact retention/deletion cascades.
+
 ## Decisions and constraints
 
 - OAuth scope remains `youtube.readonly`; no write/delete/upload permission.
