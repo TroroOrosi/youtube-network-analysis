@@ -831,3 +831,71 @@ approved review decisions above.
 Pagination limits, ordering, retention boundaries, the permission matrix, the
 scope constant, connection ownership, and disconnect-versus-data-deletion
 behavior are unchanged.
+
+## Execution authority and brokered provider operations
+
+Status: approved 2026-08-21
+
+Background collection cannot reuse a browser context and must never receive a
+raw credential. This section defines the two contracts `collection-jobs`
+depends on. Both live in `channel-connections`, because it owns credential
+custody.
+
+### Execution authority
+
+`ExecutionAuthority` is a short-lived, workspace-bound right to request
+brokered provider operations for exactly one connection. It is not a
+credential, carries no token, slot identifier, or provider response, and is
+validated against current server state on every use.
+
+Public fields: `authority_id`, `workspace_id`, `connection_id`,
+`provider_channel_id`, `issued_at`, `expires_at`.
+
+- `issue_execution_authority` requires `collection.run` and an `ACTIVE`
+  connection in the current workspace. A `REAUTH_REQUIRED` connection fails
+  closed.
+- Authorities expire at exactly 60 minutes and are revocable.
+- Disconnect, credential invalidation, and workspace deletion revoke every
+  authority for the affected connection immediately.
+- Credential rotation does not revoke an authority, because the slot is
+  resolved at call time rather than captured.
+- A missing, foreign, revoked, or expired authority fails as
+  `AUTHORITY_NOT_FOUND_OR_EXPIRED` with one identical safe message.
+
+### Brokered provider operations
+
+`run_provider_operation(authority, request)` is the only way a job reaches
+YouTube. The service resolves the credential slot internally, calls the data
+gateway, and returns minimized rows. No caller can obtain, observe, or export
+credential material, and no caller supplies a URL, host, scope, or slot.
+
+Approved operations and their minimized rows:
+
+| Operation | Row fields |
+|---|---|
+| `LIST_SUBSCRIBERS` | subscriber channel id, title, API published time |
+| `LIST_VIDEOS` | video id, title, published time |
+| `LIST_VIDEO_COMMENT_AUTHORS` | video id, author channel id, comment count, latest comment time |
+
+Comment text, author display name, reply relation, and comment identifiers are
+never returned, matching the `channel-data` minimization rule. Results carry an
+opaque provider page token and the quota cost reported by the gateway; quota
+budgeting itself belongs to `collection-jobs`.
+
+The data gateway owns endpoints, transport, pagination parameters, response
+validation, and quota accounting. It signals failure with the existing
+`ProviderRejected` and `ProviderUnavailable` plus
+`ProviderAuthorizationExpired`, which means the stored grant is no longer
+usable. On that signal the broker deletes the credential slot, publishes
+`REAUTH_REQUIRED`, emits `CONNECTION_REAUTH_REQUIRED`, revokes the connection's
+authorities, and fails as `CONNECTION_REAUTH_REQUIRED`. No provider text
+crosses the boundary.
+
+Two error codes join the stable contract: `AUTHORITY_NOT_FOUND_OR_EXPIRED` and
+`CONNECTION_REAUTH_REQUIRED`.
+
+### Still excluded
+
+Real provider calls, HTTP clients, SDK selection, quota policy, scheduling,
+retries, and job persistence remain outside this module. The reference data
+gateway is a deterministic synthetic fake.
