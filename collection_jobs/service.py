@@ -29,9 +29,14 @@ from channel_data.models import (
     CoverageLimitation,
     FinishCollection,
     PublishSubscriberSnapshot,
+    PublishVideoInventory,
+    ReplaceVideoCommentActivity,
     StartCollection,
     SubscriberObservationInput,
     SubscriberTraversalStatus,
+    VideoCommentActivityInput,
+    VideoCoverageScope,
+    VideoInput,
 )
 from workspace_access.models import Permission, WorkspaceContext
 
@@ -293,7 +298,7 @@ class CollectionJobsService:
 
         if run.kind is RunKind.SUBSCRIBERS:
             return self._run_subscribers(context, run, authority, now)
-        raise _safe_error(ErrorCode.INVALID_INPUT, field="kind")
+        return self._run_owner_content(context, run, authority, now)
 
     def _run_subscribers(
         self,
@@ -346,6 +351,152 @@ class CollectionJobsService:
         self._finish_collection(context, run, collection_id, now, outcome)
         return self._terminal(
             run, now, None, pages=outcome.pages, spent=outcome.quota_spent
+        )
+
+    def _run_owner_content(
+        self,
+        context: WorkspaceContext,
+        run: CollectionRun,
+        authority: ExecutionAuthority,
+        now: datetime,
+    ) -> CollectionRun:
+        videos_collection = f"{run.run_id}-a{run.attempt}-videos"
+        self._channel_data.start_collection(
+            context,
+            StartCollection(
+                channel_id=run.provider_channel_id,
+                collection_id=videos_collection,
+                kind=CollectionKind.VIDEOS,
+                started_at=now,
+                idempotency_key=f"{videos_collection}-start",
+            ),
+        )
+        videos = self._traverse(context, authority, ProviderOperation.LIST_VIDEOS, None)
+        if videos.reason is not None:
+            self._finish_collection(context, run, videos_collection, now, videos)
+            return self._terminal(
+                run, now, videos.reason, pages=videos.pages, spent=videos.quota_spent
+            )
+
+        inventory_id = f"{videos_collection}-inventory"
+        self._channel_data.publish_video_inventory(
+            context,
+            PublishVideoInventory(
+                channel_id=run.provider_channel_id,
+                collection_id=videos_collection,
+                inventory_id=inventory_id,
+                captured_at=now,
+                coverage_scope=VideoCoverageScope.OWNER_VIDEOS,
+                videos=tuple(
+                    VideoInput(
+                        video_id=row.video_id,
+                        title=row.title,
+                        published_at=row.published_at,
+                    )
+                    for row in videos.rows
+                ),
+                idempotency_key=f"{inventory_id}-publish",
+            ),
+        )
+        self._finish_collection(context, run, videos_collection, now, videos)
+
+        comments_collection = f"{run.run_id}-a{run.attempt}-comments"
+        self._channel_data.start_collection(
+            context,
+            StartCollection(
+                channel_id=run.provider_channel_id,
+                collection_id=comments_collection,
+                kind=CollectionKind.COMMENTS,
+                started_at=now,
+                idempotency_key=f"{comments_collection}-start",
+            ),
+        )
+        pages = videos.pages
+        spent = videos.quota_spent
+        covered = 0
+        for video in videos.rows:
+            activity = self._traverse(
+                context,
+                authority,
+                ProviderOperation.LIST_VIDEO_COMMENT_AUTHORS,
+                video.video_id,
+            )
+            pages += activity.pages
+            spent += activity.quota_spent
+            if activity.reason is not None:
+                self._finish_partial(
+                    context, run, comments_collection, now, activity.reason, covered
+                )
+                return self._terminal(
+                    run, now, activity.reason, pages=pages, spent=spent
+                )
+            self._channel_data.replace_video_comment_activity(
+                context,
+                ReplaceVideoCommentActivity(
+                    channel_id=run.provider_channel_id,
+                    collection_id=comments_collection,
+                    inventory_id=inventory_id,
+                    video_id=video.video_id,
+                    replaced_at=now,
+                    activity=tuple(
+                        VideoCommentActivityInput(
+                            author_channel_id=row.author_channel_id,
+                            comment_count=row.comment_count,
+                            last_comment_at=row.latest_comment_at,
+                        )
+                        for row in activity.rows
+                    ),
+                    idempotency_key=f"{comments_collection}-{video.video_id}",
+                ),
+            )
+            covered += 1
+
+        self._channel_data.finish_collection(
+            context,
+            FinishCollection(
+                channel_id=run.provider_channel_id,
+                collection_id=comments_collection,
+                status=CollectionStatus.COMPLETE,
+                completed_at=now,
+                progress_current=covered,
+                progress_total=covered,
+                failure_code=None,
+                idempotency_key=f"{comments_collection}-finish",
+            ),
+        )
+        return self._terminal(run, now, None, pages=pages, spent=spent)
+
+    def _finish_partial(
+        self,
+        context: WorkspaceContext,
+        run: CollectionRun,
+        collection_id: str,
+        now: datetime,
+        reason: RunFailureReason,
+        covered: int,
+    ) -> None:
+        status = (
+            CollectionStatus.FAILED
+            if reason
+            in {RunFailureReason.REAUTH_REQUIRED, RunFailureReason.UNEXPECTED_FAILURE}
+            else CollectionStatus.PARTIAL
+        )
+        self._channel_data.finish_collection(
+            context,
+            FinishCollection(
+                channel_id=run.provider_channel_id,
+                collection_id=collection_id,
+                status=status,
+                completed_at=now,
+                progress_current=covered,
+                progress_total=covered,
+                failure_code=(
+                    _COLLECTION_FAILURE[reason]
+                    if status is CollectionStatus.FAILED
+                    else None
+                ),
+                idempotency_key=f"{collection_id}-finish",
+            ),
         )
 
     def _traverse(
