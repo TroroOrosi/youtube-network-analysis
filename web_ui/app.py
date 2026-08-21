@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import secrets
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import FastAPI, Form, Query, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
+from pydantic import BeforeValidator
 
 from analysis_api.errors import AnalysisApiError
 from analysis_api.models import (
@@ -111,6 +113,20 @@ STATUS_LABELS = {
     "REAUTH_REQUIRED": "再認可が必要",
 }
 
+RUN_KIND_LABELS = {
+    "SUBSCRIBERS": "登録者",
+    "OWNER_CONTENT": "動画とコメント",
+}
+
+RUN_STATUS_LABELS = {
+    "QUEUED": "待機中",
+    "RUNNING": "実行中",
+    "SUCCEEDED": "完了",
+    "PARTIAL": "一部のみ完了",
+    "FAILED": "失敗",
+    "CANCELLED": "中止",
+}
+
 
 class AppError(Exception):
     def __init__(self, code: str, status_code: int = 400) -> None:
@@ -178,6 +194,11 @@ def _context(request: Request, session, permission: Permission):
     )
 
 
+OptionalInt = Annotated[
+    int | None, BeforeValidator(lambda value: None if value == "" else value)
+]
+
+
 def _redirect(path: str, message: str | None = None) -> RedirectResponse:
     target = f"{path}?msg={message}" if message else path
     return RedirectResponse(target, status_code=303)
@@ -237,6 +258,12 @@ def _register_routes(app: FastAPI) -> None:
         if error.code == "UNAUTHENTICATED":
             return _redirect("/login")
         return _error_response(request, error.code, error.status_code)
+
+    @app.exception_handler(RequestValidationError)
+    async def handle_request_validation(
+        request: Request, error: RequestValidationError
+    ) -> Response:
+        return _error_response(request, "INVALID_INPUT", 400)
 
     @app.exception_handler(WorkspaceAccessError)
     @app.exception_handler(ChannelConnectionsError)
@@ -330,8 +357,10 @@ def _register_routes(app: FastAPI) -> None:
                 ],
                 "runs": [
                     {
-                        "kind": item.kind.value,
-                        "status": item.status.value,
+                        "kind": RUN_KIND_LABELS.get(item.kind.value, item.kind.value),
+                        "status": RUN_STATUS_LABELS.get(
+                            item.status.value, item.status.value
+                        ),
                         "finished_at": item.finished_at,
                         "quota_spent": item.quota_spent,
                     }
@@ -474,7 +503,7 @@ def _register_routes(app: FastAPI) -> None:
         request: Request,
         channel_id: str = Query(...),
         never_commented: bool = Query(False),
-        subscribed_within_days: int | None = Query(None),
+        subscribed_within_days: Annotated[OptionalInt, Query()] = None,
         segment: str | None = Query(None),
         cursor: str | None = Query(None),
     ) -> Response:

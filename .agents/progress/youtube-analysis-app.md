@@ -1,6 +1,6 @@
 # YouTube analysis app progress
 
-Last updated: 2026-08-20
+Last updated: 2026-08-21
 
 ## Objective and scope
 
@@ -726,3 +726,83 @@ stopped before completion at the user's request.
 - `CAPABILITY_MAP.md` now has all seven capabilities implemented as reference
   modules; nothing in the repository performs a real provider call or stores a
   real credential.
+
+## Verified milestone: browser verification of web-ui
+
+Branch: `feature/multi-channel-analytics`
+
+Date: 2026-08-21
+
+The known verification gap from the previous session is now closed: the guided
+flow was operated end to end in a real Chrome window over TLS.
+
+### How the certificate blocker was cleared
+
+A self-signed certificate for `CN=localhost` (SAN `localhost`, `127.0.0.1`) was
+generated outside the repository and passed to `uvicorn` with `--ssl-keyfile`
+and `--ssl-certfile`. Chrome driven through `chrome-devtools-mcp` loads the page
+despite reporting `ERR_CERT_AUTHORITY_INVALID`, so no trusted development
+certificate had to be installed and no certificate store was modified.
+
+The demo must be served on port 443. `channel-connections` rejects an
+authorization URL that carries an explicit port, so `https://localhost:8443`
+fails at "チャンネルを接続する" with `PROVIDER_AUTHORIZATION_FAILED`. The rule
+is deliberate and was left alone; `web_ui/README.md` now documents the port.
+
+### Defects the browser found that the suites did not
+
+1. **Raw validation payload leaked (fixed).** Submitting the analysis filter
+   with an empty "登録からの日数" produced FastAPI's raw 422 JSON, exposing the
+   internal field name and parser type. No route had a `RequestValidationError`
+   handler, so every route could leak one. A single handler now renders the
+   standard Japanese `INVALID_INPUT` page, and the optional number query accepts
+   an empty submission as "no filter" through `OptionalInt`. Note that FastAPI
+   only applies `Annotated` metadata in the `Annotated[T, Query()]` form; the
+   `param: T = Query(None)` form silently ignores the validator.
+2. **Form controls rendered dark (fixed).** `:root` declared
+   `color-scheme: light dark` while the palette is hard-coded light, so under a
+   dark OS theme every input, select, and checkbox rendered dark on a light
+   page. The declaration now matches the palette.
+3. **Checkbox stretched to 12rem (fixed).** `input, select { min-width: 12rem }`
+   also hit the checkbox, pushing its label far to the right. The rule now
+   excludes checkboxes.
+4. **Run history showed raw enums (fixed).** "最近の収集" rendered
+   `OWNER_CONTENT`, `SUBSCRIBERS`, and `SUCCEEDED`, breaking the non-engineer
+   requirement that the only technical term shown is the scope name. Added
+   `RUN_KIND_LABELS` and `RUN_STATUS_LABELS` beside the existing label maps.
+
+### Known cosmetic item, deliberately not fixed
+
+The analysis page still prints `対象チャンネル: UC_demo_channel` rather than the
+channel title. `analysis-api` carries no title, and reading one would require
+the analysis route to also resolve `channel.read`, coupling analysis rendering
+to a second permission for a cosmetic gain. Revisit if a title is added to
+`AnalysisSummary`.
+
+### Verification evidence
+
+- Guided flow operated in Chrome: login, create workspace, connect channel
+  through the demo consent screen, collect, analyse, filter, export;
+- the empty-filter and invalid-value cases were re-checked in the browser after
+  the fix: 200 with three filtered rows, and the Japanese `INVALID_INPUT` page
+  with no internal field name;
+- CSV export fetched in-page: 200, `attachment`, `text/csv;charset=utf-8`, and
+  the expected header row;
+- console clean: no errors or warnings across the whole flow;
+- mobile viewport 390x844: no horizontal scrolling, every control reachable;
+- accessibility observed in the a11y tree: labelled controls, `scope`-carrying
+  table headers, and a polite live region for each status message;
+- suites: web-ui 18, analysis-api 19, collection-jobs 82, channel-connections
+  145, channel-data 35, workspace-access 40, subscriber analytics 29 — all
+  passed;
+- `compileall` over the seven packages and `git diff --check` passed.
+
+No dependency, network call, real credential, or real channel data was
+introduced. The certificate lives outside the repository.
+
+### Remaining work
+
+Unchanged from the previous session apart from the closed browser gap: a real
+identity provider, real Google OAuth client registration and provider adapters,
+persistence, background workers, a managed credential vault, rate limiting, and
+deployment TLS.

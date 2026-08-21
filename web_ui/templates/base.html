@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}YouTube 分析{% endblock %}</title>
 <style>
-:root { color-scheme: light dark; --gap: 1rem; }
+:root { color-scheme: light; --gap: 1rem; }
 body { font-family: system-ui, "Hiragino Sans", "Noto Sans JP", sans-serif;
        margin: 0; line-height: 1.7; color: #14171a; background: #fbfbfd; }
 header, main, footer { max-width: 60rem; margin: 0 auto; padding: var(--gap); }
@@ -31,8 +31,9 @@ th, td { text-align: left; padding: 0.5rem; border-bottom: 1px solid #e3e6ea; }
 .card .value { font-size: 1.8rem; font-weight: 700; }
 .limits { color: #4a5057; font-size: 0.9rem; }
 label { display: block; margin-top: 0.75rem; font-weight: 600; }
-input, select { font: inherit; padding: 0.45rem; border-radius: 0.3rem;
-                border: 1px solid #a6acb3; min-width: 12rem; }
+input:not([type="checkbox"]), select { font: inherit; padding: 0.45rem;
+                border-radius: 0.3rem; border: 1px solid #a6acb3; min-width: 12rem; }
+input[type="checkbox"] { margin-right: 0.4rem; }
 </style>
 </head>
 <body>

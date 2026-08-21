@@ -172,6 +172,48 @@ class GuidedFlowTests(WebFixture):
         self.assertIn("長期サイレント", filtered.text)
         self.assertNotIn("アクティブ</td>", filtered.text)
 
+    def test_the_run_history_shows_japanese_labels_only(self) -> None:
+        self.login()
+        self.create_workspace()
+        self.connect_channel()
+        connection_id = self.client.get("/").text.split("/connections/")[1].split("/collect")[0]
+        self.post(f"/connections/{connection_id}/collect")
+
+        home = self.client.get("/").text
+
+        self.assertIn("登録者", home)
+        self.assertIn("完了", home)
+        for raw in ("OWNER_CONTENT", "SUBSCRIBERS", "SUCCEEDED"):
+            self.assertNotIn(raw, home)
+
+    def test_an_empty_optional_filter_is_not_an_error(self) -> None:
+        self.login()
+        self.create_workspace()
+        self.connect_channel()
+        connection_id = self.client.get("/").text.split("/connections/")[1].split("/collect")[0]
+        self.post(f"/connections/{connection_id}/collect")
+
+        page = self.client.get(
+            "/analysis?channel_id=UC_demo_channel&segment=OLD_SILENT"
+            "&subscribed_within_days=&never_commented=true"
+        )
+
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("分析結果", page.text)
+
+    def test_an_invalid_query_value_renders_the_japanese_error_page(self) -> None:
+        self.login()
+        self.create_workspace()
+
+        page = self.client.get(
+            "/analysis?channel_id=UC_demo_channel&subscribed_within_days=abc"
+        )
+
+        self.assertEqual(page.status_code, 400)
+        self.assertIn("入力内容を確認してください", page.text)
+        self.assertNotIn("subscribed_within_days", page.text)
+        self.assertNotIn("int_parsing", page.text)
+
     def test_csv_export_is_downloadable(self) -> None:
         self.login()
         self.create_workspace()

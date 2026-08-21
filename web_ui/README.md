@@ -18,6 +18,19 @@ Open `http://127.0.0.1:8000/`. Cookies are marked `Secure`, so a real
 deployment must terminate TLS; for local review use a TLS proxy or a browser
 profile that accepts secure cookies on localhost.
 
+To operate the whole flow in a browser, serve it over TLS on the default port:
+
+```powershell
+$env:YNA_BASE_URL = "https://localhost"
+python -m uvicorn web_ui.main:app --host 127.0.0.1 --port 443 `
+  --ssl-keyfile dev.key --ssl-certfile dev.crt
+```
+
+The port matters: `channel-connections` rejects an authorization URL that
+carries an explicit port, so a demo served on `https://localhost:8443` fails to
+connect with `PROVIDER_AUTHORIZATION_FAILED`. Real Google authorization uses
+`https://accounts.google.com` without a port, so the rule stays as it is.
+
 ## What is real and what is a demo
 
 | Part | State |
