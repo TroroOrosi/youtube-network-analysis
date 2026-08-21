@@ -166,12 +166,37 @@ def fetch_video_comments(youtube, video_id: str):
     return rows, pages, False
 
 
-def run(youtube, channel_id: str, data_dir: Path, force: bool = False, max_videos: int = 0) -> dict:
+def run(
+    youtube,
+    channel_id: str,
+    data_dir: Path,
+    force: bool = False,
+    max_videos: int = 0,
+    coverage_scope: str = common.COMMENT_COVERAGE_OWNER,
+) -> dict:
+    if coverage_scope not in {
+        common.COMMENT_COVERAGE_OWNER,
+        common.COMMENT_COVERAGE_PUBLIC,
+    }:
+        raise ValueError(f"未対応のコメント収集範囲です: {coverage_scope}")
+    started_at = common.utcnow()
     playlist_id = get_uploads_playlist(youtube, channel_id)
     videos, pages = list_uploaded_videos(youtube, playlist_id)
     pages += 1  # channels.list の分
 
     cache_dir = common.comments_dir(data_dir)
+    state_file = common.comment_state_path(data_dir)
+    common.atomic_write_json(
+        {
+            "schema_version": 1,
+            "status": "in_progress",
+            "channel_id": channel_id,
+            "coverage_scope": coverage_scope,
+            "started_at": common.format_ts(started_at),
+            "videos_listed": len(videos),
+        },
+        state_file,
+    )
     collected = skipped = disabled = total_comments = 0
     for i, video in enumerate(videos, start=1):
         video_id = video["video_id"]
@@ -200,6 +225,30 @@ def run(youtube, channel_id: str, data_dir: Path, force: bool = False, max_video
         status = "コメント無効" if is_disabled else f"{len(frame)} 件"
         print(f"[{i}/{len(videos)}] {video_id}: {status} ({video['title'][:40]})")
 
+    cached = sum(
+        1 for video in videos if (cache_dir / f"{video['video_id']}.csv").exists()
+    )
+    missing = len(videos) - cached
+    all_refreshed = collected == len(videos)
+    completed_at = common.utcnow()
+    common.atomic_write_json(
+        {
+            "schema_version": 1,
+            "status": "complete" if missing == 0 else "partial",
+            "channel_id": channel_id,
+            "coverage_scope": coverage_scope,
+            "started_at": common.format_ts(started_at),
+            "completed_at": common.format_ts(completed_at),
+            "videos_listed": len(videos),
+            "videos_cached": cached,
+            "videos_missing": missing,
+            "videos_refreshed_this_run": collected,
+            "all_videos_refreshed_this_run": all_refreshed,
+            "comment_coverage_complete": missing == 0,
+        },
+        state_file,
+    )
+
     return {
         "videos": len(videos),
         "collected": collected,
@@ -207,13 +256,18 @@ def run(youtube, channel_id: str, data_dir: Path, force: bool = False, max_video
         "disabled": disabled,
         "comments": total_comments,
         "pages": pages,
+        "videos_cached": cached,
+        "videos_missing": missing,
+        "comment_coverage_complete": missing == 0,
+        "all_videos_refreshed_this_run": all_refreshed,
+        "state_file": state_file,
     }
 
 
 def build_client(use_oauth: bool, api_key: str | None, data_dir: Path):
     """認証クライアントを解決する（モジュール docstring の優先順位に従う）。"""
     token_file = common.token_path(data_dir)
-    if use_oauth or (not api_key and token_file.exists()):
+    if resolve_coverage_scope(use_oauth, api_key, data_dir) == common.COMMENT_COVERAGE_OWNER:
         print("OAuth 認証で収集します（オーナー権限のため非公開・限定公開の動画も対象）")
         return common.build_oauth_client(token_file=token_file)
     print(
@@ -221,6 +275,15 @@ def build_client(use_oauth: bool, api_key: str | None, data_dir: Path):
         "先に collect_subscribers.py を実行するか --use-oauth を指定）"
     )
     return common.build_api_key_client(api_key)
+
+
+def resolve_coverage_scope(use_oauth: bool, api_key: str | None, data_dir: Path) -> str:
+    """選択される認証方式から、コメント収集がカバーする動画範囲を返す。"""
+    token_file = common.token_path(data_dir)
+    oauth_status = common.oauth_config_status(token_file=token_file)
+    if use_oauth or (not api_key and oauth_status["noninteractive_oauth_ready"]):
+        return common.COMMENT_COVERAGE_OWNER
+    return common.COMMENT_COVERAGE_PUBLIC
 
 
 def resolve_channel_id(args_channel_id: str | None, data_dir: Path) -> str:
@@ -264,14 +327,36 @@ def main() -> None:
     args = parser.parse_args()
 
     channel_id = resolve_channel_id(args.channel_id, args.data_dir)
+    coverage_scope = resolve_coverage_scope(args.use_oauth, args.api_key, args.data_dir)
     youtube = build_client(args.use_oauth, args.api_key, args.data_dir)
-    stats = run(youtube, channel_id, args.data_dir, force=args.force, max_videos=args.max_videos)
+    stats = run(
+        youtube,
+        channel_id,
+        args.data_dir,
+        force=args.force,
+        max_videos=args.max_videos,
+        coverage_scope=coverage_scope,
+    )
 
     print(
         f"動画 {stats['videos']} 本: 取得 {stats['collected']}（うちコメント無効 {stats['disabled']}）/ "
         f"キャッシュ済みスキップ {stats['skipped']} / 収集コメント {stats['comments']} 件 / "
         f"クォータ消費 約{stats['pages']} unit"
     )
+    print(
+        f"収集状態: キャッシュ {stats['videos_cached']}/{stats['videos']} 本 / "
+        f"未取得 {stats['videos_missing']} 本 → {stats['state_file']}"
+    )
+    if not stats["comment_coverage_complete"]:
+        print(
+            "注意: 未取得動画があるため「一度もコメントなし」抽出は停止されます。"
+            "同じ --max-videos で再実行すると続きから収集します。"
+        )
+    elif not stats["all_videos_refreshed_this_run"]:
+        print(
+            "全動画のカバレッジは揃っていますが、既存キャッシュも含みます。"
+            "最新状態へ揃える場合は --force で全動画を再取得してください。"
+        )
     if stats["skipped"] and not stats["collected"]:
         print("すべてキャッシュ済みです。再取得する場合は --force を付けてください。")
 

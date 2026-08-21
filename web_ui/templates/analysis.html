@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}分析 | YouTube 分析{% endblock %}
+{% block content %}
+<h2>分析結果</h2>
+<p class="limits">対象チャンネル: {{ channel_id }}</p>
+
+<div class="cards">
+  <div class="card"><div>対象の登録者</div><div class="value">{{ summary.scope_count }}</div></div>
+  <div class="card"><div>絞り込み後</div><div class="value">{{ summary.filtered_count }}</div></div>
+  <div class="card"><div>サイレント</div><div class="value">{{ summary.filtered_silent_count }}</div></div>
+  {% for label, count in segment_counts %}
+  <div class="card"><div>{{ label }}</div><div class="value">{{ count }}</div></div>
+  {% endfor %}
+</div>
+
+<h2>絞り込み</h2>
+<form method="get" action="/analysis">
+  <input type="hidden" name="channel_id" value="{{ channel_id }}">
+  <label for="segment">セグメント</label>
+  <select id="segment" name="segment">
+    <option value="">すべて</option>
+    {% for value, label in segment_options %}
+    <option value="{{ value }}" {% if filters.segment == value %}selected{% endif %}>{{ label }}</option>
+    {% endfor %}
+  </select>
+  <label for="subscribed_within_days">登録からの日数（以内）</label>
+  <input id="subscribed_within_days" name="subscribed_within_days" type="number"
+         min="1" max="3650" value="{{ filters.subscribed_within_days or '' }}">
+  <label for="never_commented">
+    <input id="never_commented" name="never_commented" type="checkbox" value="true"
+           {% if filters.never_commented %}checked{% endif %}>
+    コメントしたことがない人だけ
+  </label>
+  <p><button type="submit">この条件で表示</button></p>
+</form>
+
+<form method="post" action="/analysis/export">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <input type="hidden" name="channel_id" value="{{ channel_id }}">
+  <input type="hidden" name="never_commented" value="{{ 'true' if filters.never_commented else 'false' }}">
+  <p><button type="submit" class="secondary">CSV でダウンロード</button></p>
+</form>
+
+<h2>登録者一覧</h2>
+<table>
+  <thead>
+    <tr>
+      <th scope="col">チャンネル名</th><th scope="col">セグメント</th>
+      <th scope="col">登録日</th><th scope="col">コメント数</th><th scope="col">最終コメント</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for row in rows %}
+    <tr>
+      <th scope="row">{{ row.title }}</th>
+      <td>{{ row.segment_label }}</td>
+      <td>{{ row.subscribed_at.date() }}</td>
+      <td>{{ row.comment_count }}</td>
+      <td>{% if row.last_comment_at %}{{ row.last_comment_at.date() }}{% else %}—{% endif %}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% if next_cursor %}
+<p><a href="/analysis?channel_id={{ channel_id }}&cursor={{ next_cursor }}">次のページ</a></p>
+{% endif %}
+<p><a href="/">ホームに戻る</a></p>
+{% endblock %}

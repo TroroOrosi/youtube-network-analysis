@@ -19,6 +19,7 @@ API の snippet.publishedAt は api_published_at 列にそのまま記録する�
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -154,7 +155,12 @@ def run(youtube, data_dir: Path, now=None) -> dict:
 def resolve_my_channel_id(youtube) -> str:
     response = youtube.channels().list(part="id", mine=True).execute()
     items = response.get("items", [])
-    return items[0]["id"] if items else ""
+    if not items:
+        raise SystemExit(
+            "OAuth ユーザーに API から操作可能な YouTube チャンネルがありません。"
+            "YouTube Studio の委任権限は YouTube API では利用できません。"
+        )
+    return items[0]["id"]
 
 
 def main() -> None:
@@ -170,6 +176,10 @@ def main() -> None:
         type=Path,
         default=common.DATA_DIR,
         help=f"データ保存先（既定: {common.DATA_DIR}）",
+    )
+    parser.add_argument(
+        "--expected-channel-id",
+        help="OAuth先と一致すべきチャンネルID（既定: YOUTUBE_CHANNEL_ID / 保存済みchannel_id.txt）",
     )
     parser.add_argument(
         "--rebuild",
@@ -190,9 +200,28 @@ def main() -> None:
     )
 
     channel_id = resolve_my_channel_id(youtube)
-    if channel_id:
-        common.atomic_write_text(channel_id + "\n", common.channel_id_path(args.data_dir))
-        print(f"自チャンネルID: {channel_id}（collect_comments.py が既定値として利用します）")
+    common.load_environment()
+    saved_channel = common.channel_id_path(args.data_dir)
+    saved_expected = (
+        saved_channel.read_text(encoding="utf-8").strip() if saved_channel.exists() else ""
+    )
+    expected = (
+        args.expected_channel_id
+        or os.environ.get("YOUTUBE_CHANNEL_ID", "")
+        or saved_expected
+    )
+    if not expected:
+        raise SystemExit(
+            f"OAuth先は {channel_id} です。誤取得防止のため、YOUTUBE_CHANNEL_ID または "
+            "--expected-channel-id にこのチャンネルIDを設定してから再実行してください。"
+        )
+    if expected and channel_id != expected:
+        raise SystemExit(
+            f"対象チャンネル不一致: expected={expected}, OAuth={channel_id}。"
+            "登録者データは保存していません。OAuthアカウントを確認してください。"
+        )
+    common.atomic_write_text(channel_id + "\n", saved_channel)
+    print(f"自チャンネルID: {channel_id}（collect_comments.py が既定値として利用します）")
 
     stats = run(youtube, args.data_dir)
     print(f"スナップショット保存: {stats['snapshot_file']}")

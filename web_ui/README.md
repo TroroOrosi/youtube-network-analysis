@@ -1,0 +1,196 @@
+# web-ui
+
+Server-rendered hosted application for non-engineers: connect a channel, collect
+data, read the segments, export a CSV.
+
+Stack approved on 2026-08-21: FastAPI, Uvicorn, Jinja2 templates, no frontend
+build step. Domain modules stay standard-library only; the dependencies in
+[`requirements.txt`](requirements.txt) serve this layer alone.
+
+## Running locally
+
+```powershell
+python -m pip install -r web_ui/requirements.txt
+python -m uvicorn web_ui.main:app --host 127.0.0.1 --port 8000
+```
+
+Open `http://127.0.0.1:8000/`. Cookies are marked `Secure`, so a real
+deployment must terminate TLS; for local review use a TLS proxy or a browser
+profile that accepts secure cookies on localhost.
+
+To operate the whole flow in a browser, serve it over TLS on the default port:
+
+```powershell
+$env:YNA_BASE_URL = "https://localhost"
+python -m uvicorn web_ui.main:app --host 127.0.0.1 --port 443 `
+  --ssl-keyfile dev.key --ssl-certfile dev.crt
+```
+
+The port matters: `channel-connections` rejects an authorization URL that
+carries an explicit port, so a demo served on `https://localhost:8443` fails to
+connect with `PROVIDER_AUTHORIZATION_FAILED`. Real Google authorization uses
+`https://accounts.google.com` without a port, so the rule stays as it is.
+
+## What is real and what is a demo
+
+| Part | State |
+|---|---|
+| Sessions, workspaces, permissions | Real `workspace-access` module |
+| Connection lifecycle, credential custody | Real `channel-connections` module |
+| Collection runs, quota, retries | Real `collection-jobs` module |
+| Segments, filters, export | Real `analytics-core` and `analysis-api` |
+| Google OAuth and YouTube API | Real adapters in `google_provider.py`, used only when a client is registered; otherwise the demo gateways in `demo_provider.py` |
+| Login identity provider | Real Google sign-in in `google_login.py` when a client is registered; otherwise a demo display name |
+| Credential vault | **In-memory: not encryption and not a KMS** |
+| Storage | In-memory unless `YNA_STATE_DIR` is set; see below |
+
+Without `YNA_GOOGLE_CLIENT_ID` and `YNA_GOOGLE_CLIENT_SECRET` the app stays on
+the demo gateways: the demo consent screen says so on the page, no request
+leaves the process, no real credential exists, and no YouTube quota is consumed.
+
+## Connecting a real Google client
+
+```powershell
+$env:YNA_BASE_URL = "https://app.example"
+$env:YNA_GOOGLE_CLIENT_ID = "<client id>.apps.googleusercontent.com"
+$env:YNA_GOOGLE_CLIENT_SECRET = "<client secret>"
+```
+
+Both variables must be set; one alone keeps the demo provider, because a
+half-configured client would send an owner to a consent screen that cannot
+complete.
+
+What the deployment owner has to do in Google Cloud first, in this order:
+
+1. Create an OAuth 2.0 **Web application** client.
+2. Register both redirect URIs exactly: `<YNA_BASE_URL>/oauth/callback` for the
+   channel grant and `<YNA_BASE_URL>/login/callback` for sign-in.
+3. Add the single YouTube scope `https://www.googleapis.com/auth/youtube.readonly`,
+   plus `openid`, `profile` and `email` for sign-in.
+4. Enable the **YouTube Data API v3** for the project.
+5. Submit the consent screen for verification. Until it is verified, only test
+   users on the client can connect.
+
+The adapter asks for offline access and an S256 PKCE challenge, refreshes the
+access token when it is within a minute of expiry, and revokes the grant at the
+provider when a connection is disconnected. Only the channel owner's own
+account can connect: the exchange verifies the owner channel and probes
+`subscriptions?myRecentSubscribers=true`, and a grant without that capability is
+refused with `PROVIDER_CAPABILITY_MISSING`.
+
+Nothing starts on its own. A real run still needs an owner to press 接続する and
+then to consent at Google.
+
+## Signing in
+
+With a client registered, `/login` offers Google sign-in only: the display-name
+door is refused with `LOGIN_METHOD_UNAVAILABLE`, because leaving it open would
+let anyone claim an identity the provider is meanwhile verifying. Sign-in asks
+for `openid profile email` and never for a YouTube scope, keeps no token after
+the exchange, and hands `workspace-access` the subject Google vouched for. Each
+attempt carries a single-use state that expires in ten minutes and lives in this
+process only, so a restart cancels sign-ins in flight instead of honouring a
+stale one. A refused consent, a replayed state and an unreachable Google all end
+in the same message on purpose.
+
+## Security controls in this layer
+
+- Session cookie: `HttpOnly`, `Secure`, `SameSite=Lax`, server-side revocable.
+- CSRF: a `SameSite=Strict` double-submit token required on every POST.
+- Security headers: CSP with `frame-ancestors 'none'`, `X-Frame-Options: DENY`,
+  `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`.
+- Errors render a stable Japanese message plus the next action, never a provider
+  response, credential, or internal identifier.
+- The workspace cookie is only a hint: every request re-resolves a real
+  `WorkspaceContext` and the module checks the exact permission.
+- Rate limiting: 30 writes per minute per client, and 3 collection runs per
+  minute, refused with a Japanese 429 page. Reads are never limited. The
+  counters live in one process, so a multi-instance deployment needs a shared
+  store; they are not the provider quota guard, which `collection-jobs` owns.
+- `form-action` allows only this origin and `https://accounts.google.com`, the
+  one host an owner is ever sent to.
+
+## Non-engineer requirements this satisfies
+
+- One clear primary action per step: create workspace, connect, collect, analyse.
+- Plain Japanese labels; the only technical term shown is the scope name, and it
+  is explained next to it.
+- Status, limitation, and next action shown together, including the public
+  subscriptions limitation in the footer of every page.
+- Semantic HTML with labelled controls, table headers, visible focus rings, and a
+  responsive layout that works on a phone.
+
+## Keeping state across a restart
+
+Unset, the application starts clean and leaves nothing behind, which is what a
+demo run should do. Point `YNA_STATE_DIR` at a directory and every module keeps
+its state there instead:
+
+```powershell
+$env:YNA_STATE_DIR = "C:\ProgramData\yna-state"
+```
+
+- one document per module (`workspace_access.json`, `channel_connections.json`,
+  `channel_data.json`, `collection_jobs.json`), so the modules stay
+  independently extractable;
+- each write is a rename over the previous document, so a process killed
+  mid-save leaves the old one intact;
+- the directory is created `0o700` and each document `0o600`. They hold no
+  credential, but they do hold session digests and who may reach which
+  workspace, so the directory belongs on a disk you would put a database on.
+  **POSIX enforces those modes; Windows does not** — there a file inherits the
+  directory's ACL, so a Windows host must restrict the directory itself;
+- a document this code cannot read stops the start instead of silently
+  beginning empty, which would show a live owner an unlinked channel and spend
+  YouTube quota collecting data that is already there.
+
+**Credentials are deliberately not kept.** The vault is still in memory, so
+after a restart a connection is listed but must be authorized again before it
+can collect. That ends when the KMS below is done, not before.
+
+Two processes must not share one directory: each keeps the whole document in
+memory and the last writer wins.
+
+**The write cost is per request, not per write.** An authenticated page view
+touches the session's idle expiry, which is a state change like any other, so
+the document is rewritten for reads too: ten dashboard views were measured
+rewriting `workspace_access.json` eleven times. That document holds every user,
+session and audit event, so the cost per request grows with the deployment.
+This is the ceiling the design accepts; a database is what removes it.
+
+## Deployment TLS
+
+Every cookie is `Secure`, the OAuth redirect URI must be `https`, and Google
+refuses a plain-http redirect for a web client, so TLS is not optional.
+
+Terminate TLS at a reverse proxy (nginx, Caddy, a managed load balancer) and run
+uvicorn behind it on loopback:
+
+```powershell
+python -m uvicorn web_ui.main:app --host 127.0.0.1 --port 8000 --proxy-headers
+```
+
+The proxy must set `X-Forwarded-Proto: https` and `X-Forwarded-For`, terminate
+on the same host name as `YNA_BASE_URL`, and add HSTS. Without `--proxy-headers`
+the rate limiter sees the proxy as the only client. Serving uvicorn's own TLS
+(`--ssl-keyfile`/`--ssl-certfile`) is for local review only.
+
+## Still required before production
+
+A managed credential vault or KMS and background workers for collection. Each
+is an explicit later decision.
+
+Persistent storage is now available but is not a database: `YNA_STATE_DIR`
+keeps one JSON document per module and rewrites each in full, which is right
+for a single process and wrong for two. The write cost is described below.
+
+## Verification
+
+```powershell
+python -m unittest discover -s web_ui/tests -v
+```
+
+`test_the_documents_are_not_readable_by_other_accounts` skips on Windows, where
+those modes mean nothing. It was last observed passing on `python:3.14-slim`
+with `umask 0022`, which reported `0o700` for the directory and `0o600` for the
+document.
