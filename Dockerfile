@@ -22,5 +22,12 @@ USER nobody
 # The platform sets $PORT. `--proxy-headers` is required because TLS terminates
 # in front of this process; the proxy's address goes in FORWARDED_ALLOW_IPS,
 # which uvicorn reads on its own, so the rate limiter sees real clients.
+#
+# `--no-access-log` because the host already logs every request with its method,
+# path, status and latency, and uvicorn's copy adds one thing to that: a second
+# recording of the OAuth `code` that arrives in the query string of both
+# callbacks. The code is single-use, short-lived and bound to a PKCE verifier,
+# so the copy is not worth keeping. Errors and tracebacks still go to stdout;
+# only the per-request access line is dropped.
 ENV PORT=8080
-CMD exec python -m uvicorn web_ui.main:app --host 0.0.0.0 --port $PORT --proxy-headers
+CMD exec python -m uvicorn web_ui.main:app --host 0.0.0.0 --port $PORT --proxy-headers --no-access-log

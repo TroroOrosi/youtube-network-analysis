@@ -312,6 +312,24 @@ gcloud run deploy yna-web --source . --region asia-northeast1 `
 The service account is its own rather than the default compute one, which can
 read every secret in the project; this one reads the single secret it needs.
 
+**The host still logs the OAuth `code`.** Both callbacks receive it in the query
+string, because an OAuth redirect is a GET and the session cookie is
+`SameSite=Lax`, which a cross-site form post would not carry — so the code
+cannot be moved into a body. The image runs uvicorn with `--no-access-log` to
+avoid recording it a second time, but Cloud Run's own request log keeps the full
+URL, and anyone who can read the project's logs can read it there. It is a
+single-use code, expired within minutes, bound to a PKCE verifier and already
+redeemed by the time it lands, so this is a residue rather than a hole. To drop
+it as well, exclude those entries from the `_Default` sink:
+
+```powershell
+gcloud logging sinks update _Default `
+  --log-filter='NOT (resource.type="cloud_run_revision" AND httpRequest.requestUrl=~"callback\?.*code=")'
+```
+
+That costs the request log for exactly the two paths most likely to need
+debugging, which is why it is not the default here.
+
 **What a hosted owner cannot guess, and should be told:** an instance that goes
 away takes the whole application's memory with it. New revision, maintenance,
 crash — `min-instances 1` makes that rarer, not impossible.
