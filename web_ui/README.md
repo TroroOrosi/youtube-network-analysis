@@ -175,6 +175,162 @@ on the same host name as `YNA_BASE_URL`, and add HSTS. Without `--proxy-headers`
 the rate limiter sees the proxy as the only client. Serving uvicorn's own TLS
 (`--ssl-keyfile`/`--ssl-certfile`) is for local review only.
 
+## Publishing it at a URL
+
+[`Dockerfile`](../Dockerfile) in the repository root builds the whole
+application into one image. It copies this layer, the five domain modules and
+`subscriber_analytics/analytics_core.py` — the only file of that package this
+layer imports, the rest of it pulls pandas and the Google client — installs
+[`requirements.txt`](requirements.txt), and runs uvicorn as `nobody` on `$PORT`
+with `--proxy-headers`.
+
+```powershell
+docker build -t yna-web .
+docker run --rm -p 8099:8080 yna-web
+```
+
+Any host that runs a container and terminates TLS will serve it. Cloud Run is
+the one this was written against, because the same Google Cloud project already
+has to hold the OAuth client and the YouTube Data API:
+
+```powershell
+gcloud run deploy yna-web --source . --region asia-northeast1 `
+  --allow-unauthenticated --max-instances 1 --min-instances 1 `
+  --set-env-vars "FORWARDED_ALLOW_IPS=*"
+```
+
+Then take the `https://…run.app` URL it prints, redeploy with
+`--set-env-vars "YNA_BASE_URL=<that URL>,FORWARDED_ALLOW_IPS=*"`, and register
+that URL's two redirect URIs on the OAuth client. The URL is not knowable before
+the first deploy, so two deploys is the shortest path, not a mistake.
+
+Three flags are not preferences:
+
+- `--max-instances 1`, because the credential vault, the rate-limit counters and
+  the state document all live in one process. A second instance would show an
+  owner a session or a connection that exists only in its sibling.
+- `--min-instances 1`, because scaling to zero ends the process, and everything
+  above is in memory. At zero a visitor returning after an idle period finds
+  their workspace gone. This is the one line here that costs money; drop it and
+  the demo still works, it just forgets.
+- `FORWARDED_ALLOW_IPS=*`, because Cloud Run's front end is not on loopback and
+  uvicorn trusts only loopback by default. It is safe **there** — the container
+  has no address of its own and the front end overwrites `X-Forwarded-For`. On a
+  host where the container is directly reachable, `*` lets any client forge its
+  address and walk past the rate limiter; name the proxy instead.
+
+`YNA_STATE_DIR` buys nothing on Cloud Run: the filesystem is memory that dies
+with the instance. It is for a host with a real disk.
+
+Left unset, `YNA_GOOGLE_CLIENT_ID` and `YNA_GOOGLE_CLIENT_SECRET` keep a public
+deployment on the demo gateways, which is the honest thing to publish first —
+the consent screen says it is a demo, no request leaves the process, no YouTube
+quota is spent, and no real credential is ever held by the in-memory vault named
+below.
+
+### With a real Google client
+
+The redirect URIs must match the deployed URL exactly, and the URL does not
+exist until the first deploy, so the order is fixed:
+
+1. Turn the APIs on, which is the only part of the Google side that gcloud can
+   do:
+
+   ```powershell
+   gcloud services enable youtube.googleapis.com run.googleapis.com `
+     secretmanager.googleapis.com
+   ```
+
+2. In the console — **not** gcloud; see below — create the Web application
+   client, add the scopes, and set the consent screen Audience to Testing with
+   the test users on it. Keep the client id and secret. Skip the redirect URIs,
+   they need a URL that does not exist yet.
+3. Deploy with the command below. It will start, because the client is
+   configured; sign-in will not complete yet, because step 4 has not happened.
+4. In the console again, register both redirect URIs on the client against the
+   `run.app` URL the deploy printed: `<url>/oauth/callback` and
+   `<url>/login/callback`.
+5. Deploy again with `YNA_BASE_URL` set to that same URL. Sign-in works now.
+
+Steps 2 and 4 have no command-line form. `gcloud iam oauth-clients` looks like
+one and is not: it belongs to Workforce Identity Federation. `gcloud iap
+oauth-brands` and `gcloud iap oauth-clients` belong to Identity-Aware Proxy, and
+the API under them shut down in March 2026, which also retired the Terraform
+`google_iap_brand` and `google_iap_client` resources. Client creation, the
+consent screen and the test-user list are console-only; check whether that is
+still true before building anything around it.
+
+(An Audience of **Internal** would replace the test-user list with a Workspace
+directory, but it admits only that organisation's accounts, so a list of
+individual Gmail addresses needs Testing.)
+
+### Who may sign in
+
+Leave the consent screen in **Testing** and add each person to its test-user
+list. Google then admits exactly that list and refuses everyone else at its own
+sign-in page, before the redirect back here — so the guest list is Google's to
+keep, not this application's, and there is no allow-list in this code to fall
+out of date. This suits `run.app`, which is why the URL below needs no domain of
+your own.
+
+Opening it to everyone is a different job, not a bigger number: `youtube.readonly`
+is a sensitive scope, so leaving Testing means Google's verification review, and
+that review wants an authorized domain the applicant owns and can prove in
+Search Console. `run.app` is Google's domain, not the applicant's. Everyone-can-
+sign-in therefore needs a domain of your own mapped to the service, used as
+`YNA_BASE_URL`, with both redirect URIs re-registered against it. Confirm the
+requirements when submitting; this is Google policy, not something this code
+decides.
+
+**Set `YNA_REQUIRE_GOOGLE=1` on any deployment that is meant to be closed.**
+Without a client this application does not stop — it falls back to the demo
+gateways, and the demo door asks only for a display name, so a dropped
+environment variable turns a test-user-only URL into one anyone can walk into.
+It fails quietly, at the exact moment nobody is looking. With the flag set the
+process refuses to start instead, and the revision never takes traffic.
+
+The client secret does not belong in `--set-env-vars`. That writes it in clear
+into the service configuration, where `gcloud run services describe` and the
+console both read it back, and into shell history on the way. Keep it in Secret
+Manager and mount it:
+
+```powershell
+"<client secret>" | gcloud secrets create yna-google-client-secret --data-file=-
+
+gcloud iam service-accounts create yna-web
+gcloud secrets add-iam-policy-binding yna-google-client-secret `
+  --member "serviceAccount:yna-web@<project>.iam.gserviceaccount.com" `
+  --role roles/secretmanager.secretAccessor
+
+gcloud run deploy yna-web --source . --region asia-northeast1 `
+  --allow-unauthenticated --max-instances 1 --min-instances 1 `
+  --service-account "yna-web@<project>.iam.gserviceaccount.com" `
+  --set-env-vars "YNA_BASE_URL=https://<service>.run.app,FORWARDED_ALLOW_IPS=*,YNA_REQUIRE_GOOGLE=1,YNA_GOOGLE_CLIENT_ID=<client id>.apps.googleusercontent.com" `
+  --set-secrets "YNA_GOOGLE_CLIENT_SECRET=yna-google-client-secret:latest"
+```
+
+The service account is its own rather than the default compute one, which can
+read every secret in the project; this one reads the single secret it needs.
+
+**What a hosted owner cannot guess, and should be told:** an instance that goes
+away takes the whole application's memory with it. New revision, maintenance,
+crash — `min-instances 1` makes that rarer, not impossible.
+
+What is lost depends on `YNA_STATE_DIR`, and the two outcomes are different
+enough to plan for:
+
+- **Unset, which is what Cloud Run gets** — everything goes: sign-ins,
+  workspaces, connections, collected data, and the tokens. An owner returns to
+  an empty application and starts over. Nothing is left inconsistent, because
+  nothing is left.
+- **Set, on a host with a disk** — the modules come back, so a connection is
+  listed and reads as connected, but the vault it points at is empty. The grant
+  is gone while the record of it is not, and the next collection run fails until
+  the owner presses 接続する and consents again.
+
+Either way the fix is the same KMS named below, and until it exists this is the
+behaviour to tell owners about rather than let them meet during a run.
+
 ## Still required before production
 
 A managed credential vault or KMS and background workers for collection. Each

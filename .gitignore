@@ -224,3 +224,6 @@ channel_network_interactive.html
 
 # ローカル解析ツールキャッシュ（再生成可能）
 .repowise/
+
+# OAuth クライアントの秘密（Google Cloud からダウンロードした JSON）
+client_secret_*.json
