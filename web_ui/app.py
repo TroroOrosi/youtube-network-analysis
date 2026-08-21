@@ -8,7 +8,9 @@ resolves a workspace context, renders safe values, and never sees a credential.
 from __future__ import annotations
 
 import secrets
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import Lock
 from typing import Annotated, Any
 
 from fastapi import FastAPI, Form, Query, Request
@@ -49,6 +51,11 @@ from .container import Services, build_services
 SESSION_COOKIE = "yna_session"
 WORKSPACE_COOKIE = "yna_workspace"
 CSRF_COOKIE = "yna_csrf"
+
+CONSENT_ORIGIN = "https://accounts.google.com"
+WRITE_LIMIT_PER_MINUTE = 30
+COLLECT_LIMIT_PER_MINUTE = 3
+RATE_WINDOW = timedelta(minutes=1)
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
 MESSAGES = {
@@ -68,6 +75,7 @@ ERROR_TEXT = {
     "INTENT_NOT_FOUND_OR_EXPIRED": ("認可の有効期限が切れました。", "もう一度「接続する」から始めてください。"),
     "CALLBACK_CONFLICT": ("認可の情報が一致しませんでした。", "もう一度最初から接続してください。"),
     "CONNECTION_REAUTH_REQUIRED": ("接続の再認可が必要です。", "「再認可する」を実行してください。"),
+    "TOO_MANY_REQUESTS": ("操作が多すぎます。", "しばらく待ってからもう一度お試しください。"),
     "PROVIDER_AUTHORIZATION_FAILED": ("YouTube 側の認可を完了できませんでした。", "しばらく待ってから再試行してください。"),
     "PROVIDER_CAPABILITY_MISSING": ("このチャンネルでは登録者情報を取得できません。", "チャンネル所有者の Google アカウントで認可してください。"),
     "RUN_ALREADY_ACTIVE": ("同じ種類の収集がすでに実行中です。", "完了を待ってから再実行してください。"),
@@ -135,15 +143,57 @@ class AppError(Exception):
         self.status_code = status_code
 
 
+class _RateLimiter:
+    """Fixed window counters for one process.
+
+    A multi-instance deployment needs a shared store; this only protects the
+    instance it runs in, and it is deliberately not the provider quota guard,
+    which `collection-jobs` already owns.
+    """
+
+    def __init__(self) -> None:
+        self._windows: dict[str, tuple[datetime, int]] = {}
+        self._lock = Lock()
+
+    def allow(self, key: str, limit: int) -> bool:
+        now = datetime.now(UTC)
+        with self._lock:
+            started, used = self._windows.get(key, (now, 0))
+            if now - started >= RATE_WINDOW:
+                started, used = now, 0
+            if used >= limit:
+                return False
+            self._windows[key] = (started, used + 1)
+            return True
+
+
 def create_app(services: Services | None = None, *, base_url: str = "https://localhost") -> FastAPI:
     app = FastAPI(title="YouTube 分析", docs_url=None, redoc_url=None)
     app.state.services = services or build_services(base_url)
+
+    limiter = _RateLimiter()
+
+    @app.middleware("http")
+    async def rate_limit(request: Request, call_next: Any) -> Response:
+        """Cap writes per client. Reads stay free so a page never breaks."""
+
+        if request.method != "GET":
+            limit = (
+                COLLECT_LIMIT_PER_MINUTE
+                if request.url.path.endswith("/collect")
+                else WRITE_LIMIT_PER_MINUTE
+            )
+            client = request.client.host if request.client else "unknown"
+            if not limiter.allow(f"{client}|{limit}", limit):
+                return _error_response(request, "TOO_MANY_REQUESTS", 429)
+        return await call_next(request)
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next: Any) -> Response:
         response = await call_next(request)
         response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; style-src 'self' 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'"
+            "default-src 'self'; style-src 'self' 'unsafe-inline';"
+            f" form-action 'self' {CONSENT_ORIGIN}; frame-ancestors 'none'"
         )
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
@@ -424,6 +474,28 @@ def _register_routes(app: FastAPI) -> None:
     @app.get("/demo/consent", response_class=HTMLResponse)
     async def demo_consent(request: Request, state: str = Query(...)) -> Response:
         return _render(request, "consent.html", {"state": state})
+
+    @app.get("/oauth/callback")
+    async def oauth_return(
+        request: Request,
+        state: str = Query(...),
+        code: str | None = Query(None),
+        error: str | None = Query(None),
+    ) -> Response:
+        """The provider's own redirect back. `state` is the only accepted proof."""
+
+        session = _require_session(request)
+        context = _context(request, session, Permission.CHANNEL_MANAGE_CONNECTION)
+        _services(request).connections.complete_authorization(
+            context,
+            CompleteAuthorization(
+                state=RedactedSecret(state),
+                code=RedactedSecret(code) if code else None,
+                provider_error=None if code else (error or "access_denied"),
+                idempotency_key=secrets.token_urlsafe(16),
+            ),
+        )
+        return _redirect("/", "connected")
 
     @app.post("/oauth/callback")
     async def oauth_callback(

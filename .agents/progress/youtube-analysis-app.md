@@ -806,3 +806,90 @@ Unchanged from the previous session apart from the closed browser gap: a real
 identity provider, real Google OAuth client registration and provider adapters,
 persistence, background workers, a managed credential vault, rate limiting, and
 deployment TLS.
+
+## Verified milestone: real Google provider adapters, rate limiting, deployment TLS
+
+Date: 2026-08-21. Branch `feature/multi-channel-analytics`.
+
+Three of the recorded remaining items are now built. They needed no external
+resource and no new stack decision, so they were done before the four that do.
+
+### Real provider adapters
+
+`web_ui/google_provider.py` implements both provider ports against Google:
+
+- `GoogleAuthorizationGateway`: an S256 PKCE, offline-access authorization URL
+  on `accounts.google.com`; a code exchange that verifies the owner channel and
+  probes `subscriptions?myRecentSubscribers=true` for the subscriber
+  capability; provider revocation on disconnect.
+- `GoogleDataGateway`: recent subscribers, the uploads playlist and its videos,
+  and comment authors aggregated to a channel id, a count, and a latest time —
+  no comment text, display name, or comment id ever leaves the adapter.
+- `GoogleCredentialStore`: satisfies the write-only `CredentialVault` port and
+  keeps the read side internal, so the gateways can refresh a token without any
+  service or route being able to reach credential material. It is still the
+  in-memory reference custody, not a KMS.
+
+Transport is injected. The default is stdlib HTTPS with a 20-second timeout;
+every test drives a fake transport, so the suite makes no network call, holds no
+real credential, and consumes no quota.
+
+Two constraints the code had to obey rather than work around:
+
+1. `ProviderCredential.scopes` must equal the approved scope set exactly, so a
+   grant carrying anything else is refused at the adapter with
+   `SCOPE_NOT_GRANTED` instead of being stored.
+2. Google returns the owner to the redirect URI with a **GET**, so `web_ui`
+   gained `GET /oauth/callback`. It carries no CSRF token by construction; the
+   module-verified `state` is the proof, and the session cookie is `SameSite=Lax`
+   so it survives that top-level navigation.
+
+`build_services(base_url, google=..., transport=...)` selects the real adapters,
+and `google_config_from_env` requires both the client id and the secret — one
+alone keeps the demo provider rather than sending an owner to a consent screen
+that cannot complete.
+
+### Rate limiting
+
+Fixed-window counters in `web_ui`: 30 writes per minute per client and 3
+collection runs per minute, refused with a Japanese 429 page. Reads are never
+limited. Single process by design; a multi-instance deployment needs a shared
+store, and this is not the provider quota guard, which `collection-jobs` owns.
+
+### Content-Security-Policy fix
+
+`form-action 'self'` would have blocked the redirect to Google after the
+`接続する` form post in browsers that check the redirect chain. The directive now
+allows exactly this origin and `https://accounts.google.com`.
+
+### Deployment TLS
+
+Documented in `web_ui/README.md`: terminate TLS at a proxy, run uvicorn on
+loopback with `--proxy-headers`, require `X-Forwarded-Proto` and
+`X-Forwarded-For` (without them the rate limiter sees only the proxy), and treat
+uvicorn's own TLS flags as local review only.
+
+### Verification evidence
+
+- 44 new tests, each written before the code and watched fail: 29 for the
+  adapters, 15 in `web_ui` for Google mode, configuration, rate limits, and the
+  policy directive;
+- Google mode is exercised end to end against a fake Google — start, consent
+  return, connect, collect — proving the real adapter path without a network;
+- suites: web-ui 60, analysis-api 19, collection-jobs 82, channel-connections
+  145, channel-data 35, workspace-access 40, subscriber analytics 29 — all
+  passed.
+
+### Remaining work
+
+Now genuinely blocked on a decision or an external action, not on code:
+
+- **Google client registration and consent verification** — the deployment
+  owner's action in Google Cloud. The adapters and the setup steps are ready.
+- **A real identity provider for login** — login still accepts a display name.
+- **Persistence** — all four stateful services hold private in-memory state with
+  no storage port; introducing one is a multi-session change of its own.
+- **Background workers for collection** — needs persistence first, then a
+  worker/queue platform decision.
+- **A managed credential vault or KMS** — `GoogleCredentialStore` is the seam it
+  would replace.

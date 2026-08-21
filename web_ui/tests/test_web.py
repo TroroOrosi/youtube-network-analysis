@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import unittest
+from urllib.parse import parse_qs, urlsplit
 
 from fastapi.testclient import TestClient
 
-from web_ui.app import create_app
-from web_ui.container import build_services
+from workspace_access.models import AccessSecret
+
+from web_ui.app import COLLECT_LIMIT_PER_MINUTE, WRITE_LIMIT_PER_MINUTE, create_app
+from web_ui.container import build_services, google_config_from_env
+from web_ui.google_provider import GoogleOAuthConfig
+from web_ui.tests.test_google_provider import FakeTransport, default_replies
 
 
 BASE_URL = "https://testserver"
@@ -95,6 +100,71 @@ class AuthenticationTests(WebFixture):
         self.assertEqual(response.headers["X-Frame-Options"], "DENY")
         self.assertEqual(response.headers["Referrer-Policy"], "no-referrer")
         self.assertIn("frame-ancestors 'none'", response.headers["Content-Security-Policy"])
+
+    def test_the_policy_allows_the_google_consent_screen_only(self) -> None:
+        response = self.client.get("/login")
+
+        directive = [
+            part
+            for part in response.headers["Content-Security-Policy"].split(";")
+            if "form-action" in part
+        ]
+
+        self.assertEqual(directive, [" form-action 'self' https://accounts.google.com"])
+
+
+class RateLimitTests(WebFixture):
+    def test_a_burst_of_writes_is_refused(self) -> None:
+        self.login()
+        self.create_workspace()
+
+        statuses = [
+            self.post("/workspaces", {"name": f"連打{index}"}).status_code
+            for index in range(WRITE_LIMIT_PER_MINUTE + 2)
+        ]
+
+        self.assertIn(429, statuses)
+
+    def test_the_refusal_explains_the_next_action_in_japanese(self) -> None:
+        self.login()
+        self.create_workspace()
+
+        response = None
+        for index in range(WRITE_LIMIT_PER_MINUTE + 2):
+            response = self.post("/workspaces", {"name": f"連打{index}"})
+            if response.status_code == 429:
+                break
+
+        self.assertEqual(response.status_code, 429)
+        self.assertIn("操作が多すぎます", response.text)
+        self.assertIn("しばらく待ってから", response.text)
+
+    def test_collection_is_capped_below_the_general_write_limit(self) -> None:
+        self.login()
+        self.create_workspace()
+        self.connect_channel()
+        connection_id = (
+            self.client.get("/").text.split("/connections/")[1].split("/collect")[0]
+        )
+
+        statuses = [
+            self.post(f"/connections/{connection_id}/collect").status_code
+            for _ in range(COLLECT_LIMIT_PER_MINUTE + 1)
+        ]
+
+        self.assertEqual(statuses[-1], 429)
+        self.assertLess(COLLECT_LIMIT_PER_MINUTE, WRITE_LIMIT_PER_MINUTE)
+
+    def test_reading_a_page_is_never_rate_limited(self) -> None:
+        self.login()
+        self.create_workspace()
+
+        statuses = {
+            self.client.get("/").status_code
+            for _ in range(WRITE_LIMIT_PER_MINUTE + 2)
+        }
+
+        self.assertEqual(statuses, {200})
 
 
 class GuidedFlowTests(WebFixture):
@@ -244,6 +314,118 @@ class GuidedFlowTests(WebFixture):
         self.assertIn("msg=disconnected", response.headers["location"])
         analysis = self.client.get("/analysis?channel_id=UC_demo_channel")
         self.assertEqual(analysis.status_code, 200)
+
+
+class GoogleModeTests(unittest.TestCase):
+    """The same guided flow, wired to the real adapters against a fake Google."""
+
+    def setUp(self) -> None:
+        self.transport = FakeTransport(default_replies())
+        services = build_services(
+            BASE_URL,
+            google=GoogleOAuthConfig(
+                client_id="client-123.apps.googleusercontent.com",
+                client_secret=AccessSecret("client-secret"),
+                redirect_uris={"hosted-callback": f"{BASE_URL}/oauth/callback"},
+            ),
+            transport=self.transport,
+        )
+        self.client = TestClient(
+            create_app(services), base_url=BASE_URL, follow_redirects=False
+        )
+        self.client.get("/login")
+        self.client.post(
+            "/login",
+            data={
+                "display_name": "運用担当",
+                "csrf_token": self.client.cookies["yna_csrf"],
+            },
+        )
+        self.client.get("/")
+        self.client.post(
+            "/workspaces",
+            data={"name": "本番運用", "csrf_token": self.client.cookies["yna_csrf"]},
+        )
+
+    def start(self) -> str:
+        response = self.client.post(
+            "/connections/start",
+            data={"csrf_token": self.client.cookies["yna_csrf"]},
+        )
+        self.assertEqual(response.status_code, 303)
+        return response.headers["location"]
+
+    def test_starting_a_connection_sends_the_owner_to_google(self) -> None:
+        location = self.start()
+
+        self.assertTrue(location.startswith("https://accounts.google.com/o/oauth2/"))
+        self.assertIn("youtube.readonly", location)
+
+    def test_the_returning_google_redirect_completes_the_connection(self) -> None:
+        state = parse_qs(urlsplit(self.start()).query)["state"][0]
+
+        callback = self.client.get(f"/oauth/callback?state={state}&code=auth-code")
+
+        self.assertEqual(callback.status_code, 303)
+        self.assertIn("msg=connected", callback.headers["location"])
+        self.assertIn("本物チャンネル", self.client.get("/").text)
+
+    def test_a_denied_consent_shows_the_japanese_error_page(self) -> None:
+        state = parse_qs(urlsplit(self.start()).query)["state"][0]
+
+        callback = self.client.get(
+            f"/oauth/callback?state={state}&error=access_denied"
+        )
+
+        self.assertGreaterEqual(callback.status_code, 400)
+        self.assertNotIn("access_denied", callback.text)
+        self.assertIn("認可を完了できませんでした", callback.text)
+
+    def test_collecting_reads_the_provider_through_the_real_adapter(self) -> None:
+        state = parse_qs(urlsplit(self.start()).query)["state"][0]
+        self.client.get(f"/oauth/callback?state={state}&code=auth-code")
+        home = self.client.get("/").text
+        connection_id = home.split("/connections/")[1].split("/collect")[0]
+
+        collected = self.client.post(
+            f"/connections/{connection_id}/collect",
+            data={"csrf_token": self.client.cookies["yna_csrf"]},
+        )
+
+        self.assertEqual(collected.status_code, 303)
+        self.assertIn("msg=collected", collected.headers["location"])
+        self.assertTrue(
+            any("/subscriptions?" in request[1] for request in self.transport.requests)
+        )
+
+
+class ProviderConfigurationTests(unittest.TestCase):
+    ENVIRONMENT = {
+        "YNA_GOOGLE_CLIENT_ID": "client-123.apps.googleusercontent.com",
+        "YNA_GOOGLE_CLIENT_SECRET": "client-secret",
+    }
+
+    def test_no_client_keeps_the_demo_provider(self) -> None:
+        self.assertIsNone(google_config_from_env({}, BASE_URL))
+
+    def test_a_client_id_without_a_secret_keeps_the_demo_provider(self) -> None:
+        environment = {"YNA_GOOGLE_CLIENT_ID": self.ENVIRONMENT["YNA_GOOGLE_CLIENT_ID"]}
+
+        self.assertIsNone(google_config_from_env(environment, BASE_URL))
+
+    def test_a_registered_client_uses_this_deployments_callback(self) -> None:
+        config = google_config_from_env(self.ENVIRONMENT, BASE_URL)
+
+        self.assertIsNotNone(config)
+        self.assertEqual(config.client_id, self.ENVIRONMENT["YNA_GOOGLE_CLIENT_ID"])
+        self.assertEqual(
+            config.redirect_uris["hosted-callback"], f"{BASE_URL}/oauth/callback"
+        )
+
+    def test_the_client_secret_is_never_printed(self) -> None:
+        config = google_config_from_env(self.ENVIRONMENT, BASE_URL)
+
+        self.assertNotIn("client-secret", repr(config))
 
 
 class SafetyTests(WebFixture):
