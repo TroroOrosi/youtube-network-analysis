@@ -117,11 +117,21 @@ def google_config_from_env(
 
     Both halves must be present: a half-configured client would send owners to a
     real consent screen that cannot complete.
+
+    `YNA_REQUIRE_GOOGLE=1` stops the fall-back instead of taking it. A URL that
+    is closed to a list of Google test users is only closed while the client is
+    configured; without one the demo door opens to whoever has the URL, and it
+    opens without saying anything. Set it wherever the URL is reachable.
     """
 
     client_id = environment.get("YNA_GOOGLE_CLIENT_ID", "").strip()
     client_secret = environment.get("YNA_GOOGLE_CLIENT_SECRET", "").strip()
     if not client_id or not client_secret:
+        if environment.get("YNA_REQUIRE_GOOGLE", "").strip() == "1":
+            raise RuntimeError(
+                "YNA_REQUIRE_GOOGLE is set, so the demo provider is refused: "
+                "set both YNA_GOOGLE_CLIENT_ID and YNA_GOOGLE_CLIENT_SECRET"
+            )
         return None
     return GoogleOAuthConfig(
         client_id=client_id,

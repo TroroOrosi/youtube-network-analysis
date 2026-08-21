@@ -495,6 +495,22 @@ class ProviderConfigurationTests(unittest.TestCase):
     def test_no_client_keeps_the_demo_provider(self) -> None:
         self.assertIsNone(google_config_from_env({}, BASE_URL))
 
+    def test_requiring_google_refuses_to_fall_back_to_the_demo_door(self) -> None:
+        with self.assertRaises(RuntimeError):
+            google_config_from_env({"YNA_REQUIRE_GOOGLE": "1"}, BASE_URL)
+
+    def test_requiring_google_refuses_half_a_client(self) -> None:
+        environment = {
+            "YNA_REQUIRE_GOOGLE": "1",
+            "YNA_GOOGLE_CLIENT_ID": "client",
+        }
+        with self.assertRaises(RuntimeError):
+            google_config_from_env(environment, BASE_URL)
+
+    def test_requiring_google_is_satisfied_by_a_whole_client(self) -> None:
+        environment = {"YNA_REQUIRE_GOOGLE": "1", **self.ENVIRONMENT}
+        self.assertIsNotNone(google_config_from_env(environment, BASE_URL))
+
     def test_a_client_id_without_a_secret_keeps_the_demo_provider(self) -> None:
         environment = {"YNA_GOOGLE_CLIENT_ID": self.ENVIRONMENT["YNA_GOOGLE_CLIENT_ID"]}
 
