@@ -1028,18 +1028,67 @@ back, and asserted two things that do not exist:
 - `git diff --check`: passed;
 - credential-literal scan of the changed files: no matches.
 
+## Verified milestone: a deployment that actually survives a restart
+
+Until now every module accepted a `StateStore` and nothing constructed one, so
+no deployment kept anything. `web_ui/container.py` now builds one behind a
+single environment variable.
+
+- `YNA_STATE_DIR` unset keeps the previous behaviour exactly: the process
+  starts clean and leaves nothing behind, which is what a demo run should do.
+  Set, it holds one JSON document per module, so the modules stay independently
+  extractable.
+- `FileStateStore.save` writes a `0o600` temporary file and renames it over the
+  previous document. A process killed mid-save leaves the old document intact
+  rather than a truncated one, which the next start would refuse — correct, but
+  a needless outage.
+- The documents carry no credential. They do carry session digests and who may
+  reach which workspace, hence the owner-only mode.
+- **Credentials are still not kept.** The vault is in memory, so a restored
+  connection is listed but must be authorized again before it can collect. This
+  is the documented cost of not having the KMS yet, not an oversight.
+- `ponytail:` the whole document is rewritten on every command, and two
+  processes sharing one directory would let the last writer win. Both are
+  written down in `web_ui/README.md`; they end when this becomes a database.
+
+### What the tests found
+
+- The dashboard never renders the workspace name when there is one workspace,
+  so the restart test asserts the dashboard renders at all (rather than the
+  "create your first workspace" page) and still lists the channel. That single
+  page proves the session, the workspace, the membership and the connection all
+  came back.
+- Only the modules a sign-in and a connect actually touch are written.
+  `channel_data.json` and `collection_jobs.json` do not exist after that flow,
+  which is the per-module "nothing is written until something happens" rule
+  working through the container.
+
+### Verification evidence
+
+- 6 new web-ui tests, watched fail first (`ImportError: cannot import name
+  'state_dir_from_env'`), now passing;
+- suites: channel-connections 155, workspace-access 51, channel-data 44,
+  collection-jobs 91, web-ui 87, analysis-api 19, subscriber analytics 29 —
+  476 in total, all passed;
+- `python -c "import web_ui.main"` with `YNA_STATE_DIR` set: the real ASGI app
+  builds, and the directory stays empty until a command runs;
+- `python -m compileall -q web_ui channel_connections`, `git diff --check`, and
+  a credential-literal scan of the changed files: all passed.
+
+### Not covered on this machine
+
+`test_the_documents_are_not_readable_by_other_accounts` skips on Windows, where
+POSIX file modes are not enforced. The `0o600` is correct on the Linux host a
+deployment would use, but it has not been observed passing here.
+
 ### Next steps in order
 
-1. Wire real stores in `web_ui/container.py` behind one env var (a file or
-   SQLite `StateStore` per module). Nothing constructs a concrete store yet, so
-   no deployment actually survives a restart today — all four modules default
-   to `state_store=None`. Credentials stay out: after a restart a connection
-   still needs re-authorization until the KMS item below is done.
-2. Update `web_ui/README.md` — persistence leaves the "still required" list,
-   and the credential caveat above joins it.
-3. Then the items that were already blocked: background workers, a managed
-   credential vault or KMS, and the Google client registration that only the
-   deployment owner can do.
+1. A managed credential vault or KMS behind the existing `CredentialVault`
+   port. Until then a restart lists every connection and can collect with
+   none of them.
+2. Background workers for collection, so a run outlives the request that
+   started it.
+3. The Google client registration, which only the deployment owner can do.
 
 Command: `python -m unittest discover -s <module>/tests`, from the repository
 root. `cd`-ing into the module first breaks the cross-module imports.

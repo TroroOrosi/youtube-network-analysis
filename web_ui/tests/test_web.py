@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import os
+import shutil
+import stat
+import tempfile
 import unittest
+from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from fastapi.testclient import TestClient
@@ -8,7 +13,11 @@ from fastapi.testclient import TestClient
 from workspace_access.models import AccessSecret
 
 from web_ui.app import COLLECT_LIMIT_PER_MINUTE, WRITE_LIMIT_PER_MINUTE, create_app
-from web_ui.container import build_services, google_config_from_env
+from web_ui.container import (
+    build_services,
+    google_config_from_env,
+    state_dir_from_env,
+)
 from web_ui.google_provider import GoogleOAuthConfig
 from web_ui.tests.test_google_provider import FakeTransport, default_replies
 
@@ -547,6 +556,111 @@ class SafetyTests(WebFixture):
         self.assertEqual(response.status_code, 200)
         self.assertIn("最初のワークスペースを作成", response.text)
         self.assertNotIn("デモチャンネル", response.text)
+
+
+class RestartTests(unittest.TestCase):
+    """What an operator loses by restarting the process. Ideally nothing."""
+
+    def setUp(self) -> None:
+        self.directory = Path(tempfile.mkdtemp(prefix="yna-state-"))
+        self.addCleanup(shutil.rmtree, self.directory, ignore_errors=True)
+        self.client = self.start()
+
+    def start(self, cookies: dict[str, str] | None = None) -> TestClient:
+        """Boot the whole application again on the same state directory."""
+
+        client = TestClient(
+            create_app(build_services(BASE_URL, state_dir=self.directory)),
+            base_url=BASE_URL,
+            follow_redirects=False,
+        )
+        for name, value in (cookies or {}).items():
+            client.cookies.set(name, value)
+        return client
+
+    def sign_in_and_connect(self) -> None:
+        self.client.get("/login")
+        self.client.post(
+            "/login",
+            data={
+                "display_name": "運用担当",
+                "csrf_token": self.client.cookies["yna_csrf"],
+            },
+        )
+        self.client.get("/")
+        self.client.post(
+            "/workspaces",
+            data={"name": "デモ運用", "csrf_token": self.client.cookies["yna_csrf"]},
+        )
+        start = self.client.post(
+            "/connections/start",
+            data={"csrf_token": self.client.cookies["yna_csrf"]},
+        )
+        consent_url = start.headers["location"]
+        self.client.get(consent_url)
+        state = consent_url.split("state=")[1].split("&")[0]
+        self.client.post(
+            "/oauth/callback",
+            data={
+                "state": state,
+                "decision": "approve",
+                "csrf_token": self.client.cookies["yna_csrf"],
+            },
+        )
+
+    def test_a_workspace_and_its_channel_survive_a_restart(self) -> None:
+        self.sign_in_and_connect()
+        cookies = dict(self.client.cookies)
+
+        page = self.start(cookies).get("/")
+
+        self.assertEqual(page.status_code, 200)
+        # The dashboard renders at all only once the session, the workspace and
+        # the membership behind it have all been restored.
+        self.assertNotIn("最初のワークスペースを作成", page.text)
+        self.assertIn("デモチャンネル", page.text)
+
+    def test_a_document_this_code_cannot_read_stops_the_start(self) -> None:
+        """Starting empty would show a live owner an unlinked channel."""
+
+        self.sign_in_and_connect()
+        document = self.directory / "workspace_access.json"
+        self.assertTrue(document.exists())
+        document.write_text("{not json", encoding="utf-8")
+
+        with self.assertRaises(ValueError):
+            build_services(BASE_URL, state_dir=self.directory)
+
+    def test_a_finished_write_leaves_no_half_written_neighbour(self) -> None:
+        """A `.writing` leftover would be a document nobody finished."""
+
+        self.sign_in_and_connect()
+
+        written = sorted(path.name for path in self.directory.iterdir())
+        # Only the modules a sign-in and a connect actually touch are written;
+        # an untouched module writes nothing until something happens to it.
+        self.assertEqual(
+            written, ["channel_connections.json", "workspace_access.json"]
+        )
+
+    @unittest.skipIf(os.name == "nt", "POSIX file modes are not enforced on Windows")
+    def test_the_documents_are_not_readable_by_other_accounts(self) -> None:
+        self.sign_in_and_connect()
+
+        for path in self.directory.iterdir():
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600, path.name)
+
+
+class StateDirectoryTests(unittest.TestCase):
+    def test_no_directory_keeps_every_module_in_memory(self) -> None:
+        self.assertIsNone(state_dir_from_env({}))
+        self.assertIsNone(state_dir_from_env({"YNA_STATE_DIR": "   "}))
+
+    def test_a_configured_directory_is_used(self) -> None:
+        self.assertEqual(
+            state_dir_from_env({"YNA_STATE_DIR": " /var/lib/yna "}),
+            Path("/var/lib/yna"),
+        )
 
 
 if __name__ == "__main__":

@@ -42,7 +42,7 @@ connect with `PROVIDER_AUTHORIZATION_FAILED`. Real Google authorization uses
 | Google OAuth and YouTube API | Real adapters in `google_provider.py`, used only when a client is registered; otherwise the demo gateways in `demo_provider.py` |
 | Login identity provider | Real Google sign-in in `google_login.py` when a client is registered; otherwise a demo display name |
 | Credential vault | **In-memory: not encryption and not a KMS** |
-| Storage | **In-memory: everything resets on restart** |
+| Storage | In-memory unless `YNA_STATE_DIR` is set; see below |
 
 Without `YNA_GOOGLE_CLIENT_ID` and `YNA_GOOGLE_CLIENT_SECRET` the app stays on
 the demo gateways: the demo consent screen says so on the page, no request
@@ -120,6 +120,35 @@ in the same message on purpose.
 - Semantic HTML with labelled controls, table headers, visible focus rings, and a
   responsive layout that works on a phone.
 
+## Keeping state across a restart
+
+Unset, the application starts clean and leaves nothing behind, which is what a
+demo run should do. Point `YNA_STATE_DIR` at a directory and every module keeps
+its state there instead:
+
+```powershell
+$env:YNA_STATE_DIR = "C:\ProgramData\yna-state"
+```
+
+- one document per module (`workspace_access.json`, `channel_connections.json`,
+  `channel_data.json`, `collection_jobs.json`), so the modules stay
+  independently extractable;
+- each write is a rename over the previous document, so a process killed
+  mid-save leaves the old one intact;
+- files are created readable by their owner only. They hold no credential, but
+  they do hold session digests and who may reach which workspace, so the
+  directory belongs on a disk you would put a database on;
+- a document this code cannot read stops the start instead of silently
+  beginning empty, which would show a live owner an unlinked channel and spend
+  YouTube quota collecting data that is already there.
+
+**Credentials are deliberately not kept.** The vault is still in memory, so
+after a restart a connection is listed but must be authorized again before it
+can collect. That ends when the KMS below is done, not before.
+
+Two processes must not share one directory: each keeps the whole document in
+memory and the last writer wins.
+
 ## Deployment TLS
 
 Every cookie is `Secure`, the OAuth redirect URI must be `https`, and Google
@@ -139,9 +168,12 @@ the rate limiter sees the proxy as the only client. Serving uvicorn's own TLS
 
 ## Still required before production
 
-A managed credential vault or KMS, persistent storage, and background workers
-for collection. Each is an explicit
-later decision.
+A managed credential vault or KMS and background workers for collection. Each
+is an explicit later decision.
+
+Persistent storage is now available but is not a database: `YNA_STATE_DIR`
+keeps one JSON document per module and rewrites it in full on every command,
+which is right for a single process and wrong for two.
 
 ## Verification
 
