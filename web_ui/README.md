@@ -372,6 +372,13 @@ behaviour to tell owners about rather than let them meet during a run.
 A managed credential vault or KMS and background workers for collection. Each
 is an explicit later decision.
 
+The vault is now half done and not yet deployed: the mechanism that lets
+credentials outlive a process is written and tested, and the two adapters that
+would carry it are the wrong ones — both cost money, and one creates a resource
+a project can never remove. [`PLAN-credential-vault.md`](../PLAN-credential-vault.md)
+says what replaces them and what is left to do. Until that lands, everything
+below about credentials still holds.
+
 Persistent storage is now available but is not a database: `YNA_STATE_DIR`
 keeps one JSON document per module and rewrites each in full, which is right
 for a single process and wrong for two. The write cost is described below.

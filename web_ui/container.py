@@ -6,6 +6,7 @@ import os
 import secrets
 from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import cache
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -24,6 +25,7 @@ from collection_jobs.service import CollectionJobsService
 from workspace_access.models import AccessSecret
 from workspace_access.service import WorkspaceAccessService
 
+from .gcp import GcsStateStore, KmsEnvelope, MetadataToken
 from .demo_provider import DemoAuthorizationGateway, DemoDataGateway
 from .google_login import LOGIN_REDIRECT_URI_ID, GoogleLogin
 from .google_provider import (
@@ -93,10 +95,70 @@ def youtube_api_key_from_env(environment: Mapping[str, str]) -> str | None:
     return key or None
 
 
-def _state_store(directory: Path | None, module: str) -> FileStateStore | None:
+@dataclass(frozen=True, slots=True)
+class Durability:
+    """Where documents rest, and the key that seals the one holding credentials.
+
+    A bucket and a directory are alternatives, not layers: a host with a disk
+    uses the directory, and a host without one — Cloud Run — uses the bucket.
+    Neither is required, and with neither the process starts clean.
+
+    `kms_key` is only for the credential document. The others hold session
+    digests and who may reach which workspace, which the bucket's own encryption
+    covers; a refresh token is worth the second lock, so that whoever can read
+    the bucket still cannot use what is in that one file.
+    """
+
+    directory: Path | None = None
+    bucket: str | None = None
+    kms_key: str | None = None
+
+    def store(self, module: str) -> FileStateStore | GcsStateStore | None:
+        if self.bucket is not None:
+            return GcsStateStore(self.bucket, f"{module}.json", _gcp_token())
+        if self.directory is not None:
+            return FileStateStore(self.directory / f"{module}.json")
+        return None
+
+    def envelope(self) -> KmsEnvelope | None:
+        if self.kms_key is None:
+            return None
+        return KmsEnvelope(self.kms_key, _gcp_token())
+
+
+@cache
+def _gcp_token() -> MetadataToken:
+    """One token holder for the process, so its cache is actually shared."""
+
+    return MetadataToken()
+
+
+def durability_from_env(environment: Mapping[str, str]) -> Durability:
+    """Read where documents rest, refusing a shape that would keep tokens bare.
+
+    Somewhere to write and no key is the one combination worth stopping for: the
+    credential document would simply not be written, so every restart would ask
+    every owner to authorize again while the deployment looked durable. Say so
+    at the start rather than let that be discovered a restart at a time.
+    """
+
+    keep = Durability(
+        directory=state_dir_from_env(environment),
+        bucket=environment.get("YNA_STATE_BUCKET", "").strip() or None,
+        kms_key=environment.get("YNA_KMS_KEY", "").strip() or None,
+    )
+    if (keep.bucket or keep.directory) and keep.kms_key is None:
+        raise RuntimeError(
+            "state is persisted but YNA_KMS_KEY is unset, so credentials would "
+            "not be kept at all: set the key, or persist nothing"
+        )
+    return keep
+
+
+def _module_store(keep: Durability, module: str):
     """One document per module, so the modules stay independently extractable."""
 
-    return None if directory is None else FileStateStore(directory / f"{module}.json")
+    return keep.store(module)
 
 
 class SystemClock:
@@ -162,6 +224,7 @@ def build_services(
     transport: Transport = http_transport,
     state_dir: Path | None = None,
     youtube_api_key: str | None = None,
+    durability: Durability | None = None,
 ) -> Services:
     """Wire every module, with demo gateways unless a real client is supplied.
 
@@ -176,9 +239,10 @@ def build_services(
     this code cannot read raises here rather than starting empty.
     """
 
+    keep = durability if durability is not None else Durability(directory=state_dir)
     clock = SystemClock()
     access = WorkspaceAccessService(
-        clock=clock, state_store=_state_store(state_dir, "workspace_access")
+        clock=clock, state_store=_module_store(keep, "workspace_access")
     )
     login = None if google is None else GoogleLogin(google, transport=transport)
     if google is None:
@@ -187,7 +251,10 @@ def build_services(
         vault = InMemoryCredentialVault()
         authorization_hosts = (urlsplit(base_url).hostname or "localhost",)
     else:
-        store = GoogleCredentialStore()
+        store = GoogleCredentialStore(
+            state_store=keep.store("google_credentials"),
+            envelope=keep.envelope(),
+        )
         gateway = GoogleAuthorizationGateway(google, store, transport=transport)
         data_gateway = GoogleDataGateway(
             google, store, transport=transport, api_key=youtube_api_key
@@ -202,10 +269,10 @@ def build_services(
         credential_vault=vault,
         data_gateway=data_gateway,
         authorization_hosts=authorization_hosts,
-        state_store=_state_store(state_dir, "channel_connections"),
+        state_store=_module_store(keep, "channel_connections"),
     )
     channel_data = ChannelDataService(
-        clock=clock, state_store=_state_store(state_dir, "channel_data")
+        clock=clock, state_store=_module_store(keep, "channel_data")
     )
     jobs = CollectionJobsService(
         clock=clock,
@@ -213,7 +280,7 @@ def build_services(
         broker=connections,
         connections=connections,
         channel_data=channel_data,
-        state_store=_state_store(state_dir, "collection_jobs"),
+        state_store=_module_store(keep, "collection_jobs"),
     )
     analysis = AnalysisApiService(
         clock=clock, tokens=RandomTokens("an_"), channel_data=channel_data

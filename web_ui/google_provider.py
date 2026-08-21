@@ -16,7 +16,7 @@ import urllib.request
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import TypeVar
+from typing import Protocol, TypeVar
 from urllib.parse import urlencode
 
 from channel_connections.errors import ChannelConnectionsError
@@ -41,6 +41,23 @@ from channel_connections.models import AuthorizationFailureReason as Reason
 
 
 _LOG = logging.getLogger(__name__)
+
+
+class StateStore(Protocol):
+    """Where the sealed credential document rests between two processes."""
+
+    def load(self) -> str | None: ...
+
+    def save(self, document: str) -> None: ...
+
+
+class Envelope(Protocol):
+    """Seals and opens bytes with a key this process never holds."""
+
+    def encrypt(self, plaintext: bytes) -> str: ...
+
+    def decrypt(self, sealed: str) -> bytes: ...
+
 
 AUTHORIZATION_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
@@ -83,18 +100,43 @@ class GoogleCredentialStore:
 
     It satisfies the write-only `CredentialVault` port; the read side is
     internal so no service or route can reach credential material through it.
+
+    Given a `state_store` and an `envelope` it also outlives the process. Only
+    the refresh token is written: an access token is good for an hour and can be
+    asked for again, so keeping it would multiply writes by every refresh and
+    put a second live secret at rest for no gain. A restored slot therefore
+    comes back already expired, and the first call refreshes it — which is the
+    path that runs hourly anyway.
+
+    What is written is ciphertext from `envelope`, so the store holding it never
+    holds a token. Without an envelope nothing is written at all: a deployment
+    does not get to persist credentials in the clear by forgetting a flag.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        state_store: StateStore | None = None,
+        envelope: Envelope | None = None,
+        now: Callable[[], datetime] = lambda: datetime.now(UTC),
+    ) -> None:
         self._slots: dict[tuple[str, str], ProviderCredential] = {}
+        self._state_store = state_store if envelope is not None else None
+        self._envelope = envelope
+        self._now = now
+        self._restore()
 
     def put(
         self, workspace_id: str, slot_id: str, credential: ProviderCredential
     ) -> None:
+        previous = self._slots.get((workspace_id, slot_id))
         self._slots[(workspace_id, slot_id)] = credential
+        if _refresh_material(previous) != _refresh_material(credential):
+            self._persist()
 
     def delete(self, workspace_id: str, slot_id: str) -> None:
-        self._slots.pop((workspace_id, slot_id), None)
+        if self._slots.pop((workspace_id, slot_id), None) is not None:
+            self._persist()
 
     def slot_ids(self, workspace_id: str) -> tuple[str, ...]:
         return tuple(
@@ -103,6 +145,57 @@ class GoogleCredentialStore:
 
     def _read(self, workspace_id: str, slot_id: str) -> ProviderCredential | None:
         return self._slots.get((workspace_id, slot_id))
+
+    def _persist(self) -> None:
+        if self._state_store is None or self._envelope is None:
+            return
+        kept = {
+            f"{workspace_id}\x1f{slot_id}": {
+                "refresh_token": credential.refresh_token.reveal(),
+                "scopes": list(credential.scopes),
+            }
+            for (workspace_id, slot_id), credential in self._slots.items()
+            if credential.refresh_token is not None
+        }
+        self._state_store.save(self._envelope.encrypt(json.dumps(kept).encode()))
+
+    def _restore(self) -> None:
+        """Read the slots back, or refuse to start.
+
+        A document this code cannot open is not the same as no document. Coming
+        up empty would tell every owner their channel is unlinked and invite
+        them to authorize again, when the credential is still sitting there
+        unread — so the start fails instead and a person looks at it.
+        """
+
+        if self._state_store is None or self._envelope is None:
+            return
+        sealed = self._state_store.load()
+        if sealed is None:
+            return
+        kept = json.loads(self._envelope.decrypt(sealed))
+        expired = self._now() - timedelta(seconds=1)
+        for key, entry in kept.items():
+            workspace_id, _, slot_id = key.partition("\x1f")
+            self._slots[(workspace_id, slot_id)] = ProviderCredential(
+                access_token=RedactedSecret("restored-and-already-expired"),
+                refresh_token=RedactedSecret(entry["refresh_token"]),
+                expires_at=expired,
+                scopes=tuple(entry["scopes"]),
+            )
+
+
+def _refresh_material(credential: ProviderCredential | None) -> tuple[object, ...]:
+    """What a slot would be written as, so an unchanged one is not rewritten.
+
+    Google returns the same refresh token on most refreshes, and a refresh
+    happens every hour per connection. Comparing first turns that hourly write
+    into no write at all until the grant actually changes.
+    """
+
+    if credential is None or credential.refresh_token is None:
+        return ()
+    return (credential.refresh_token.reveal(), credential.scopes)
 
 
 GRANT_FAILURE_REASONS = frozenset({"authError", "insufficientPermissions"})

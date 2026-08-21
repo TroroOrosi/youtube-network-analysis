@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import unittest
 from datetime import UTC, datetime, timedelta
@@ -139,6 +140,129 @@ def default_replies() -> dict[str, tuple[int, bytes]]:
         f"{root}/playlistItems": (200, json.dumps(playlist_items).encode()),
         f"{root}/commentThreads": (200, json.dumps(comment_threads).encode()),
     }
+
+
+class FakeEnvelope:
+    """Reversible, not secret. Stands in for KMS without reaching a network."""
+
+    def __init__(self) -> None:
+        self.encrypted = 0
+
+    def encrypt(self, plaintext: bytes) -> str:
+        self.encrypted += 1
+        return "sealed:" + base64.b64encode(plaintext).decode()
+
+    def decrypt(self, sealed: str) -> bytes:
+        if not sealed.startswith("sealed:"):
+            raise ValueError("not sealed by this envelope")
+        return base64.b64decode(sealed[len("sealed:") :])
+
+
+class FakeStateStore:
+    def __init__(self, document: str | None = None) -> None:
+        self.document = document
+        self.saves = 0
+
+    def load(self) -> str | None:
+        return self.document
+
+    def save(self, document: str) -> None:
+        self.document = document
+        self.saves += 1
+
+
+def credential(refresh: str | None = "rt-1", **overrides: object) -> ProviderCredential:
+    fields: dict[str, object] = {
+        "access_token": RedactedSecret("at-1"),
+        "refresh_token": None if refresh is None else RedactedSecret(refresh),
+        "expires_at": NOW + timedelta(hours=1),
+    }
+    fields.update(overrides)
+    return ProviderCredential(**fields)  # type: ignore[arg-type]
+
+
+class CredentialPersistenceTests(unittest.TestCase):
+    """The vault outlives the process without ever writing a token in the clear."""
+
+    def build(self, document: str | None = None):
+        state, envelope = FakeStateStore(document), FakeEnvelope()
+        store = GoogleCredentialStore(
+            state_store=state, envelope=envelope, now=lambda: NOW
+        )
+        return store, state, envelope
+
+    def test_nothing_readable_reaches_the_store(self) -> None:
+        store, state, _ = self.build()
+        store.put("ws-1", "slot-1", credential("rt-secret"))
+        self.assertIsNotNone(state.document)
+        self.assertNotIn("rt-secret", state.document or "")
+        self.assertNotIn("at-1", state.document or "")
+
+    def test_a_restart_brings_the_slot_back(self) -> None:
+        store, state, _ = self.build()
+        store.put("ws-1", "slot-1", credential("rt-secret"))
+
+        restored = GoogleCredentialStore(
+            state_store=FakeStateStore(state.document),
+            envelope=FakeEnvelope(),
+            now=lambda: NOW,
+        )
+        self.assertEqual(restored.slot_ids("ws-1"), ("slot-1",))
+        back = restored._read("ws-1", "slot-1")
+        assert back is not None
+        self.assertEqual(back.refresh_token.reveal(), "rt-secret")
+
+    def test_the_restored_slot_is_expired_so_the_first_call_refreshes(self) -> None:
+        store, state, _ = self.build()
+        store.put("ws-1", "slot-1", credential())
+        restored = GoogleCredentialStore(
+            state_store=FakeStateStore(state.document),
+            envelope=FakeEnvelope(),
+            now=lambda: NOW,
+        )
+        back = restored._read("ws-1", "slot-1")
+        assert back is not None
+        self.assertLess(back.expires_at, NOW)
+
+    def test_an_unchanged_refresh_token_is_not_rewritten(self) -> None:
+        """A refresh happens hourly and usually returns the same token."""
+
+        store, state, _ = self.build()
+        store.put("ws-1", "slot-1", credential("rt-same"))
+        after_first = state.saves
+        store.put(
+            "ws-1", "slot-1", credential("rt-same", expires_at=NOW + timedelta(hours=2))
+        )
+        self.assertEqual(state.saves, after_first)
+
+    def test_a_rotated_refresh_token_is_written(self) -> None:
+        store, state, _ = self.build()
+        store.put("ws-1", "slot-1", credential("rt-old"))
+        before = state.saves
+        store.put("ws-1", "slot-1", credential("rt-new"))
+        self.assertEqual(state.saves, before + 1)
+
+    def test_deleting_a_slot_removes_it_from_the_document(self) -> None:
+        store, state, envelope = self.build()
+        store.put("ws-1", "slot-1", credential("rt-gone"))
+        store.delete("ws-1", "slot-1")
+        self.assertEqual(json.loads(envelope.decrypt(state.document or "")), {})
+
+    def test_a_grant_without_offline_access_is_never_written(self) -> None:
+        store, state, _ = self.build()
+        store.put("ws-1", "slot-1", credential(None))
+        self.assertEqual(state.saves, 0)
+
+    def test_a_document_it_cannot_open_stops_the_start(self) -> None:
+        with self.assertRaises(ValueError):
+            self.build("not sealed by anything")
+
+    def test_without_an_envelope_it_writes_nothing_at_all(self) -> None:
+        state = FakeStateStore()
+        store = GoogleCredentialStore(state_store=state, now=lambda: NOW)
+        store.put("ws-1", "slot-1", credential("rt-secret"))
+        self.assertIsNone(state.document)
+        self.assertEqual(state.saves, 0)
 
 
 class GrantFailureTests(unittest.TestCase):
