@@ -23,6 +23,7 @@ from workspace_access.models import AccessSecret
 from workspace_access.service import WorkspaceAccessService
 
 from .demo_provider import DemoAuthorizationGateway, DemoDataGateway
+from .google_login import LOGIN_REDIRECT_URI_ID, GoogleLogin
 from .google_provider import (
     AUTHORIZATION_ENDPOINT,
     GoogleAuthorizationGateway,
@@ -55,6 +56,7 @@ class Services:
     jobs: CollectionJobsService
     analysis: AnalysisApiService
     base_url: str
+    login: GoogleLogin | None = None
 
 
 def google_config_from_env(
@@ -74,7 +76,8 @@ def google_config_from_env(
         client_id=client_id,
         client_secret=AccessSecret(client_secret),
         redirect_uris={
-            DEFAULT_REDIRECT_URI_ID: f"{base_url.rstrip('/')}/oauth/callback"
+            DEFAULT_REDIRECT_URI_ID: f"{base_url.rstrip('/')}/oauth/callback",
+            LOGIN_REDIRECT_URI_ID: f"{base_url.rstrip('/')}/login/callback",
         },
     )
 
@@ -94,6 +97,7 @@ def build_services(
 
     clock = SystemClock()
     access = WorkspaceAccessService(clock=clock)
+    login = None if google is None else GoogleLogin(google, transport=transport)
     if google is None:
         gateway = DemoAuthorizationGateway(base_url)
         data_gateway = DemoDataGateway()
@@ -132,4 +136,5 @@ def build_services(
         jobs=jobs,
         analysis=analysis,
         base_url=base_url,
+        login=login,
     )

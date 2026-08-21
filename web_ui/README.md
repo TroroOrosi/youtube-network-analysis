@@ -40,7 +40,7 @@ connect with `PROVIDER_AUTHORIZATION_FAILED`. Real Google authorization uses
 | Collection runs, quota, retries | Real `collection-jobs` module |
 | Segments, filters, export | Real `analytics-core` and `analysis-api` |
 | Google OAuth and YouTube API | Real adapters in `google_provider.py`, used only when a client is registered; otherwise the demo gateways in `demo_provider.py` |
-| Login identity provider | **Demo: a display name, no real IdP** |
+| Login identity provider | Real Google sign-in in `google_login.py` when a client is registered; otherwise a demo display name |
 | Credential vault | **In-memory: not encryption and not a KMS** |
 | Storage | **In-memory: everything resets on restart** |
 
@@ -63,8 +63,10 @@ complete.
 What the deployment owner has to do in Google Cloud first, in this order:
 
 1. Create an OAuth 2.0 **Web application** client.
-2. Register the redirect URI exactly: `<YNA_BASE_URL>/oauth/callback`.
-3. Add the single scope `https://www.googleapis.com/auth/youtube.readonly`.
+2. Register both redirect URIs exactly: `<YNA_BASE_URL>/oauth/callback` for the
+   channel grant and `<YNA_BASE_URL>/login/callback` for sign-in.
+3. Add the single YouTube scope `https://www.googleapis.com/auth/youtube.readonly`,
+   plus `openid`, `profile` and `email` for sign-in.
 4. Enable the **YouTube Data API v3** for the project.
 5. Submit the consent screen for verification. Until it is verified, only test
    users on the client can connect.
@@ -78,6 +80,18 @@ refused with `PROVIDER_CAPABILITY_MISSING`.
 
 Nothing starts on its own. A real run still needs an owner to press 接続する and
 then to consent at Google.
+
+## Signing in
+
+With a client registered, `/login` offers Google sign-in only: the display-name
+door is refused with `LOGIN_METHOD_UNAVAILABLE`, because leaving it open would
+let anyone claim an identity the provider is meanwhile verifying. Sign-in asks
+for `openid profile email` and never for a YouTube scope, keeps no token after
+the exchange, and hands `workspace-access` the subject Google vouched for. Each
+attempt carries a single-use state that expires in ten minutes and lives in this
+process only, so a restart cancels sign-ins in flight instead of honouring a
+stale one. A refused consent, a replayed state and an unreachable Google all end
+in the same message on purpose.
 
 ## Security controls in this layer
 
@@ -125,8 +139,8 @@ the rate limiter sees the proxy as the only client. Serving uvicorn's own TLS
 
 ## Still required before production
 
-An approved identity provider for login, a managed credential vault or KMS,
-persistent storage, and background workers for collection. Each is an explicit
+A managed credential vault or KMS, persistent storage, and background workers
+for collection. Each is an explicit
 later decision.
 
 ## Verification

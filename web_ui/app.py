@@ -47,6 +47,7 @@ from workspace_access.models import (
 from workspace_access.errors import WorkspaceAccessError
 
 from .container import Services, build_services
+from .google_login import GoogleLogin, LoginFailed
 
 SESSION_COOKIE = "yna_session"
 WORKSPACE_COOKIE = "yna_workspace"
@@ -84,6 +85,11 @@ ERROR_TEXT = {
     "INVALID_CURSOR": ("ページの位置が無効になりました。", "1 ページ目から表示し直してください。"),
     "CURSOR_EXPIRED": ("データが更新されたためページを表示できません。", "最新の結果を読み込み直してください。"),
     "INVALID_INPUT": ("入力内容を確認してください。", "値を修正して再度お試しください。"),
+    "LOGIN_FAILED": ("ログインを完了できませんでした。", "ログイン画面からもう一度お試しください。"),
+    "LOGIN_METHOD_UNAVAILABLE": (
+        "このログイン方法は利用できません。",
+        "ログイン画面に表示される方法でログインしてください。",
+    ),
     "WORKSPACE_NOT_FOUND_OR_FORBIDDEN": (
         "そのワークスペースは利用できません。",
         "ホームからワークスペースを選び直してください。",
@@ -249,6 +255,27 @@ OptionalInt = Annotated[
 ]
 
 
+def _login_provider(request: Request) -> GoogleLogin:
+    login = _services(request).login
+    if login is None:
+        raise AppError("LOGIN_METHOD_UNAVAILABLE", 404)
+    return login
+
+
+def _session_response(request: Request, identity: VerifiedIdentity) -> Response:
+    issued = _services(request).access.establish_session(identity)
+    response = _redirect("/")
+    response.set_cookie(
+        SESSION_COOKIE,
+        issued.secret.reveal(),
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        path="/",
+    )
+    return response
+
+
 def _redirect(path: str, message: str | None = None) -> RedirectResponse:
     target = f"{path}?msg={message}" if message else path
     return RedirectResponse(target, status_code=303)
@@ -326,34 +353,59 @@ def _register_routes(app: FastAPI) -> None:
 
     @app.get("/login", response_class=HTMLResponse)
     async def login_form(request: Request) -> Response:
-        return _render(request, "login.html", {})
+        return _render(
+            request, "login.html", {"google_login": _services(request).login is not None}
+        )
 
     @app.post("/login")
     async def login(
         request: Request, display_name: str = Form(...), csrf_token: str = Form("")
     ) -> Response:
+        """Open a session from a typed name, only where no real provider exists.
+
+        A deployment with a registered client must not keep this door: it would
+        let anyone claim any identity the provider is meanwhile verifying.
+        """
+
         _check_csrf(request, csrf_token)
+        if _services(request).login is not None:
+            raise AppError("LOGIN_METHOD_UNAVAILABLE", 404)
         subject = display_name.strip()
         if not subject or len(subject) > 80:
             raise AppError("INVALID_INPUT")
-        issued = _services(request).access.establish_session(
+        return _session_response(
+            request,
             VerifiedIdentity(
                 issuer="urn:demo:local",
                 subject=subject,
                 authenticated_at=_services(request).access._now(),
                 display_name=subject,
+            ),
+        )
+
+    @app.post("/login/google")
+    async def login_with_google(
+        request: Request, csrf_token: str = Form("")
+    ) -> Response:
+        _check_csrf(request, csrf_token)
+        return _redirect(_login_provider(request).start()[0])
+
+    @app.get("/login/callback")
+    async def login_return(
+        request: Request,
+        state: str = Query(...),
+        code: str | None = Query(None),
+        error: str | None = Query(None),
+    ) -> Response:
+        """Google's redirect back. `state` is the only proof this is ours."""
+
+        try:
+            identity = _login_provider(request).complete(
+                state=state, code=code, error=error
             )
-        )
-        response = _redirect("/")
-        response.set_cookie(
-            SESSION_COOKIE,
-            issued.secret.reveal(),
-            httponly=True,
-            secure=True,
-            samesite="lax",
-            path="/",
-        )
-        return response
+        except LoginFailed as failure:
+            raise AppError("LOGIN_FAILED") from failure
+        return _session_response(request, identity)
 
     @app.post("/logout")
     async def logout(request: Request, csrf_token: str = Form("")) -> Response:

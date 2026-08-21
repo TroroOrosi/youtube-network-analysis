@@ -113,6 +113,17 @@ class AuthenticationTests(WebFixture):
         self.assertEqual(directive, [" form-action 'self' https://accounts.google.com"])
 
 
+class DemoLoginTests(WebFixture):
+    def test_google_sign_in_is_absent_without_a_client(self) -> None:
+        token = self.csrf()
+
+        self.assertNotIn("/login/google", self.client.get("/login").text)
+        self.assertEqual(
+            self.client.post("/login/google", data={"csrf_token": token}).status_code,
+            404,
+        )
+
+
 class RateLimitTests(WebFixture):
     def test_a_burst_of_writes_is_refused(self) -> None:
         self.login()
@@ -316,8 +327,8 @@ class GuidedFlowTests(WebFixture):
         self.assertEqual(analysis.status_code, 200)
 
 
-class GoogleModeTests(unittest.TestCase):
-    """The same guided flow, wired to the real adapters against a fake Google."""
+class GoogleFixture(unittest.TestCase):
+    """The app wired to the real adapters against a fake Google."""
 
     def setUp(self) -> None:
         self.transport = FakeTransport(default_replies())
@@ -326,21 +337,86 @@ class GoogleModeTests(unittest.TestCase):
             google=GoogleOAuthConfig(
                 client_id="client-123.apps.googleusercontent.com",
                 client_secret=AccessSecret("client-secret"),
-                redirect_uris={"hosted-callback": f"{BASE_URL}/oauth/callback"},
+                redirect_uris={
+                    "hosted-callback": f"{BASE_URL}/oauth/callback",
+                    "login": f"{BASE_URL}/login/callback",
+                },
             ),
             transport=self.transport,
         )
         self.client = TestClient(
             create_app(services), base_url=BASE_URL, follow_redirects=False
         )
+
+    def start_sign_in(self) -> str:
         self.client.get("/login")
-        self.client.post(
-            "/login",
-            data={
-                "display_name": "運用担当",
-                "csrf_token": self.client.cookies["yna_csrf"],
-            },
+        started = self.client.post(
+            "/login/google", data={"csrf_token": self.client.cookies["yna_csrf"]}
         )
+        self.assertEqual(started.status_code, 303)
+        return started.headers["location"]
+
+    def sign_in(self) -> None:
+        state = parse_qs(urlsplit(self.start_sign_in()).query)["state"][0]
+        returned = self.client.get(f"/login/callback?state={state}&code=auth-code")
+        self.assertEqual(returned.status_code, 303)
+
+
+class GoogleLoginTests(GoogleFixture):
+    """Signing in is the provider's word, not a name typed into a box."""
+
+    def test_the_login_page_offers_google_instead_of_a_display_name(self) -> None:
+        page = self.client.get("/login")
+
+        self.assertIn("Google", page.text)
+        self.assertNotIn('name="display_name"', page.text)
+
+    def test_signing_in_asks_google_for_an_identity_only(self) -> None:
+        location = self.start_sign_in()
+
+        query = parse_qs(urlsplit(location).query)
+        self.assertEqual(urlsplit(location).hostname, "accounts.google.com")
+        self.assertIn("openid", query["scope"][0].split())
+        self.assertNotIn("youtube", query["scope"][0])
+
+    def test_returning_from_google_opens_the_session(self) -> None:
+        self.sign_in()
+
+        self.assertEqual(self.client.get("/").status_code, 200)
+
+    def test_a_display_name_cannot_open_a_session_here(self) -> None:
+        self.client.get("/login")
+
+        refused = self.client.post(
+            "/login",
+            data={"display_name": "誰か", "csrf_token": self.client.cookies["yna_csrf"]},
+        )
+
+        self.assertEqual(refused.status_code, 404)
+        self.assertEqual(self.client.get("/").status_code, 303)
+
+    def test_an_invented_state_cannot_open_a_session(self) -> None:
+        self.client.get("/login")
+
+        refused = self.client.get("/login/callback?state=invented&code=auth-code")
+
+        self.assertEqual(refused.status_code, 400)
+        self.assertEqual(self.client.get("/").status_code, 303)
+
+    def test_a_refused_consent_is_reported(self) -> None:
+        state = parse_qs(urlsplit(self.start_sign_in()).query)["state"][0]
+
+        refused = self.client.get(f"/login/callback?state={state}&error=access_denied")
+
+        self.assertEqual(refused.status_code, 400)
+
+
+class GoogleModeTests(GoogleFixture):
+    """The same guided flow, wired to the real adapters against a fake Google."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.sign_in()
         self.client.get("/")
         self.client.post(
             "/workspaces",
@@ -420,6 +496,13 @@ class ProviderConfigurationTests(unittest.TestCase):
         self.assertEqual(config.client_id, self.ENVIRONMENT["YNA_GOOGLE_CLIENT_ID"])
         self.assertEqual(
             config.redirect_uris["hosted-callback"], f"{BASE_URL}/oauth/callback"
+        )
+
+    def test_a_registered_client_also_registers_the_login_callback(self) -> None:
+        config = google_config_from_env(self.ENVIRONMENT, BASE_URL)
+
+        self.assertEqual(
+            config.redirect_uris["login"], f"{BASE_URL}/login/callback"
         )
 
     def test_the_client_secret_is_never_printed(self) -> None:

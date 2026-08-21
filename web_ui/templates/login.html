@@ -2,6 +2,13 @@
 {% block title %}ログイン | YouTube 分析{% endblock %}
 {% block content %}
 <h2>ログイン</h2>
+{% if google_login %}
+<p>チャンネルを所有する Google アカウントでログインします。</p>
+<form method="post" action="/login/google">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <p><button type="submit">Google でログイン</button></p>
+</form>
+{% else %}
 <p>表示名を入力すると、この端末用の作業セッションを開始します。</p>
 <form method="post" action="/login">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -10,4 +17,5 @@
          autocomplete="nickname">
   <p><button type="submit">はじめる</button></p>
 </form>
+{% endif %}
 {% endblock %}

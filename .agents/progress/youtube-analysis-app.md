@@ -886,10 +886,43 @@ Now genuinely blocked on a decision or an external action, not on code:
 
 - **Google client registration and consent verification** — the deployment
   owner's action in Google Cloud. The adapters and the setup steps are ready.
-- **A real identity provider for login** — login still accepts a display name.
 - **Persistence** — all four stateful services hold private in-memory state with
   no storage port; introducing one is a multi-session change of its own.
 - **Background workers for collection** — needs persistence first, then a
   worker/queue platform decision.
 - **A managed credential vault or KMS** — `GoogleCredentialStore` is the seam it
   would replace.
+
+
+## Verified milestone: Google sign-in replaces the display-name login
+
+`web_ui/google_login.py` runs the OpenID Connect authorization code flow with
+S256 PKCE against the same registered client, asking for `openid profile email`
+and never for a YouTube scope. It keeps no token after the exchange: the
+userinfo response becomes a `VerifiedIdentity` and nothing else survives. The
+pending state is single-use, expires in ten minutes, and lives in this process
+only, so a restart cancels sign-ins in flight rather than honouring a stale one.
+
+Two decisions worth keeping:
+
+- **The demo door closes when a real one exists.** With a client configured,
+  `POST /login` is refused with `LOGIN_METHOD_UNAVAILABLE`; leaving it open
+  would let anyone claim an identity the provider is meanwhile verifying.
+- **Every failure reads the same.** A refused consent, a replayed state and an
+  unreachable Google all raise `LoginFailed` and render one message; the reason
+  answers questions only an attacker asks.
+
+### Verification evidence
+
+- 21 new tests, each written before the code and watched fail: 13 for the flow
+  itself (identity mapping, unverified email, PKCE verifier, replay, expiry,
+  refusal, provider failure, incomplete response) and 8 in `web_ui` for the
+  login page, the redirect to Google, the session it opens, the closed demo
+  door, an invented state, a refused consent, the login callback registration,
+  and the demo deployment that has no Google button at all;
+- the Google-mode end-to-end flow now signs in through Google before connecting
+  a channel, so the whole guided path runs on the real adapters against a fake
+  Google;
+- suites: web-ui 81, channel-connections 145, collection-jobs 82, workspace-
+  access 40, channel-data 35, subscriber analytics 29, analysis-api 19 — all
+  passed.

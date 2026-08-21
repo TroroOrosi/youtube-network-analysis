@@ -118,8 +118,18 @@ def default_replies() -> dict[str, tuple[int, bytes]]:
             }
         ]
     }
+    identity = {
+        "sub": "1234567890",
+        "name": "運用担当",
+        "email": "owner@example.com",
+        "email_verified": True,
+    }
     return {
         "https://oauth2.googleapis.com/token": token_response(),
+        "https://openidconnect.googleapis.com/v1/userinfo": (
+            200,
+            json.dumps(identity).encode(),
+        ),
         f"{root}/channels": channel_response(),
         f"{root}/subscriptions": (200, json.dumps(subscriptions).encode()),
         f"{root}/playlistItems": (200, json.dumps(playlist_items).encode()),
