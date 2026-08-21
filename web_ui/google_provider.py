@@ -10,6 +10,7 @@ an owner-authorized connection.
 from __future__ import annotations
 
 import json
+import logging
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping
@@ -38,6 +39,8 @@ from channel_connections.ports import (
 )
 from channel_connections.models import AuthorizationFailureReason as Reason
 
+
+_LOG = logging.getLogger(__name__)
 
 AUTHORIZATION_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
@@ -102,16 +105,68 @@ class GoogleCredentialStore:
         return self._slots.get((workspace_id, slot_id))
 
 
+GRANT_FAILURE_REASONS = frozenset({"authError", "insufficientPermissions"})
+
+
+def _is_grant_failure(status: int, body: bytes) -> bool:
+    """Whether a refusal means the grant itself is gone.
+
+    401 always does. 403 usually does not: YouTube answers 403 for
+    `commentsDisabled`, `quotaExceeded` and other refusals about the resource,
+    with a grant that is perfectly good. Treating those as an expired grant used
+    to delete the stored credential and ask the owner to authorize again, which
+    could not help — the next run met the same 403 and deleted the new
+    credential too. One video with its comments switched off was enough to put a
+    channel in that loop for good. So a 403 counts only when Google names a
+    reason about authorization.
+    """
+
+    if status == 401:
+        return True
+    return status == 403 and bool(
+        GRANT_FAILURE_REASONS.intersection(_error_reasons(body))
+    )
+
+
+def _error_reasons(body: bytes) -> tuple[str, ...]:
+    """Google's `reason` keywords for a refusal, and nothing else from the body.
+
+    A body that cannot be read yields nothing rather than raising: this runs on
+    the failure path and must not replace one fault with another.
+    """
+
+    try:
+        errors = json.loads(body)["error"]["errors"]
+        return tuple(
+            str(entry["reason"])
+            for entry in errors
+            if isinstance(entry, Mapping) and "reason" in entry
+        )
+    except (ValueError, TypeError, KeyError, UnicodeDecodeError):
+        return ()
+
+
 def _rejected(reason: Reason) -> ProviderRejected:
     return ProviderRejected(reason)
 
 
 def _decode(status: int, body: bytes) -> dict[str, object]:
-    """Read a provider JSON body, mapping every failure to a safe reason."""
+    """Read a provider JSON body, mapping every failure to a safe reason.
+
+    Every 4xx becomes one reason on purpose, so the owner is never shown what
+    Google said. That collapse is also why an operator could not tell a revoked
+    grant from a disabled comment section from a bad parameter: one message, one
+    state, three different things to do about it. The log below keeps the two
+    fields that distinguish them and no others — the status, and Google's own
+    machine-readable `reason` keywords. Neither is user data or a credential.
+    """
 
     if status >= 500:
         raise ProviderUnavailable("provider returned a server error")
     if status >= 400:
+        _LOG.warning(
+            "provider refused with HTTP %s: %s", status, _error_reasons(body)
+        )
         raise _rejected(Reason.PROVIDER_DENIED)
     try:
         payload = json.loads(body)
@@ -502,7 +557,8 @@ class GoogleDataGateway(_GoogleClient):
         status, body = self._get_api(
             path, params, self._access_token(workspace_id, credential_slot_id)
         )
-        if status in (401, 403):
+        if _is_grant_failure(status, body):
+            _LOG.warning("grant rejected with HTTP %s: %s", status, _error_reasons(body))
             raise ProviderAuthorizationExpired("the grant no longer permits this call")
         return _decode(status, body)
 

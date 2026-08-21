@@ -24,6 +24,8 @@ from web_ui.google_provider import (
     GoogleCredentialStore,
     GoogleDataGateway,
     GoogleOAuthConfig,
+    _error_reasons,
+    _is_grant_failure,
 )
 
 
@@ -135,6 +137,73 @@ def default_replies() -> dict[str, tuple[int, bytes]]:
         f"{root}/playlistItems": (200, json.dumps(playlist_items).encode()),
         f"{root}/commentThreads": (200, json.dumps(comment_threads).encode()),
     }
+
+
+class GrantFailureTests(unittest.TestCase):
+    """Which refusals mean the grant is gone, and which only mean "not this".
+
+    Getting this wrong is not a cosmetic error: a grant judged gone has its
+    credential deleted, and the owner is asked to authorize again. When the
+    cause is a video with comments switched off, authorizing again meets the
+    same refusal and deletes the new credential too.
+    """
+
+    @staticmethod
+    def _body(*reasons: str) -> bytes:
+        return json.dumps(
+            {"error": {"errors": [{"reason": reason} for reason in reasons]}}
+        ).encode()
+
+    def test_401_is_always_the_grant(self) -> None:
+        self.assertTrue(_is_grant_failure(401, self._body("authError")))
+        self.assertTrue(_is_grant_failure(401, b""))
+
+    def test_403_about_authorization_is_the_grant(self) -> None:
+        for reason in ("authError", "insufficientPermissions"):
+            with self.subTest(reason=reason):
+                self.assertTrue(_is_grant_failure(403, self._body(reason)))
+
+    def test_403_about_the_resource_is_not_the_grant(self) -> None:
+        for reason in ("commentsDisabled", "quotaExceeded", "forbidden"):
+            with self.subTest(reason=reason):
+                self.assertFalse(_is_grant_failure(403, self._body(reason)))
+
+    def test_an_unreadable_403_is_not_the_grant(self) -> None:
+        self.assertFalse(_is_grant_failure(403, b"<html>gateway</html>"))
+
+    def test_other_statuses_are_never_the_grant(self) -> None:
+        for status in (200, 400, 404, 429, 500):
+            with self.subTest(status=status):
+                self.assertFalse(_is_grant_failure(status, self._body("authError")))
+
+
+class ErrorReasonTests(unittest.TestCase):
+    """What the operator log is allowed to keep from a refusal body."""
+
+    def test_it_keeps_googles_reason_keywords(self) -> None:
+        body = json.dumps(
+            {
+                "error": {
+                    "code": 403,
+                    "message": "The video identified by the <code>videoId</code>...",
+                    "errors": [
+                        {"reason": "commentsDisabled", "domain": "youtube.commentThread"}
+                    ],
+                }
+            }
+        ).encode()
+        self.assertEqual(_error_reasons(body), ("commentsDisabled",))
+
+    def test_it_keeps_nothing_else_from_the_body(self) -> None:
+        body = json.dumps(
+            {"error": {"errors": [{"reason": "quotaExceeded", "message": "secret"}]}}
+        ).encode()
+        self.assertNotIn("secret", str(_error_reasons(body)))
+
+    def test_an_unreadable_body_yields_nothing_instead_of_raising(self) -> None:
+        for body in (b"", b"not json", b"[]", json.dumps({"error": {}}).encode()):
+            with self.subTest(body=body):
+                self.assertEqual(_error_reasons(body), ())
 
 
 class AuthorizationUrlTests(unittest.TestCase):
