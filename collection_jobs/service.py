@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from dataclasses import replace
 from datetime import datetime, timedelta
 from threading import RLock
@@ -68,6 +69,8 @@ from .models import (
 )
 from .ports import StateStore
 
+
+_LOG = logging.getLogger(__name__)
 
 ESTIMATED_CALL_UNITS = 3
 IDEMPOTENCY_TTL = timedelta(days=90)
@@ -917,10 +920,32 @@ class CollectionJobsService:
                     ),
                 )
             except ChannelConnectionsError as error:
+                # code and reason_code are the machine-readable fields that
+                # error carries for exactly this: stable, non-enumerating, and
+                # free of provider text. The class name alone said nothing,
+                # because every refusal arrives as the same class.
+                _LOG.warning(
+                    "provider operation %s refused: code=%s reason=%s "
+                    "retryable=%s correlation=%s",
+                    operation,
+                    error.code,
+                    error.reason_code,
+                    error.retryable,
+                    error.correlation_id,
+                )
                 return TraversalOutcome(
                     tuple(rows), pages, spent, _failure_reason(error)
                 )
             except BaseException:
+                # The owner is told one careful sentence and never a provider
+                # response. The operator needs the opposite, and without this
+                # line got nothing at all: every fault in the provider path,
+                # including a plain bug in this process, became one
+                # indistinguishable UNEXPECTED_FAILURE with no record of what
+                # happened. The traceback names types and lines, not values, so
+                # it carries no credential; the access token travels in a header
+                # this code never formats into a message.
+                _LOG.exception("provider operation %s raised", operation)
                 return TraversalOutcome(
                     tuple(rows), pages, spent, RunFailureReason.UNEXPECTED_FAILURE
                 )
