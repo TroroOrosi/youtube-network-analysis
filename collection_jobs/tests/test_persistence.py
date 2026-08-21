@@ -1,0 +1,167 @@
+from __future__ import annotations
+
+import json
+import unittest
+from datetime import timedelta
+
+from collection_jobs.models import (
+    CreateSchedule,
+    DEFAULT_DAILY_QUOTA_UNITS,
+    EnqueueRun,
+    ExecuteRun,
+    RunKind,
+    RunStatus,
+)
+from collection_jobs.service import CollectionJobsService
+from collection_jobs.tests.support import build_stack, context
+
+
+class FakeStore:
+    """One document, exactly what a restart would find on disk."""
+
+    def __init__(self) -> None:
+        self.document: str | None = None
+        self.saves = 0
+
+    def load(self) -> str | None:
+        return self.document
+
+    def save(self, document: str) -> None:
+        self.document = document
+        self.saves += 1
+
+
+class RestartFixture(unittest.TestCase):
+    quota_units: int | None = None
+
+    def setUp(self) -> None:
+        self.store = FakeStore()
+        self.stack = build_stack(daily_quota_units=self.quota_units)
+        self.owner = context()
+        self.connection = self.stack.connect(self.owner)
+        self.jobs = self.restart()
+
+    def restart(self) -> CollectionJobsService:
+        self.jobs = CollectionJobsService(
+            clock=self.stack.clock,
+            tokens=self.stack.jobs._tokens,
+            broker=self.stack.connections,
+            connections=self.stack.connections,
+            channel_data=self.stack.channel_data,
+            daily_quota_units=self.quota_units or DEFAULT_DAILY_QUOTA_UNITS,
+            page_size=2,
+            state_store=self.store,
+        )
+        return self.jobs
+
+    def enqueue(self, key: str = "enqueue-1"):
+        return self.jobs.enqueue_run(
+            self.owner,
+            EnqueueRun(
+                connection_id=self.connection.connection_id,
+                kind=RunKind.SUBSCRIBERS,
+                idempotency_key=key,
+            ),
+        )
+
+
+class RunRestartTests(RestartFixture):
+    def test_a_finished_run_outlives_the_process(self) -> None:
+        run = self.enqueue()
+        self.jobs.execute_run(
+            self.owner, ExecuteRun(run_id=run.run_id, idempotency_key="execute-1")
+        )
+
+        self.restart()
+
+        restored = self.jobs.get_run(self.owner, run.run_id)
+        self.assertEqual(restored.status, RunStatus.SUCCEEDED)
+
+    def test_a_queued_run_is_still_queued_after_a_restart(self) -> None:
+        run = self.enqueue()
+
+        self.restart()
+
+        self.assertEqual(self.jobs.get_run(self.owner, run.run_id).status, RunStatus.QUEUED)
+
+    def test_a_replayed_enqueue_is_still_answered_once(self) -> None:
+        run = self.enqueue()
+
+        self.restart()
+
+        self.assertEqual(self.enqueue().run_id, run.run_id)
+        self.assertEqual(len(self.jobs.list_runs(self.owner).items), 1)
+
+    def test_a_schedule_outlives_the_process(self) -> None:
+        created = self.jobs.create_schedule(
+            self.owner,
+            CreateSchedule(
+                connection_id=self.connection.connection_id,
+                kind=RunKind.SUBSCRIBERS,
+                interval=timedelta(days=1),
+                idempotency_key="schedule-1",
+            ),
+        )
+
+        self.restart()
+
+        schedules = self.jobs.list_schedules(self.owner)
+        self.assertEqual(
+            [schedule.schedule_id for schedule in schedules.items],
+            [created.schedule_id],
+        )
+
+
+class SpentQuotaTests(RestartFixture):
+    """One call costs more than what a run leaves behind, so the ledger shows."""
+
+    quota_units = 5
+
+    def test_the_quota_already_spent_is_still_counted(self) -> None:
+        first = self.enqueue()
+        spent = self.jobs.execute_run(
+            self.owner, ExecuteRun(run_id=first.run_id, idempotency_key="execute-1")
+        )
+
+        self.restart()
+
+        second = self.enqueue("enqueue-2")
+        finished = self.jobs.execute_run(
+            self.owner, ExecuteRun(run_id=second.run_id, idempotency_key="execute-2")
+        )
+        self.assertGreater(spent.quota_spent, 0)
+        self.assertEqual(finished.quota_spent, 0)
+
+
+class DocumentTests(RestartFixture):
+    def test_an_empty_store_is_not_written_until_something_happens(self) -> None:
+        self.assertIsNone(self.store.document)
+        self.assertEqual(self.store.saves, 0)
+
+    def test_a_document_from_a_newer_version_is_refused(self) -> None:
+        self.store.document = json.dumps({"version": 99})
+
+        with self.assertRaises(ValueError):
+            self.restart()
+
+    def test_an_unreadable_document_is_refused(self) -> None:
+        self.store.document = "{not json"
+
+        with self.assertRaises(ValueError):
+            self.restart()
+
+    def test_a_service_without_a_store_still_works(self) -> None:
+        run = self.stack.jobs.enqueue_run(
+            self.owner,
+            EnqueueRun(
+                connection_id=self.connection.connection_id,
+                kind=RunKind.SUBSCRIBERS,
+                idempotency_key="enqueue-plain",
+            ),
+        )
+
+        self.assertEqual(run.status, RunStatus.QUEUED)
+
+
+if __name__ == "__main__":
+    unittest.main()

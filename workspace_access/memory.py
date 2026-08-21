@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -40,8 +41,11 @@ class IdempotencyRecord:
 
 
 class InMemoryAuditLog:
-    def __init__(self) -> None:
-        self._events: list[AuditEvent] = []
+    def __init__(self, events: Iterable[AuditEvent] = ()) -> None:
+        self._events: list[AuditEvent] = list(events)
+
+    def all(self) -> tuple[AuditEvent, ...]:
+        return tuple(self._events)
 
     def append(self, event: AuditEvent) -> None:
         self._events.append(event)

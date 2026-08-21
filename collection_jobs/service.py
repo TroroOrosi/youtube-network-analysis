@@ -13,7 +13,8 @@ import json
 from dataclasses import replace
 from datetime import datetime, timedelta
 from threading import RLock
-from typing import Any
+from types import TracebackType
+from typing import Any, Callable
 
 from channel_connections.errors import ChannelConnectionsError
 from channel_connections.models import (
@@ -40,6 +41,7 @@ from channel_data.models import (
 )
 from workspace_access.models import Permission, WorkspaceContext
 
+from . import snapshot
 from .errors import CollectionJobsError, ErrorCode
 from .memory import CursorRecord, IdempotencyRecord, MemoryState, QuotaLedgerEntry
 from .models import (
@@ -64,6 +66,7 @@ from .models import (
     RunQuery,
     RunStatus,
 )
+from .ports import StateStore
 
 
 ESTIMATED_CALL_UNITS = 3
@@ -153,6 +156,36 @@ class TraversalOutcome:
         self.reason = reason
 
 
+class _StateLock:
+    """The service lock, which also writes the state document on release.
+
+    Every command mutates under this lock, so the end of the outermost hold is
+    the one moment a snapshot is both consistent and impossible to forget.
+    """
+
+    def __init__(self, flush: Callable[[], None]) -> None:
+        self._lock = RLock()
+        self._flush = flush
+        self._depth = 0
+
+    def __enter__(self) -> None:
+        self._lock.acquire()
+        self._depth += 1
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        self._depth -= 1
+        try:
+            if self._depth == 0:
+                self._flush()
+        finally:
+            self._lock.release()
+
+
 class CollectionJobsService:
     """In-memory reference implementation of the collection run lifecycle."""
 
@@ -166,6 +199,7 @@ class CollectionJobsService:
         channel_data: Any,
         daily_quota_units: int = DEFAULT_DAILY_QUOTA_UNITS,
         page_size: int = 50,
+        state_store: StateStore | None = None,
     ) -> None:
         self._clock = clock
         self._tokens = tokens
@@ -174,8 +208,42 @@ class CollectionJobsService:
         self._channel_data = channel_data
         self._daily_quota_units = daily_quota_units
         self._page_size = page_size
-        self._lock = RLock()
-        self._state = MemoryState()
+        self._state_store = state_store
+        self._document: str | None = None
+        self._state = self._restored() or MemoryState()
+        self._lock = _StateLock(self._flush)
+
+    def _restored(self) -> MemoryState | None:
+        """Load what a previous process queued, or nothing on a fresh start.
+
+        A document this code cannot read is an error, never an empty start: a
+        deployment that silently forgot its runs would re-enqueue work that
+        already spent provider quota, and forget the ledger saying so.
+        """
+
+        if self._state_store is None:
+            return None
+        document = self._state_store.load()
+        if document is None:
+            return None
+        state = snapshot.load(document)
+        self._document = document
+        return state
+
+    def _flush(self) -> None:
+        """Write the whole state document once a command has finished.
+
+        ponytail: the document is rewritten in full on every command; move to
+        per-run rows when a workspace keeps more than a few thousand runs.
+        """
+
+        if self._state_store is None:
+            return
+        document = snapshot.dump(self._state)
+        if document == self._document:
+            return
+        self._state_store.save(document)
+        self._document = document
 
     # Runs
 

@@ -886,8 +886,8 @@ Now genuinely blocked on a decision or an external action, not on code:
 
 - **Google client registration and consent verification** — the deployment
   owner's action in Google Cloud. The adapters and the setup steps are ready.
-- **Persistence** — all four stateful services hold private in-memory state with
-  no storage port; introducing one is a multi-session change of its own.
+- **Persistence** — under way; see the restart milestone at the end of this
+  file. Three of the four services are done, `channel_connections` is not.
 - **Background workers for collection** — needs persistence first, then a
   worker/queue platform decision.
 - **A managed credential vault or KMS** — `GoogleCredentialStore` is the seam it
@@ -926,3 +926,85 @@ Two decisions worth keeping:
 - suites: web-ui 81, channel-connections 145, collection-jobs 82, workspace-
   access 40, channel-data 35, subscriber analytics 29, analysis-api 19 — all
   passed.
+
+## Verified milestone: three of four services outlive a restart
+
+Interrupted on request part-way through the fourth module. What is committed is
+green; what is not committed is one deliberately failing test file, described
+below.
+
+Every stateful module now owns its own state format instead of sharing one, so
+the modules stay independently extractable. The shape is the same in all three:
+
+- a `StateStore` Protocol in `ports.py` — `load() -> str | None`,
+  `save(document: str)`; the store keeps one text and knows nothing else;
+- a `snapshot.py` that reads and writes that text;
+- a `_StateLock` wrapping the service lock, which writes the document when the
+  outermost hold ends: every command already mutates under that lock, so it is
+  the one moment a snapshot is both consistent and impossible to forget;
+- a version-guarded document. A document this code cannot read raises rather
+  than starting empty — a deployment that silently forgot its data would report
+  an empty channel as the truth and spend provider quota collecting it again.
+
+Two decisions worth keeping:
+
+- **`workspace_access` writes an explicit codec, the other two a tagged one.**
+  Access state is small and its fields deserve to be listed by hand; sessions
+  are written by digest only, never by secret. `channel_data` and
+  `collection_jobs` hold deep nests of dataclasses, so their `snapshot.py`
+  tags every value with its type and needs no field list to read one back.
+- **Enums are encoded before primitives.** These enums subclass `str`; writing
+  one as a bare string reads back as a string the model validators refuse.
+  Discovered as a restart failure, fixed in the codec, and now covered.
+
+### Verification evidence
+
+- 31 new tests, each written before the code and watched fail:
+  `workspace_access` 11, `channel_data` 9, `collection_jobs` 11;
+- the quota test was re-checked against a service built without a store and
+  failed there (`AssertionError: 3 != 0`), so it measures the ledger surviving
+  and not the default budget;
+- suites: workspace-access 51, channel-data 44, collection-jobs 91, web-ui 81,
+  subscriber analytics 29, analysis-api 19 — all passed;
+- channel-connections 155 ran with 10 errors, all of them the unfinished spec
+  below.
+
+### Interrupted here
+
+`channel_connections/tests/test_persistence.py` is written and RED
+(`TypeError: ChannelConnectionsService.__init__() got an unexpected keyword
+argument 'state_store'`). It is left in the working tree, uncommitted and
+untracked, so the committed tree stays green. It asserts what the module must
+do, and the reading of the module behind it is already done:
+
+- `MemoryState` is secret-free by design — `ChannelConnection` is metadata,
+  `AuthorizationIntent` holds a `state_digest` and a `verifier_slot_id`,
+  `ExecutionAuthority` is documented as "not a credential". Secrets live only
+  in the two injected stores;
+- so `snapshot.py` must still refuse `AccessSecret`/`ProviderCredential`
+  explicitly, before the dataclass branch, so a future field carrying one fails
+  loudly instead of leaking into a document;
+- `intents` and `intents_by_state` must be dropped from the document: an
+  in-flight sign-in points at an ephemeral verifier that dies with the process,
+  and a restored intent would be an authorization that can never complete.
+  The test expects `AUTHORIZATION_STATE_INVALID` after a restart;
+- the attribute must not be called `self._store`: `collection_jobs` already has
+  a private `_store(run)` method and the collision was a live bug there. It is
+  `self._state_store`.
+
+### Next steps in order
+
+1. Add `StateStore` to `channel_connections/ports.py`, write
+   `channel_connections/snapshot.py` (tagged codec, secret refusal, intents
+   dropped), wire `_StateLock`/`_restored()`/`_flush()` into the service, and
+   turn the ten tests green.
+2. Wire real stores in `web_ui/container.py` behind one env var (a file or
+   SQLite `StateStore` per module). Credentials stay out: after a restart a
+   connection still needs re-authorization until the KMS item below is done.
+3. Update `web_ui/README.md` — persistence leaves the "still required" list,
+   and the credential caveat above joins it.
+4. Then the items that were already blocked: background workers, a managed
+   credential vault or KMS, and the Google client registration that only the
+   deployment owner can do.
+
+Command: `python -m unittest discover -s <module>/tests` (not `-t .`).

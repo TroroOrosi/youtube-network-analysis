@@ -29,3 +29,16 @@ class SystemTokenSource:
 
     def new_session_secret(self) -> str:
         return secrets.token_urlsafe(32)
+
+
+class StateStore(Protocol):
+    """Where this module's state document rests between two processes.
+
+    The store never learns what is inside: it keeps one text and hands it back
+    unchanged. A file, a row, or nothing at all is a deployment decision, not a
+    rule of the module.
+    """
+
+    def load(self) -> str | None: ...
+
+    def save(self, document: str) -> None: ...

@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import secrets
+from collections.abc import Callable
 from dataclasses import fields, is_dataclass
 from datetime import UTC, datetime
 from enum import Enum
 from threading import RLock
+from types import TracebackType
 from typing import Any
 
 from workspace_access.models import Permission, WorkspaceContext
@@ -21,7 +23,8 @@ from .memory import (
     SubscriberCandidate,
     VideoCandidate,
 )
-from .ports import Clock, TokenGenerator
+from . import snapshot
+from .ports import Clock, StateStore, TokenGenerator
 from .models import (
     AuthorCommentActivity,
     ChannelDataFreshness,
@@ -100,6 +103,36 @@ def _dataset_not_ready(reason: DatasetReadinessCode) -> ChannelDataError:
     )
 
 
+class _StateLock:
+    """The service lock, which also writes the state document on release.
+
+    Every command mutates under this lock, so the end of the outermost hold is
+    the one moment a snapshot is both consistent and impossible to forget.
+    """
+
+    def __init__(self, flush: Callable[[], None]) -> None:
+        self._lock = RLock()
+        self._flush = flush
+        self._depth = 0
+
+    def __enter__(self) -> None:
+        self._lock.acquire()
+        self._depth += 1
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        self._depth -= 1
+        try:
+            if self._depth == 0:
+                self._flush()
+        finally:
+            self._lock.release()
+
+
 class ChannelDataService:
     """Standard-library reference implementation with one atomic lock."""
 
@@ -108,11 +141,46 @@ class ChannelDataService:
         state: MemoryState | None = None,
         token_generator: TokenGenerator | None = None,
         clock: Clock | None = None,
+        state_store: StateStore | None = None,
     ) -> None:
-        self._state = state or MemoryState()
-        self._lock = RLock()
+        self._store = state_store
+        self._document: str | None = None
+        self._state = state or self._restored() or MemoryState()
+        self._lock = _StateLock(self._flush)
         self._token_generator = token_generator
         self._clock = clock
+
+    def _restored(self) -> MemoryState | None:
+        """Load what a previous process collected, or nothing on a fresh start.
+
+        A document this code cannot read is an error, never an empty start: a
+        deployment that silently forgot its collected data would report an
+        empty channel as the truth and spend quota collecting it again.
+        """
+
+        if self._store is None:
+            return None
+        document = self._store.load()
+        if document is None:
+            return None
+        state = snapshot.load(document)
+        self._document = document
+        return state
+
+    def _flush(self) -> None:
+        """Write the whole state document once a command has finished.
+
+        ponytail: the document is rewritten in full on every command; move to
+        per-collection rows when a workspace holds more than a few channels.
+        """
+
+        if self._store is None:
+            return
+        document = snapshot.dump(self._state)
+        if document == self._document:
+            return
+        self._store.save(document)
+        self._document = document
 
     def start_collection(
         self,

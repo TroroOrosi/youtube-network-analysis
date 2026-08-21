@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from threading import RLock
+from types import TracebackType
+
+from . import snapshot
 
 from .errors import (
     raise_expired_or_revoked,
@@ -15,7 +19,6 @@ from .errors import (
     raise_workspace_not_found_or_forbidden,
 )
 from .memory import IdempotencyRecord, InMemoryAuditLog, SessionState, UserState
-
 from .models import (
     AccessSecret,
     AccountAccessExport,
@@ -46,11 +49,41 @@ from .models import (
     WorkspaceSummary,
     permissions_for_role,
 )
-from .ports import Clock, SystemClock, SystemTokenSource, TokenSource
+from .ports import Clock, StateStore, SystemClock, SystemTokenSource, TokenSource
 
 
 DEFAULT_IDLE_TIMEOUT = timedelta(minutes=30)
 DEFAULT_ABSOLUTE_TIMEOUT = timedelta(hours=12)
+
+
+class _StateLock:
+    """The service lock, which also writes the state document on release.
+
+    Every command mutates under this lock, so the end of the outermost hold is
+    the one moment a snapshot is both consistent and impossible to forget.
+    """
+
+    def __init__(self, flush: Callable[[], None]) -> None:
+        self._lock = RLock()
+        self._flush = flush
+        self._depth = 0
+
+    def __enter__(self) -> None:
+        self._lock.acquire()
+        self._depth += 1
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        self._depth -= 1
+        try:
+            if self._depth == 0:
+                self._flush()
+        finally:
+            self._lock.release()
 
 
 class WorkspaceAccessService:
@@ -63,6 +96,7 @@ class WorkspaceAccessService:
         token_source: TokenSource | None = None,
         idle_timeout: timedelta = DEFAULT_IDLE_TIMEOUT,
         absolute_timeout: timedelta = DEFAULT_ABSOLUTE_TIMEOUT,
+        state_store: StateStore | None = None,
     ) -> None:
         if idle_timeout <= timedelta(0):
             raise ValueError("idle_timeout must be positive")
@@ -74,7 +108,9 @@ class WorkspaceAccessService:
         self._token_source = token_source or SystemTokenSource()
         self._idle_timeout = idle_timeout
         self._absolute_timeout = absolute_timeout
-        self._lock = RLock()
+        self._store = state_store
+        self._document: str | None = None
+        self._lock = _StateLock(self._flush)
         self._users_by_id: dict[str, UserState] = {}
         self._user_id_by_identity: dict[tuple[str, str], str] = {}
         self._sessions_by_digest: dict[str, SessionState] = {}
@@ -87,6 +123,67 @@ class WorkspaceAccessService:
             tuple[str, str], IdempotencyRecord
         ] = {}
         self._audit_log = InMemoryAuditLog()
+        self._restore()
+
+    def _restore(self) -> None:
+        """Load the state a previous process left behind, or start empty.
+
+        A document this code cannot read is an error, never an empty start: a
+        deployment that silently forgot its workspaces would hand the next
+        caller a blank tenancy and call it success.
+        """
+
+        if self._store is None:
+            return
+        document = self._store.load()
+        if document is None:
+            return
+        state = snapshot.load(document)
+        self._document = document
+        self._users_by_id = state.users
+        self._user_id_by_identity = {
+            (user.issuer, user.subject): user.user_id
+            for user in state.users.values()
+            if user.issuer is not None and user.subject is not None
+        }
+        self._sessions_by_digest = state.sessions
+        self._session_digest_by_id = {
+            session.session_id: digest for digest, session in state.sessions.items()
+        }
+        self._workspaces_by_id = state.workspaces
+        self._memberships_by_id = state.memberships
+        self._membership_id_by_pair = {
+            (membership.workspace_id, membership.user_id): membership.membership_id
+            for membership in state.memberships.values()
+        }
+        self._preferred_workspace_by_user = state.preferred_workspaces
+        self._idempotency_records = state.idempotency
+        self._audit_log = InMemoryAuditLog(state.audit_events)
+
+    def _flush(self) -> None:
+        """Write the whole state document once a command has finished.
+
+        ponytail: the document is rewritten in full on every command; move to
+        per-aggregate rows if a deployment ever holds more than one team.
+        """
+
+        if self._store is None:
+            return
+        document = snapshot.dump(
+            snapshot.Snapshot(
+                users=self._users_by_id,
+                sessions=self._sessions_by_digest,
+                workspaces=self._workspaces_by_id,
+                memberships=self._memberships_by_id,
+                preferred_workspaces=self._preferred_workspace_by_user,
+                idempotency=self._idempotency_records,
+                audit_events=self._audit_log.all(),
+            )
+        )
+        if document == self._document:
+            return
+        self._store.save(document)
+        self._document = document
 
     def __repr__(self) -> str:
         return (
