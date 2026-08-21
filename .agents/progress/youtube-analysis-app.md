@@ -1075,11 +1075,48 @@ single environment variable.
 - `python -m compileall -q web_ui channel_connections`, `git diff --check`, and
   a credential-literal scan of the changed files: all passed.
 
-### Not covered on this machine
+### The unobserved file mode, closed
 
-`test_the_documents_are_not_readable_by_other_accounts` skips on Windows, where
-POSIX file modes are not enforced. The `0o600` is correct on the Linux host a
-deployment would use, but it has not been observed passing here.
+The previous entry left `0o600` asserted only by a test that skips on Windows.
+Closing it turned up a worse problem than the missing evidence.
+
+- **The README was wrong, not just unverified.** It claimed files are "created
+  readable by their owner only". On Windows `os.open`'s mode argument sets the
+  read-only attribute and nothing else: the file inherits the directory's ACL.
+  The claim is now split — POSIX enforces the modes, Windows does not and the
+  host has to restrict the directory itself.
+- **The directory was left at the default mode.** `mkdir(parents=True,
+  exist_ok=True)` produces `0o755` under the usual `umask 022`, so the
+  owner-only documents sat in a directory anyone could list. It now asks for
+  `0o700`.
+- **Two tests, because there are two claims.** `test_owner_only_modes_are_asked_for`
+  spies on `os.open`/`os.mkdir` and asserts the modes this code *requests*; it
+  runs everywhere and fails the day somebody drops the argument, which is the
+  regression that matters. `test_the_documents_are_not_readable_by_other_accounts`
+  asserts the host *enforces* them, and still skips where that is meaningless.
+- **The state directory is no longer created by the test.** It was
+  `tempfile.mkdtemp()`, which is already `0o700`, so the enforcement assertion
+  would have passed without the code doing anything. The test now points at a
+  path that does not exist and lets the application create it, which also
+  covers a deployment naming a fresh directory.
+
+### Observed on a real POSIX host
+
+Run under `python:3.14-slim` (Python 3.14.7, `umask 0022`) against a tar of the
+working tree — not a bind mount, which does not carry POSIX modes from Windows:
+
+- all seven suites passed with no skips: channel-connections 155,
+  workspace-access 51, channel-data 44, collection-jobs 91, web-ui 88,
+  analysis-api 19, subscriber analytics 29 — 477 in total;
+- driving the real ASGI app through sign-in and workspace creation reported
+  `directory 0o700` and `workspace_access.json 0o600`. Under `umask 022` the
+  default would have been `0o755`, so the explicit mode is what produced it.
+
+Windows: the same 477 pass, with the one enforcement test skipped as designed.
+
+`subscriber_analytics` needs `subscriber_analytics/requirements.txt` as well as
+the root one; installing only the root file fails on `google_auth_oauthlib`.
+That is an installation mistake, not a missing declaration.
 
 ### Next steps in order
 

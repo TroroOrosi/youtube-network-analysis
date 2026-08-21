@@ -135,9 +135,11 @@ $env:YNA_STATE_DIR = "C:\ProgramData\yna-state"
   independently extractable;
 - each write is a rename over the previous document, so a process killed
   mid-save leaves the old one intact;
-- files are created readable by their owner only. They hold no credential, but
-  they do hold session digests and who may reach which workspace, so the
-  directory belongs on a disk you would put a database on;
+- the directory is created `0o700` and each document `0o600`. They hold no
+  credential, but they do hold session digests and who may reach which
+  workspace, so the directory belongs on a disk you would put a database on.
+  **POSIX enforces those modes; Windows does not** — there a file inherits the
+  directory's ACL, so a Windows host must restrict the directory itself;
 - a document this code cannot read stops the start instead of silently
   beginning empty, which would show a live owner an unlinked channel and spend
   YouTube quota collecting data that is already there.
@@ -180,3 +182,8 @@ which is right for a single process and wrong for two.
 ```powershell
 python -m unittest discover -s web_ui/tests -v
 ```
+
+`test_the_documents_are_not_readable_by_other_accounts` skips on Windows, where
+those modes mean nothing. It was last observed passing on `python:3.14-slim`
+with `umask 0022`, which reported `0o700` for the directory and `0o600` for the
+document.

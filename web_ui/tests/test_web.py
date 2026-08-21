@@ -6,6 +6,7 @@ import stat
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 from urllib.parse import parse_qs, urlsplit
 
 from fastapi.testclient import TestClient
@@ -14,6 +15,7 @@ from workspace_access.models import AccessSecret
 
 from web_ui.app import COLLECT_LIMIT_PER_MINUTE, WRITE_LIMIT_PER_MINUTE, create_app
 from web_ui.container import (
+    FileStateStore,
     build_services,
     google_config_from_env,
     state_dir_from_env,
@@ -562,8 +564,11 @@ class RestartTests(unittest.TestCase):
     """What an operator loses by restarting the process. Ideally nothing."""
 
     def setUp(self) -> None:
-        self.directory = Path(tempfile.mkdtemp(prefix="yna-state-"))
-        self.addCleanup(shutil.rmtree, self.directory, ignore_errors=True)
+        parent = Path(tempfile.mkdtemp(prefix="yna-state-"))
+        self.addCleanup(shutil.rmtree, parent, ignore_errors=True)
+        # Deliberately not created here: a deployment points the variable at a
+        # path and the application makes it, with the mode it wants.
+        self.directory = parent / "state"
         self.client = self.start()
 
     def start(self, cookies: dict[str, str] | None = None) -> TestClient:
@@ -643,10 +648,39 @@ class RestartTests(unittest.TestCase):
             written, ["channel_connections.json", "workspace_access.json"]
         )
 
-    @unittest.skipIf(os.name == "nt", "POSIX file modes are not enforced on Windows")
+    def test_owner_only_modes_are_asked_for(self) -> None:
+        """What this code controls: the modes it requests.
+
+        Whether they are enforced is the host's business, and Windows does not
+        enforce them. Asserting the request runs everywhere and fails the day
+        somebody drops the mode argument, which is the regression that matters.
+        """
+
+        store = FileStateStore(self.directory / "fresh" / "workspace_access.json")
+        requested: dict[str, int] = {}
+        real_open, real_mkdir = os.open, os.mkdir
+
+        def spy_open(path, flags, mode=0o777, *args, **kwargs):
+            requested["file"] = mode
+            return real_open(path, flags, mode, *args, **kwargs)
+
+        def spy_mkdir(path, mode=0o777, *args, **kwargs):
+            requested.setdefault("directory", mode)
+            return real_mkdir(path, mode, *args, **kwargs)
+
+        with mock.patch("os.open", spy_open), mock.patch("os.mkdir", spy_mkdir):
+            store.save("{}")
+
+        self.assertEqual(requested, {"directory": 0o700, "file": 0o600})
+        self.assertEqual(store.load(), "{}")
+
+    @unittest.skipIf(os.name == "nt", "POSIX modes are not enforced on Windows")
     def test_the_documents_are_not_readable_by_other_accounts(self) -> None:
+        """The other half: a POSIX host really does enforce them."""
+
         self.sign_in_and_connect()
 
+        self.assertEqual(stat.S_IMODE(self.directory.stat().st_mode), 0o700)
         for path in self.directory.iterdir():
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600, path.name)
 

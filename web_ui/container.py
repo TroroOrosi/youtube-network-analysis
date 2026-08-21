@@ -42,9 +42,13 @@ class FileStateStore:
 
     The write is a rename over the previous document, so a process killed
     mid-save leaves the old text intact instead of a truncated one that the
-    next start would refuse to read. The file is created readable by its owner
-    only: it carries no credential, but it does carry session digests and who
-    may reach which workspace.
+    next start would refuse to read.
+
+    The directory and the file are asked for owner-only modes: they carry no
+    credential, but they do carry session digests and who may reach which
+    workspace. POSIX enforces those modes and Windows does not — there a file
+    inherits the directory's ACL, so a Windows host has to restrict the
+    directory itself. The deployment target is POSIX; see `web_ui/README.md`.
     """
 
     def __init__(self, path: Path) -> None:
@@ -57,7 +61,7 @@ class FileStateStore:
             return None
 
     def save(self, document: str) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         pending = self._path.with_suffix(".writing")
         descriptor = os.open(pending, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
