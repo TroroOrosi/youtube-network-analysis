@@ -969,42 +969,77 @@ Two decisions worth keeping:
 - channel-connections 155 ran with 10 errors, all of them the unfinished spec
   below.
 
-### Interrupted here
+### Interrupted here, and resumed
 
-`channel_connections/tests/test_persistence.py` is written and RED
+`channel_connections/tests/test_persistence.py` was left written and RED
 (`TypeError: ChannelConnectionsService.__init__() got an unexpected keyword
-argument 'state_store'`). It is left in the working tree, uncommitted and
-untracked, so the committed tree stays green. It asserts what the module must
-do, and the reading of the module behind it is already done:
+argument 'state_store'`), uncommitted and untracked so the committed tree
+stayed green. The next milestone below closes it.
 
-- `MemoryState` is secret-free by design — `ChannelConnection` is metadata,
-  `AuthorizationIntent` holds a `state_digest` and a `verifier_slot_id`,
-  `ExecutionAuthority` is documented as "not a credential". Secrets live only
-  in the two injected stores;
-- so `snapshot.py` must still refuse `AccessSecret`/`ProviderCredential`
-  explicitly, before the dataclass branch, so a future field carrying one fails
-  loudly instead of leaking into a document;
-- `intents` and `intents_by_state` must be dropped from the document: an
-  in-flight sign-in points at an ephemeral verifier that dies with the process,
-  and a restored intent would be an authorization that can never complete.
-  The test expects `AUTHORIZATION_STATE_INVALID` after a restart;
-- the attribute must not be called `self._store`: `collection_jobs` already has
-  a private `_store(run)` method and the collision was a live bug there. It is
-  `self._state_store`.
+## Verified milestone: the fourth service outlives a restart
+
+`channel_connections` now has the same shape as the other three: a `StateStore`
+Protocol in `ports.py`, a `snapshot.py` with the tagged codec, and a
+`_StateLock` that writes the document when the outermost hold ends.
+
+What is specific to this module:
+
+- **The codec refuses credential material outright.** `AccessSecret`,
+  `ProviderCredential`, and `VerifiedProviderGrant` are rejected in the first
+  branch of `_encode`, before the dataclass branch, and `_type` refuses to name
+  one on the way back in. `MemoryState` is secret-free by design today; the
+  guard is there so a future field carrying a token fails loudly instead of
+  leaking into a document.
+- **A sign-in still underway is dropped.** `_persistable()` clears `intents`
+  and `intents_by_state` before encoding. An intent can only be completed with
+  its PKCE verifier, which lives in the ephemeral secret store and dies with
+  the process; a restored intent would be an authorization that can never
+  complete. Dropping it makes a late callback fail as the expired intent it
+  really is. `_restore_start` already deletes a begin-idempotency record whose
+  URL is gone, so a replayed `begin` after a restart starts a fresh sign-in
+  instead of returning a dead intent id.
+- **The attribute is `self._state_store`.** `self._store` collides with
+  `collection_jobs`' private `_store(run)` method; that collision was a live
+  bug there.
+
+### Two assertions in the drafted test were wrong and were corrected
+
+The test file was written from the module's spec before the module was read
+back, and asserted two things that do not exist:
+
+- `ConnectionStatus.DISCONNECTED`. The enum has only `ACTIVE` and
+  `REAUTH_REQUIRED`, and SPEC-channel-connections requires disconnected
+  metadata to be *removed* immediately, not tombstoned. Keeping the assertion
+  would have contradicted the spec and
+  `test_disconnect_revokes_deletes_and_hides_the_connection`. The test now
+  asserts the connection does not come back after a restart, which is what it
+  was for.
+- `AUTHORIZATION_STATE_INVALID`. No such `ErrorCode`; an unknown state digest
+  raises `INTENT_NOT_FOUND_OR_EXPIRED`.
+
+### Verification evidence
+
+- 10 new tests, watched fail first (all ten errored on the missing
+  `state_store` keyword), now passing;
+- channel-connections 155 passed, up from 155 with 10 errors;
+- workspace-access 51, channel-data 44, collection-jobs 91, web-ui 81,
+  analysis-api 19, subscriber analytics 29 — all passed. 470 in total;
+- `python -m compileall -q channel_connections`: passed;
+- `git diff --check`: passed;
+- credential-literal scan of the changed files: no matches.
 
 ### Next steps in order
 
-1. Add `StateStore` to `channel_connections/ports.py`, write
-   `channel_connections/snapshot.py` (tagged codec, secret refusal, intents
-   dropped), wire `_StateLock`/`_restored()`/`_flush()` into the service, and
-   turn the ten tests green.
-2. Wire real stores in `web_ui/container.py` behind one env var (a file or
-   SQLite `StateStore` per module). Credentials stay out: after a restart a
-   connection still needs re-authorization until the KMS item below is done.
-3. Update `web_ui/README.md` — persistence leaves the "still required" list,
+1. Wire real stores in `web_ui/container.py` behind one env var (a file or
+   SQLite `StateStore` per module). Nothing constructs a concrete store yet, so
+   no deployment actually survives a restart today — all four modules default
+   to `state_store=None`. Credentials stay out: after a restart a connection
+   still needs re-authorization until the KMS item below is done.
+2. Update `web_ui/README.md` — persistence leaves the "still required" list,
    and the credential caveat above joins it.
-4. Then the items that were already blocked: background workers, a managed
+3. Then the items that were already blocked: background workers, a managed
    credential vault or KMS, and the Google client registration that only the
    deployment owner can do.
 
-Command: `python -m unittest discover -s <module>/tests` (not `-t .`).
+Command: `python -m unittest discover -s <module>/tests`, from the repository
+root. `cd`-ing into the module first breaks the cross-module imports.

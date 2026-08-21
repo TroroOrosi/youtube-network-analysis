@@ -211,3 +211,11 @@ class Clock(Protocol):
 
 class TokenGenerator(Protocol):
     def new_token(self) -> str: ...
+
+
+class StateStore(Protocol):
+    """Where this module's state document rests between two processes."""
+
+    def load(self) -> str | None: ...
+
+    def save(self, document: str) -> None: ...

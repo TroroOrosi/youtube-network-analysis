@@ -15,11 +15,13 @@ import hmac
 import json
 from datetime import datetime, timedelta
 from threading import RLock
-from typing import Any
+from types import TracebackType
+from typing import Any, Callable
 from urllib.parse import urlsplit
 
 from workspace_access.models import AuditOutcome, Permission, WorkspaceContext
 
+from . import snapshot
 from .errors import ChannelConnectionsError, ErrorCode
 from .memory import (
     AuthorizationIntent,
@@ -72,6 +74,7 @@ from .ports import (
     ProviderAuthorizationExpired,
     ProviderRejected,
     ProviderUnavailable,
+    StateStore,
     TokenGenerator,
     YouTubeAuthorizationGateway,
     YouTubeDataGateway,
@@ -159,6 +162,36 @@ def _allowlisted_authorization_url(
     return value
 
 
+class _StateLock:
+    """The service lock, which also writes the state document on release.
+
+    Every command mutates under this lock, so the end of the outermost hold is
+    the one moment a snapshot is both consistent and impossible to forget.
+    """
+
+    def __init__(self, flush: Callable[[], None]) -> None:
+        self._lock = RLock()
+        self._flush = flush
+        self._depth = 0
+
+    def __enter__(self) -> None:
+        self._lock.acquire()
+        self._depth += 1
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        self._depth -= 1
+        try:
+            if self._depth == 0:
+                self._flush()
+        finally:
+            self._lock.release()
+
+
 class ChannelConnectionsService:
     """In-memory reference implementation of the connection lifecycle."""
 
@@ -175,6 +208,7 @@ class ChannelConnectionsService:
         redirect_uri_id: str = DEFAULT_REDIRECT_URI_ID,
         provider: ConnectionProvider = ConnectionProvider.YOUTUBE,
         authorization_hosts: tuple[str, ...] = PROVIDER_AUTHORIZATION_HOSTS,
+        state_store: StateStore | None = None,
     ) -> None:
         self._clock = clock
         self._tokens = tokens
@@ -186,8 +220,42 @@ class ChannelConnectionsService:
         self._redirect_uri_id = redirect_uri_id
         self._provider = provider
         self._authorization_hosts = authorization_hosts
-        self._lock = RLock()
-        self._state = MemoryState()
+        self._state_store = state_store
+        self._document: str | None = None
+        self._state = self._restored() or MemoryState()
+        self._lock = _StateLock(self._flush)
+
+    def _restored(self) -> MemoryState | None:
+        """Load what a previous process connected, or nothing on a fresh start.
+
+        A document this code cannot read is an error, never an empty start: a
+        deployment that silently forgot its connections would show every owner
+        an unlinked channel and ask them to authorize one that is still live.
+        """
+
+        if self._state_store is None:
+            return None
+        document = self._state_store.load()
+        if document is None:
+            return None
+        state = snapshot.load(document)
+        self._document = document
+        return state
+
+    def _flush(self) -> None:
+        """Write the whole state document once a command has finished.
+
+        ponytail: the document is rewritten in full on every command; move to
+        per-connection rows when a deployment keeps more than a few thousand.
+        """
+
+        if self._state_store is None:
+            return
+        document = snapshot.dump(self._state)
+        if document == self._document:
+            return
+        self._state_store.save(document)
+        self._document = document
 
     # Authorization
 
