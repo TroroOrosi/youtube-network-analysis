@@ -354,6 +354,7 @@ class GoogleFixture(unittest.TestCase):
                 },
             ),
             transport=self.transport,
+            youtube_api_key="test-api-key",
         )
         self.client = TestClient(
             create_app(services), base_url=BASE_URL, follow_redirects=False

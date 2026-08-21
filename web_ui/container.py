@@ -80,6 +80,19 @@ def state_dir_from_env(environment: Mapping[str, str]) -> Path | None:
     return Path(directory) if directory else None
 
 
+def youtube_api_key_from_env(environment: Mapping[str, str]) -> str | None:
+    """The key that reads public comments, or nothing to leave them uncollected.
+
+    Comments need a key because `commentThreads.list` refuses the read-only
+    scope this product asks owners for; see `GoogleDataGateway._list_public`.
+    Without one, subscribers and videos still collect and the comment step
+    fails on its own without touching the connection.
+    """
+
+    key = environment.get("YNA_YOUTUBE_API_KEY", "").strip()
+    return key or None
+
+
 def _state_store(directory: Path | None, module: str) -> FileStateStore | None:
     """One document per module, so the modules stay independently extractable."""
 
@@ -148,6 +161,7 @@ def build_services(
     google: GoogleOAuthConfig | None = None,
     transport: Transport = http_transport,
     state_dir: Path | None = None,
+    youtube_api_key: str | None = None,
 ) -> Services:
     """Wire every module, with demo gateways unless a real client is supplied.
 
@@ -175,7 +189,9 @@ def build_services(
     else:
         store = GoogleCredentialStore()
         gateway = GoogleAuthorizationGateway(google, store, transport=transport)
-        data_gateway = GoogleDataGateway(google, store, transport=transport)
+        data_gateway = GoogleDataGateway(
+            google, store, transport=transport, api_key=youtube_api_key
+        )
         vault = store
         authorization_hosts = (urlsplit(AUTHORIZATION_ENDPOINT).hostname,)
     connections = ChannelConnectionsService(

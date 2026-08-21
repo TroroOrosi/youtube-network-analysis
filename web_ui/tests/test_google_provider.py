@@ -31,6 +31,8 @@ from web_ui.google_provider import (
 
 NOW = datetime(2026, 6, 1, tzinfo=UTC)
 
+API_KEY = "test-api-key"
+
 CONFIG = GoogleOAuthConfig(
     client_id="client-123.apps.googleusercontent.com",
     client_secret=RedactedSecret("client-secret"),
@@ -430,8 +432,75 @@ class DataGatewayFixture(unittest.TestCase):
         store = GoogleCredentialStore()
         if credential is not None:
             store.put("ws-1", "slot-1", credential)
-        gateway = GoogleDataGateway(CONFIG, store, transport=transport, now=lambda: NOW)
+        gateway = GoogleDataGateway(
+            CONFIG, store, transport=transport, now=lambda: NOW, api_key=API_KEY
+        )
         return gateway, transport, store
+
+
+class PublicReadTests(DataGatewayFixture):
+    """Comments are read with a key, not with the owner's grant.
+
+    `commentThreads.list` refuses the read-only scope and wants
+    `youtube.force-ssl`, which can also delete comments and manage the account.
+    The owner is not asked for that to read what any visitor can read.
+    """
+
+    REPLY = (
+        200,
+        json.dumps(
+            {
+                "items": [
+                    {
+                        "snippet": {
+                            "topLevelComment": {
+                                "snippet": {
+                                    "publishedAt": "2026-03-01T00:00:00Z",
+                                    "authorChannelId": {"value": "UC_a"},
+                                }
+                            }
+                        }
+                    }
+                ]
+            }
+        ).encode(),
+    )
+
+    def _read(self, gateway: GoogleDataGateway):
+        return gateway.list_video_comment_authors(
+            "ws-1", "slot-1", video_id="vid-1", page_token=None, max_results=50
+        )
+
+    def test_the_request_carries_the_key_and_not_the_owners_token(self) -> None:
+        gateway, transport, _ = self.build({f"{API_ROOT}/commentThreads": self.REPLY})
+        self._read(gateway)
+        _, url, headers, _ = transport.requests[-1]
+        self.assertEqual(parse_qs(urlsplit(url).query)["key"], [API_KEY])
+        self.assertNotIn("Authorization", headers)
+
+    def test_it_needs_no_credential_in_the_vault(self) -> None:
+        gateway, _, store = self.build({f"{API_ROOT}/commentThreads": self.REPLY})
+        self.assertIsNone(store._read("ws-1", "slot-1"))
+        self.assertEqual(len(self._read(gateway).rows), 1)
+
+    def test_a_refusal_here_never_reads_as_an_expired_grant(self) -> None:
+        """A channel with comments off must not cost the owner the connection."""
+
+        body = json.dumps(
+            {"error": {"errors": [{"reason": "commentsDisabled"}]}}
+        ).encode()
+        gateway, _, _ = self.build({f"{API_ROOT}/commentThreads": (403, body)})
+        with self.assertRaises(ProviderRejected):
+            self._read(gateway)
+
+    def test_without_a_key_it_refuses_instead_of_using_the_grant(self) -> None:
+        transport = FakeTransport({f"{API_ROOT}/commentThreads": self.REPLY})
+        gateway = GoogleDataGateway(
+            CONFIG, GoogleCredentialStore(), transport=transport, now=lambda: NOW
+        )
+        with self.assertRaises(ProviderUnavailable):
+            self._read(gateway)
+        self.assertEqual(transport.requests, [])
 
 
 class SubscriberListingTests(DataGatewayFixture):

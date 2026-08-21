@@ -312,6 +312,24 @@ gcloud run deploy yna-web --source . --region asia-northeast1 `
 The service account is its own rather than the default compute one, which can
 read every secret in the project; this one reads the single secret it needs.
 
+**Comments need an API key, not a bigger scope.** `commentThreads.list`
+refuses `youtube.readonly` and wants `youtube.force-ssl`, which can also delete
+comments and manage the account — too much to ask an owner for, to read what any
+visitor can already read. Comments are public, so this layer reads them with a
+server-side API key instead and leaves the owner's grant read-only:
+
+```powershell
+gcloud services api-keys create --display-name yna-youtube-public-reads `
+  --api-target=service=youtube.googleapis.com
+# then put its key string in Secret Manager as yna-youtube-api-key, grant the
+# service account secretAccessor on it, and add to the deploy command:
+#   --set-secrets "...,YNA_YOUTUBE_API_KEY=yna-youtube-api-key:latest"
+```
+
+Restrict the key to the YouTube Data API, as above. Without the key subscribers
+and videos still collect; only the comment step fails, and because no credential
+is involved on that path it cannot be mistaken for an expired grant.
+
 **The host still logs the OAuth `code`.** Both callbacks receive it in the query
 string, because an OAuth redirect is a GET and the session cookie is
 `SameSite=Lax`, which a cross-site form post would not carry — so the code

@@ -400,9 +400,11 @@ class GoogleDataGateway(_GoogleClient):
         *,
         transport: Transport = http_transport,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
+        api_key: str | None = None,
     ) -> None:
         super().__init__(config, store, transport=transport, now=now)
         self._uploads_playlists: dict[tuple[str, str], str] = {}
+        self._api_key = api_key
 
     def list_subscribers(
         self,
@@ -490,9 +492,7 @@ class GoogleDataGateway(_GoogleClient):
         page_token: str | None,
         max_results: int,
     ) -> ProviderPage:
-        payload = self._list(
-            workspace_id,
-            credential_slot_id,
+        payload = self._list_public(
             "commentThreads",
             {
                 "part": "snippet",
@@ -543,6 +543,33 @@ class GoogleDataGateway(_GoogleClient):
             raise _rejected(Reason.INVALID_PROVIDER_RESPONSE)
         related = _mapping(_mapping(items[0], "contentDetails"), "relatedPlaylists")
         return _text(related, "uploads")
+
+    def _list_public(
+        self, path: str, params: dict[str, str], page_token: str | None
+    ) -> Mapping[str, object]:
+        """Read public data with an API key rather than the owner's grant.
+
+        Comments are public — anyone with the video's address can read them —
+        but `commentThreads.list` refuses `youtube.readonly` and wants
+        `youtube.force-ssl`, which also deletes comments and manages the
+        account. Asking an owner to hand a read-only analysis tool that, to read
+        what any visitor can read, is not a trade this product makes. The key
+        reads it instead.
+
+        No credential is in play here, so a refusal on this path can never be
+        read as an expired grant, and a channel whose comments are unavailable
+        cannot cost the owner their connection.
+        """
+
+        if self._api_key is None:
+            raise ProviderUnavailable("no api key is configured for public reads")
+        query = {**params, "key": self._api_key}
+        if page_token is not None:
+            query["pageToken"] = page_token
+        status, body = self._transport(
+            "GET", f"{API_ROOT}/{path}?{urlencode(query)}", headers={}, body=None
+        )
+        return _decode(status, body)
 
     def _list(
         self,
