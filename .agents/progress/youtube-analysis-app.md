@@ -1118,6 +1118,44 @@ Windows: the same 477 pass, with the one enforcement test skipped as designed.
 the root one; installing only the root file fails on `google_auth_oauthlib`.
 That is an installation mistake, not a missing declaration.
 
+### What a review of the persistence work found
+
+Measured against the running demo app, not read off the graph — the graph
+reported no affected flows and only its usual conservative private-helper test
+gaps, and found none of this.
+
+- **The write cost is per request, not per command.** Ten read-only dashboard
+  views rewrote `workspace_access.json` eleven times: an authenticated page
+  view touches the session's idle expiry, which is a state change like any
+  other, and `_StateLock` writes whenever the outermost hold ends. Writing is
+  correct — a session's expiry has to survive a restart — but the cost is a
+  full rewrite of a document holding every user, session and audit event.
+  `web_ui/README.md` said "on every command", which reads as writes only; it
+  now says what actually happens.
+- **A failed flush is reported as a failed command.** The command already
+  succeeded in memory, so a caller treating `OSError` as "it did not happen" is
+  wrong. Failing loudly beats losing durability silently, and the divergence
+  self-heals: the next successful command writes the whole state. Verified,
+  including that the lock stays usable afterwards.
+- **A command that raises can still write the document.** The first failing
+  command on a fresh service writes the empty-state document, because the
+  initial `_document` is `None` and differs from `dump(MemoryState())`.
+  Harmless — restoring an empty document equals no document — but "nothing is
+  written until something happens" is weaker than its test implies.
+- **`self._restored() or MemoryState()` is safe only because `MemoryState` has
+  no `__bool__` or `__len__`.** Verified `bool(MemoryState()) is True`. Adding
+  either would silently discard a restored state. All four modules share the
+  idiom; `is None` would be the durable form.
+- **The document names credential slots.** It holds
+  `cred_intent_<high-entropy token>`, which is a vault key, not a credential —
+  the README's "hold no credential" stays true. **The KMS must not treat
+  knowing a slot id as authorization.**
+
+Confirmed clean: no secret material in a real document (`state_digest` and
+`verifier_slot_id` absent, so dropping intents works); values containing
+newlines, tabs and Japanese round-trip byte-identical with no CR/LF written on
+Windows; no `.writing` leftovers after a save.
+
 ### Next steps in order
 
 1. A managed credential vault or KMS behind the existing `CredentialVault`

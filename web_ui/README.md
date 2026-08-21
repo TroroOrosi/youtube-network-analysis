@@ -151,6 +151,13 @@ can collect. That ends when the KMS below is done, not before.
 Two processes must not share one directory: each keeps the whole document in
 memory and the last writer wins.
 
+**The write cost is per request, not per write.** An authenticated page view
+touches the session's idle expiry, which is a state change like any other, so
+the document is rewritten for reads too: ten dashboard views were measured
+rewriting `workspace_access.json` eleven times. That document holds every user,
+session and audit event, so the cost per request grows with the deployment.
+This is the ceiling the design accepts; a database is what removes it.
+
 ## Deployment TLS
 
 Every cookie is `Secure`, the OAuth redirect URI must be `https`, and Google
@@ -174,8 +181,8 @@ A managed credential vault or KMS and background workers for collection. Each
 is an explicit later decision.
 
 Persistent storage is now available but is not a database: `YNA_STATE_DIR`
-keeps one JSON document per module and rewrites it in full on every command,
-which is right for a single process and wrong for two.
+keeps one JSON document per module and rewrites each in full, which is right
+for a single process and wrong for two. The write cost is described below.
 
 ## Verification
 
