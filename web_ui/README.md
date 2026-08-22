@@ -168,7 +168,13 @@ touches the session's idle expiry, which is a state change like any other, so
 the document is rewritten for reads too: ten dashboard views were measured
 rewriting `workspace_access.json` eleven times. That document holds every user,
 session and audit event, so the cost per request grows with the deployment.
-This is the ceiling the design accepts; a database is what removes it.
+
+Moving to a database did not remove that ceiling; it priced it. On Firestore
+the same page view is one document write, against a free allowance of 20,000
+writes a day. A module skips the write when its document comes out
+byte-identical, but an idle expiry that moves on every authenticated request
+never does — so that allowance, not a disk, is what a deployment opened
+wider than its owners would meet first.
 
 ## Deployment TLS
 
