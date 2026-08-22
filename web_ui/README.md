@@ -424,10 +424,103 @@ Where neither store is configured — the reference default, and any host that
 sets nothing — the older behaviour still applies: everything goes with the
 instance, and an owner returns to an empty application and starts over.
 
+## Collecting more than one request can hold
+
+A channel's comments do not fit in one HTTP request, and past the daily quota
+they do not fit in one day. So the collection is no longer done inside the
+button press. Pressing **データを収集する** only queues two runs and sends the
+browser to `/collecting`; the work happens in slices, and a run that cannot
+finish today says when it can continue instead of failing.
+
+Two things drive those slices, and they are the same code path:
+
+**The browser.** `/collecting` collects for up to `BROWSER_SLICE_SECONDS`
+(20 s), then returns a page carrying `<meta http-equiv="refresh">` that asks for
+another slice a second later. It is a `<meta>` tag and not a script because the
+Content-Security-Policy here is `default-src 'self'` with no `script-src`; there
+is no JavaScript in this application at all. Closing the tab costs only the
+slice in flight: the runs stay queued and everything already collected is in
+`channel-data`. When only a wait for tomorrow's quota is left, the page stops
+refreshing and says so rather than spinning until midnight.
+
+**Cloud Scheduler.** `POST /internal/drain` continues every workspace's queued
+work with no session involved, which is the only way a run suspended for
+tomorrow ever finishes if the owner never comes back. The route exists only
+when `YNA_DRAIN_SERVICE_ACCOUNT` is set, and it believes exactly one caller:
+the OIDC token on the request must be minted for that service account **and**
+for this deployment's own drain URL. Google checks the signature, through
+`tokeninfo`; this code checks who and what it was minted for. Every refusal is
+a bodiless 401, so the endpoint tells a prober nothing — not even whether a
+scheduler exists. The reply on success is a count and no workspace names.
+
+The service itself stays public, because owners sign in through it with a
+browser. That is why the token is checked in the application rather than left
+to `roles/run.invoker`: a public URL has no invoker check to lean on.
+
+### Setting up the scheduler
+
+```powershell
+$PROJECT = (gcloud config get-value project)
+$SERVICE_URL = (gcloud run services describe yna-web `
+  --region asia-northeast1 --format "value(status.url)")
+$CALLER = "yna-scheduler@$PROJECT.iam.gserviceaccount.com"
+
+gcloud iam service-accounts create yna-scheduler `
+  --display-name "YNA scheduled drain"
+
+gcloud run services update yna-web --region asia-northeast1 `
+  --update-env-vars "YNA_DRAIN_SERVICE_ACCOUNT=$CALLER"
+
+gcloud scheduler jobs create http yna-drain `
+  --location asia-northeast1 `
+  --schedule "7 * * * *" `
+  --time-zone UTC `
+  --uri "$SERVICE_URL/internal/drain" `
+  --http-method POST `
+  --oidc-service-account-email $CALLER `
+  --oidc-token-audience "$SERVICE_URL/internal/drain" `
+  --attempt-deadline 180s
+```
+
+The service account is given no roles at all. It needs none: the only thing it
+does is be named in a token, and the only thing that reads that name is this
+application. `--oidc-token-audience` must match the URL exactly, because that is
+the half of the check that stops a token issued for some other service being
+replayed here.
+
+Hourly is generous for what the job is for. The only thing it can unblock is a
+run waiting for units, and units refill once a day at UTC midnight; the extra
+23 calls are there so a suspension that happens for another reason is not
+waiting a whole day.
+
+### What it costs
+
+Nothing, and here is the arithmetic rather than the assurance:
+
+- **Cloud Scheduler** allows 3 jobs free per billing account. This is one.
+- **Cloud Run** allows 180,000 vCPU-seconds a month. An hourly call that finds
+  nothing queued answers immediately: 720 calls a month of well under a second
+  each, which is a rounding error. A call that does find work is capped at
+  `DRAIN_SLICE_SECONDS` (120 s), so even the impossible case where all 720 ran
+  the full slice is 86,400 vCPU-seconds — still inside the allowance, though it
+  would leave under half of it for people using the site. The daily quota stops
+  collection long before that, so it is a ceiling and not an expectation.
+- **Firestore** allows 20,000 writes a day. A slice writes the module documents
+  it touched, once per slice, not once per provider call.
+- The scheduler job itself makes no image, holds no storage, and adds no
+  always-on instance: `--min-instances 0` still stands, and the drain simply
+  cold-starts.
+
+If the drain is not set up, nothing breaks. Collections still finish while the
+browser is on `/collecting`, and one that runs out of units waits for an owner
+to come back and press the button again.
+
 ## Still required before production
 
-Background workers for collection. That is now the only one, and it is an
-explicit later decision.
+Background workers for collection are done, in the smallest form that works: no
+queue, no worker platform, no daemon. A run is sliced, and two callers drive the
+slices — the browser that started it, and one scheduled call for the days it
+cannot finish in. See the section above.
 
 The credential vault is done and deployed: the module documents rest in
 Firestore, the owners' refresh tokens in one Secret Manager secret, and a new
@@ -445,7 +538,7 @@ described below.
 ## Verification
 
 ```powershell
-python -m unittest discover -s web_ui/tests -v
+python -m unittest discover -s web_ui/tests -t web_ui/tests -v
 ```
 
 `test_the_documents_are_not_readable_by_other_accounts` skips on Windows, where

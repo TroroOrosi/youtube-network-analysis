@@ -7,6 +7,7 @@ import os
 from .app import create_app
 from .container import (
     build_services,
+    drain_caller_from_env,
     durability_from_env,
     google_config_from_env,
     youtube_api_key_from_env,
@@ -20,5 +21,6 @@ app = create_app(
         google=google_config_from_env(os.environ, BASE_URL),
         durability=durability_from_env(os.environ),
         youtube_api_key=youtube_api_key_from_env(os.environ),
+        drain_caller=drain_caller_from_env(os.environ, BASE_URL),
     )
 )

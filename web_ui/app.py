@@ -15,7 +15,12 @@ from typing import Annotated, Any
 
 from fastapi import FastAPI, Form, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+)
 from fastapi.templating import Jinja2Templates
 from pydantic import BeforeValidator
 
@@ -35,7 +40,7 @@ from channel_connections.models import (
 )
 from channel_data.errors import ChannelDataError
 from collection_jobs.errors import CollectionJobsError
-from collection_jobs.models import EnqueueRun, ExecuteRun, RunKind
+from collection_jobs.models import CollectionRun, EnqueueRun, RunKind
 from workspace_access.models import (
     AccessSecret,
     CreateWorkspace,
@@ -56,6 +61,12 @@ CSRF_COOKIE = "yna_csrf"
 CONSENT_ORIGIN = "https://accounts.google.com"
 WRITE_LIMIT_PER_MINUTE = 30
 COLLECT_LIMIT_PER_MINUTE = 3
+# How long one call may spend collecting. The browser's slice is short
+# because a person is watching a page that is not answering yet; the
+# scheduler's is long because nobody is, and the only cost of a longer one
+# is request time we are already paying for.
+BROWSER_SLICE_SECONDS = 20
+DRAIN_SLICE_SECONDS = 120
 RATE_WINDOW = timedelta(minutes=1)
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
@@ -65,6 +76,11 @@ MESSAGES = {
     "collected": "データ収集が完了しました。",
     "collect_partial": "本日の取得上限に達したため、途中まで収集しました。明日以降に再実行してください。",
     "collect_failed": "収集できませんでした。接続の再認可が必要な可能性があります。",
+    "collect_suspended": (
+        "本日の取得上限に達しました。"
+        "続きは翌日以降に自動で再開します。このまま閉じて構いません。"
+    ),
+    "collect_stopped": "収集を中断しました。次に開いたときに続きから再開します。",
     "workspace_created": "ワークスペースを作成しました。",
     "authorization_cancelled": "認可を中止しました。",
 }
@@ -308,6 +324,21 @@ def _error_response(request: Request, code: str, status_code: int) -> HTMLRespon
         {"error_title": title, "error_action": action, "error_code": code},
         status_code=status_code,
     )
+
+
+def _collect_outcome(runs: tuple[CollectionRun, ...]) -> str:
+    """Name what the browser should be told about a collection that ended.
+
+    The worst status wins, because a person reading one line wants to know
+    whether to act, and a run that failed is the one that needs them.
+    """
+
+    statuses = {run.status.value for run in runs}
+    if statuses & {"FAILED", "CANCELLED"}:
+        return "collect_failed"
+    if "PARTIAL" in statuses:
+        return "collect_partial"
+    return "collected"
 
 
 def _domain_error(error: Exception) -> AppError:
@@ -608,13 +639,21 @@ def _register_routes(app: FastAPI) -> None:
     def collect(
         request: Request, connection_id: str, csrf_token: str = Form("")
     ) -> Response:
+        """Queue the work, then hand the browser the page that does it.
+
+        Nothing is collected here on purpose. A channel's comments can take
+        longer than a request may stay open, and past the daily quota they take
+        longer than a day, so a route that collected until it was finished would
+        either time out or lie about being done. This only enqueues; `/collecting`
+        works the queue a slice at a time.
+        """
+
         _check_csrf(request, csrf_token)
         session = _require_session(request)
         context = _context(request, session, Permission.COLLECTION_RUN)
         services = _services(request)
-        outcome = "collected"
         for kind in (RunKind.SUBSCRIBERS, RunKind.OWNER_CONTENT):
-            run = services.jobs.enqueue_run(
+            services.jobs.enqueue_run(
                 context,
                 EnqueueRun(
                     connection_id=connection_id,
@@ -622,16 +661,94 @@ def _register_routes(app: FastAPI) -> None:
                     idempotency_key=secrets.token_urlsafe(16),
                 ),
             )
-            finished = services.jobs.execute_run(
-                context,
-                ExecuteRun(run_id=run.run_id, idempotency_key=secrets.token_urlsafe(16)),
-            )
-            if finished.status.value == "PARTIAL":
-                outcome = "collect_partial"
-            elif finished.status.value in {"FAILED", "QUEUED"}:
-                outcome = "collect_failed"
+        return _redirect("/collecting")
+
+    @app.get("/collecting", response_class=HTMLResponse)
+    def collecting(request: Request) -> Response:
+        """One slice of the queued work, then a page that asks for the next.
+
+        The browser is the driver: each visit collects for as long as
+        `BROWSER_SLICE_SECONDS` allows and then answers, and the page it returns
+        asks for another visit while anything is still due. Nothing is held open
+        and nothing is kept in this process, so a closed tab costs only the slice
+        it was in the middle of — the runs stay queued, and the next visit, or
+        the scheduler, carries on from where the last one stopped.
+
+        A run waiting for tomorrow's quota is not something a refresh can help
+        with, so that case stops the loop and says so instead of spinning.
+        """
+
+        session = _require_session(request)
+        context = _context(request, session, Permission.COLLECTION_RUN)
+        services = _services(request)
+        worked = services.jobs.execute_due_runs(
+            context, datetime.now(UTC), BROWSER_SLICE_SECONDS
+        )
+        runs = services.jobs.list_runs(context).items
+        waiting = [run for run in runs if run.status.value in {"QUEUED", "RUNNING"}]
+        moment = datetime.now(UTC)
+        if not waiting:
+            return _redirect("/", _collect_outcome(worked) if worked else None)
+        if all(
+            run.next_attempt_at is not None and run.next_attempt_at > moment
+            for run in waiting
+        ):
+            return _redirect("/", "collect_suspended")
+        return _render(
+            request,
+            "collecting.html",
+            {
+                "session": session,
+                "waiting": len(waiting),
+                "runs": [
+                    {
+                        "kind": RUN_KIND_LABELS.get(run.kind.value, run.kind.value),
+                        "status": RUN_STATUS_LABELS.get(
+                            run.status.value, run.status.value
+                        ),
+                        "pages_fetched": run.pages_fetched,
+                        "quota_spent": run.quota_spent,
+                    }
+                    for run in runs[:5]
+                ],
+            },
+        )
+
+    @app.post("/internal/drain")
+    def drain(request: Request) -> Response:
+        """Continue every workspace's queued work, for a caller that is a clock.
+
+        There is no session here, and there must not be one: the runs this
+        finishes outlive the evening whoever started them was having, and a job
+        that borrowed their session would either die when they signed out or
+        keep acting as them after. The caller instead proves it is the scheduler
+        this deployment was configured with, and each workspace's work is done
+        under authority issued for that workspace alone, carrying the single
+        permission collecting needs.
+
+        The answer is a count and nothing else. Which workspaces exist, and
+        which of them have work waiting, are not facts this endpoint hands to
+        whoever asked.
+        """
+
+        caller = _services(request).drain_caller
+        if caller is None or not caller.verify(request.headers.get("authorization")):
+            # No body, and the same answer whether the deployment has a
+            # scheduler at all: a closed door describes itself to nobody.
+            return Response(status_code=401)
+        services = _services(request)
+        deadline = datetime.now(UTC) + timedelta(seconds=DRAIN_SLICE_SECONDS)
+        worked = 0
+        for workspace_id in services.jobs.due_workspace_ids(datetime.now(UTC)):
+            moment = datetime.now(UTC)
+            remaining = int((deadline - moment).total_seconds())
+            if remaining < 1:
                 break
-        return _redirect("/", outcome)
+            context = services.access.issue_job_context(
+                workspace_id, Permission.COLLECTION_RUN
+            )
+            worked += len(services.jobs.execute_due_runs(context, moment, remaining))
+        return JSONResponse({"worked": worked})
 
     @app.get("/analysis", response_class=HTMLResponse)
     def analysis(

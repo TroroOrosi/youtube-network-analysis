@@ -6,6 +6,7 @@ import shutil
 import stat
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 from urllib.parse import parse_qs, urlsplit
@@ -26,6 +27,35 @@ from web_ui.tests.test_google_provider import FakeTransport, default_replies
 
 
 BASE_URL = "https://testserver"
+
+
+def drive_collection(test: unittest.TestCase, client: TestClient) -> str:
+    """Follow `/collecting` the way a browser follows its meta refresh.
+
+    The page answers 200 while there is more to do and redirects when there is
+    not, so this is the whole of what a browser contributes: ask again. The cap
+    is there so a driver that never finished fails the test instead of hanging
+    it.
+    """
+
+    for _ in range(50):
+        page = client.get("/collecting")
+        if page.status_code != 200:
+            return page.headers["location"]
+    test.fail("the collecting page never stopped asking for another slice")
+    raise AssertionError  # unreachable; keeps the return type honest
+
+
+class FakeCaller:
+    """Stands in for Google's verdict on a scheduler's token."""
+
+    def __init__(self, accepted: str = "Bearer scheduler-token") -> None:
+        self.accepted = accepted
+        self.seen: list[str | None] = []
+
+    def verify(self, authorization: str | None) -> bool:
+        self.seen.append(authorization)
+        return authorization == self.accepted
 
 
 class WebFixture(unittest.TestCase):
@@ -65,6 +95,15 @@ class WebFixture(unittest.TestCase):
         state = consent_url.split("state=")[1].split("&")[0]
         callback = self.post("/oauth/callback", {"state": state, "decision": "approve"})
         self.assertEqual(callback.status_code, 303)
+
+
+    def collect_now(self, connection_id: str) -> str:
+        """Queue a collection and drive it to the end, as a browser would."""
+
+        started = self.post(f"/connections/{connection_id}/collect")
+        self.assertEqual(started.status_code, 303)
+        self.assertEqual(started.headers["location"], "/collecting")
+        return drive_collection(self, self.client)
 
 
 class AuthenticationTests(WebFixture):
@@ -228,9 +267,7 @@ class GuidedFlowTests(WebFixture):
         self.assertIn("チャンネルを接続しました", dashboard.text)
 
         connection_id = dashboard.text.split("/connections/")[1].split("/collect")[0]
-        collected = self.post(f"/connections/{connection_id}/collect")
-        self.assertEqual(collected.status_code, 303)
-        self.assertIn("msg=collected", collected.headers["location"])
+        self.assertIn("msg=collected", self.collect_now(connection_id))
 
         analysis = self.client.get("/analysis?channel_id=UC_demo_channel")
         self.assertEqual(analysis.status_code, 200)
@@ -255,7 +292,7 @@ class GuidedFlowTests(WebFixture):
         self.create_workspace()
         self.connect_channel()
         connection_id = self.client.get("/").text.split("/connections/")[1].split("/collect")[0]
-        self.post(f"/connections/{connection_id}/collect")
+        self.collect_now(connection_id)
 
         filtered = self.client.get(
             "/analysis?channel_id=UC_demo_channel&segment=OLD_SILENT"
@@ -270,7 +307,7 @@ class GuidedFlowTests(WebFixture):
         self.create_workspace()
         self.connect_channel()
         connection_id = self.client.get("/").text.split("/connections/")[1].split("/collect")[0]
-        self.post(f"/connections/{connection_id}/collect")
+        self.collect_now(connection_id)
 
         home = self.client.get("/").text
 
@@ -284,7 +321,7 @@ class GuidedFlowTests(WebFixture):
         self.create_workspace()
         self.connect_channel()
         connection_id = self.client.get("/").text.split("/connections/")[1].split("/collect")[0]
-        self.post(f"/connections/{connection_id}/collect")
+        self.collect_now(connection_id)
 
         page = self.client.get(
             "/analysis?channel_id=UC_demo_channel&segment=OLD_SILENT"
@@ -312,7 +349,7 @@ class GuidedFlowTests(WebFixture):
         self.create_workspace()
         self.connect_channel()
         connection_id = self.client.get("/").text.split("/connections/")[1].split("/collect")[0]
-        self.post(f"/connections/{connection_id}/collect")
+        self.collect_now(connection_id)
 
         export = self.post(
             "/analysis/export",
@@ -329,13 +366,162 @@ class GuidedFlowTests(WebFixture):
         self.create_workspace()
         self.connect_channel()
         connection_id = self.client.get("/").text.split("/connections/")[1].split("/collect")[0]
-        self.post(f"/connections/{connection_id}/collect")
+        self.collect_now(connection_id)
 
         response = self.post(f"/connections/{connection_id}/disconnect")
 
         self.assertEqual(response.status_code, 303)
         self.assertIn("msg=disconnected", response.headers["location"])
         analysis = self.client.get("/analysis?channel_id=UC_demo_channel")
+        self.assertEqual(analysis.status_code, 200)
+
+
+class CollectionDriverTests(WebFixture):
+    """The browser as the driver: many short calls, one collection."""
+
+    def prepare(self) -> str:
+        self.login()
+        self.create_workspace()
+        self.connect_channel()
+        return self.client.get("/").text.split("/connections/")[1].split("/collect")[0]
+
+    def test_pressing_collect_only_queues_and_hands_over_the_driving(self) -> None:
+        """Nothing is collected in the POST, because a run may outlive it."""
+
+        connection_id = self.prepare()
+
+        started = self.post(f"/connections/{connection_id}/collect")
+
+        self.assertEqual(started.status_code, 303)
+        self.assertEqual(started.headers["location"], "/collecting")
+        self.assertIn("待機中", self.client.get("/").text)
+
+    def test_a_spent_slice_asks_the_browser_for_another(self) -> None:
+        """With no time to work in, the page must come back, not give up."""
+
+        connection_id = self.prepare()
+        self.post(f"/connections/{connection_id}/collect")
+
+        with mock.patch("web_ui.app.BROWSER_SLICE_SECONDS", 0):
+            page = self.client.get("/collecting")
+
+        self.assertEqual(page.status_code, 200)
+        self.assertIn('http-equiv="refresh"', page.text)
+        self.assertIn("url=/collecting", page.text)
+        self.assertIn("収集しています", page.text)
+
+    def test_the_driver_finishes_the_work_and_says_so(self) -> None:
+        connection_id = self.prepare()
+
+        self.assertIn("msg=collected", self.collect_now(connection_id))
+
+    def test_a_closed_tab_loses_no_collected_data(self) -> None:
+        """The run is in the module, not in the page: reopening continues it."""
+
+        connection_id = self.prepare()
+        self.post(f"/connections/{connection_id}/collect")
+        with mock.patch("web_ui.app.BROWSER_SLICE_SECONDS", 0):
+            self.client.get("/collecting")
+
+        self.assertIn("待機中", self.client.get("/").text)
+        self.assertIn("msg=collected", drive_collection(self, self.client))
+
+    def test_work_left_for_tomorrow_stops_the_refreshing(self) -> None:
+        """A page that refreshed until midnight would be a bug, not patience."""
+
+        connection_id = self.prepare()
+        # Fewer units than this channel's comments need, so coverage stops
+        # part-way and the run names tomorrow rather than failing.
+        self.services.jobs._daily_quota_units = 6
+        self.post(f"/connections/{connection_id}/collect")
+
+        location = drive_collection(self, self.client)
+
+        self.assertIn("msg=collect_suspended", location)
+        self.assertIn("翌日以降に自動で再開", self.client.get(location).text)
+
+
+class ScheduledDrainTests(WebFixture):
+    """The scheduler as the driver: no session, no browser, no person."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.caller = FakeCaller()
+        self.services = replace(self.services, drain_caller=self.caller)
+        self.client = TestClient(
+            create_app(self.services), base_url=BASE_URL, follow_redirects=False
+        )
+
+    def queue_work(self) -> None:
+        self.login()
+        self.create_workspace()
+        self.connect_channel()
+        connection_id = (
+            self.client.get("/").text.split("/connections/")[1].split("/collect")[0]
+        )
+        started = self.post(f"/connections/{connection_id}/collect")
+        self.assertEqual(started.status_code, 303)
+
+    def test_an_unconfigured_deployment_answers_nobody(self) -> None:
+        """Without a scheduler there is no caller this deployment believes."""
+
+        unconfigured = TestClient(
+            create_app(build_services(BASE_URL)),
+            base_url=BASE_URL,
+            follow_redirects=False,
+        )
+
+        response = unconfigured.post("/internal/drain")
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.text, "")
+
+    def test_an_unsigned_call_is_refused(self) -> None:
+        response = self.client.post("/internal/drain")
+
+        self.assertEqual(response.status_code, 401)
+
+    def test_a_token_the_verifier_rejects_is_refused(self) -> None:
+        response = self.client.post(
+            "/internal/drain", headers={"Authorization": "Bearer someone-elses-token"}
+        )
+
+        self.assertEqual(response.status_code, 401)
+
+    def test_the_scheduler_finishes_work_nobody_is_signed_in_for(self) -> None:
+        """The point of the whole endpoint: a run outliving its owner's session."""
+
+        self.queue_work()
+        self.client.cookies.clear()
+
+        response = self.client.post(
+            "/internal/drain", headers={"Authorization": "Bearer scheduler-token"}
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertGreaterEqual(response.json()["worked"], 1)
+
+    def test_the_answer_is_a_count_and_names_no_workspace(self) -> None:
+        self.queue_work()
+        workspace_id = self.client.cookies["yna_workspace"]
+
+        response = self.client.post(
+            "/internal/drain", headers={"Authorization": "Bearer scheduler-token"}
+        )
+
+        self.assertNotIn(workspace_id, response.text)
+        self.assertEqual(set(response.json()), {"worked"})
+
+    def test_the_drained_data_is_the_owners_to_read(self) -> None:
+        """Work done without a session still belongs to the workspace."""
+
+        self.queue_work()
+        self.client.post(
+            "/internal/drain", headers={"Authorization": "Bearer scheduler-token"}
+        )
+
+        analysis = self.client.get("/analysis?channel_id=UC_demo_channel")
+
         self.assertEqual(analysis.status_code, 200)
 
 
@@ -476,13 +662,13 @@ class GoogleModeTests(GoogleFixture):
         home = self.client.get("/").text
         connection_id = home.split("/connections/")[1].split("/collect")[0]
 
-        collected = self.client.post(
+        started = self.client.post(
             f"/connections/{connection_id}/collect",
             data={"csrf_token": self.client.cookies["yna_csrf"]},
         )
+        self.assertEqual(started.status_code, 303)
 
-        self.assertEqual(collected.status_code, 303)
-        self.assertIn("msg=collected", collected.headers["location"])
+        self.assertIn("msg=collected", drive_collection(self, self.client))
         self.assertTrue(
             any("/subscriptions?" in request[1] for request in self.transport.requests)
         )
@@ -563,7 +749,7 @@ class SafetyTests(WebFixture):
         self.create_workspace()
         self.connect_channel()
         connection_id = self.client.get("/").text.split("/connections/")[1].split("/collect")[0]
-        self.post(f"/connections/{connection_id}/collect")
+        self.collect_now(connection_id)
 
         pages = [
             self.client.get("/").text,

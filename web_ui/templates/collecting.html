@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}収集中 | YouTube 分析{% endblock %}
+{% block head %}<meta http-equiv="refresh" content="1;url=/collecting">{% endblock %}
+{% block content %}
+<h2>データを収集しています</h2>
+<p class="notice" role="status" aria-live="polite">
+  このページを開いたままにしてください。少しずつ収集を続け、自動で先に進みます。
+  残り {{ waiting }} 件です。
+</p>
+<p class="limits">
+  途中で閉じても、そこまでに集めたデータは残ります。もう一度「データを収集する」を押すか、
+  時間をおくと続きから再開します。
+</p>
+
+<h2>収集の状況</h2>
+<table>
+  <thead>
+    <tr><th scope="col">種類</th><th scope="col">状態</th><th scope="col">取得ページ</th><th scope="col">使用量</th></tr>
+  </thead>
+  <tbody>
+  {% for run in runs %}
+    <tr>
+      <th scope="row">{{ run.kind }}</th>
+      <td>{{ run.status }}</td>
+      <td>{{ run.pages_fetched }}</td>
+      <td>{{ run.quota_spent }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+<p><a href="/?msg=collect_stopped">中断してホームに戻る</a></p>
+{% endblock %}

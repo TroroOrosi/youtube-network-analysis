@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import time
 import tempfile
 import unittest
 from pathlib import Path
@@ -15,7 +16,9 @@ from web_ui.gcp import (
     FirestoreStateStore,
     GcpUnavailable,
     MetadataToken,
+    ScheduledCaller,
     SecretManagerStateStore,
+    TOKENINFO_URL,
 )
 from web_ui.tests.test_google_provider import CONFIG, FakeTransport, credential
 
@@ -298,3 +301,97 @@ class CredentialWiringTests(unittest.TestCase):
                 if path.is_file()
             )
             self.assertNotIn("rt-secret", written)
+
+
+class ScheduledCallerTests(unittest.TestCase):
+    """The door the scheduler knocks on, and everyone else knocks on too."""
+
+    ACCOUNT = "drain@yna.iam.gserviceaccount.com"
+    AUDIENCE = "https://yna.example/internal/drain"
+
+    def claims(self, **overrides: object) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "iss": "https://accounts.google.com",
+            "email": self.ACCOUNT,
+            "email_verified": "true",
+            "aud": self.AUDIENCE,
+            "exp": str(int(time.time()) + 300),
+        }
+        payload.update(overrides)
+        return payload
+
+    def caller(
+        self, claims: dict[str, object], status: int = 200
+    ) -> ScheduledCaller:
+        self.transport = FakeTransport(
+            {TOKENINFO_URL: (status, json.dumps(claims).encode())}
+        )
+        return ScheduledCaller(
+            self.ACCOUNT, self.AUDIENCE, transport=self.transport
+        )
+
+    def test_a_token_from_the_configured_job_is_accepted(self) -> None:
+        self.assertTrue(self.caller(self.claims()).verify("Bearer id-token"))
+
+    def test_the_token_is_never_put_in_a_url(self) -> None:
+        """A query string ends up in logs; the drain's key must not."""
+
+        self.caller(self.claims()).verify("Bearer id-token")
+
+        method, url, _, body = self.transport.requests[0]
+        self.assertEqual(method, "POST")
+        self.assertNotIn("id-token", url)
+        self.assertIn(b"id_token=id-token", body or b"")
+
+    def test_a_token_minted_for_another_service_is_refused(self) -> None:
+        """The audience is what stops a token being replayed at us."""
+
+        caller = self.caller(self.claims(aud="https://elsewhere.example/drain"))
+
+        self.assertFalse(caller.verify("Bearer id-token"))
+
+    def test_a_token_from_another_account_is_refused(self) -> None:
+        caller = self.caller(self.claims(email="someone@example.com"))
+
+        self.assertFalse(caller.verify("Bearer id-token"))
+
+    def test_an_unverified_address_is_refused(self) -> None:
+        caller = self.caller(self.claims(email_verified="false"))
+
+        self.assertFalse(caller.verify("Bearer id-token"))
+
+    def test_an_expired_token_is_refused(self) -> None:
+        caller = self.caller(self.claims(exp=str(int(time.time()) - 1)))
+
+        self.assertFalse(caller.verify("Bearer id-token"))
+
+    def test_a_missing_expiry_is_refused_rather_than_ignored(self) -> None:
+        claims = self.claims()
+        del claims["exp"]
+
+        self.assertFalse(self.caller(claims).verify("Bearer id-token"))
+
+    def test_a_header_that_is_not_a_bearer_token_never_reaches_google(self) -> None:
+        caller = self.caller(self.claims())
+
+        for header in (None, "", "id-token", "Basic id-token", "Bearer "):
+            self.assertFalse(caller.verify(header), header)
+
+        self.assertEqual(self.transport.requests, [])
+
+    def test_google_refusing_the_token_refuses_the_caller(self) -> None:
+        caller = self.caller({"error": "invalid_token"}, status=400)
+
+        self.assertFalse(caller.verify("Bearer id-token"))
+
+    def test_google_being_unreachable_refuses_the_caller(self) -> None:
+        """An outage must close the door, not hold it open."""
+
+        def unreachable(*_args: object, **_kwargs: object) -> tuple[int, bytes]:
+            raise GcpUnavailable("transport failed")
+
+        caller = ScheduledCaller(
+            self.ACCOUNT, self.AUDIENCE, transport=unreachable
+        )
+
+        self.assertFalse(caller.verify("Bearer id-token"))

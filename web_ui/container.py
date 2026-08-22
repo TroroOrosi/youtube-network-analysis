@@ -25,7 +25,12 @@ from collection_jobs.service import CollectionJobsService
 from workspace_access.models import AccessSecret
 from workspace_access.service import WorkspaceAccessService
 
-from .gcp import FirestoreStateStore, MetadataToken, SecretManagerStateStore
+from .gcp import (
+    FirestoreStateStore,
+    MetadataToken,
+    ScheduledCaller,
+    SecretManagerStateStore,
+)
 from .demo_provider import DemoAuthorizationGateway, DemoDataGateway
 from .google_login import LOGIN_REDIRECT_URI_ID, GoogleLogin
 from .google_provider import (
@@ -187,6 +192,34 @@ class Services:
     analysis: AnalysisApiService
     base_url: str
     login: GoogleLogin | None = None
+    # Absent unless a scheduler was configured, and the drain route refuses
+    # every caller while it is: see `drain_caller_from_env`.
+    drain_caller: ScheduledCaller | None = None
+
+
+def drain_caller_from_env(
+    environment: Mapping[str, str], base_url: str
+) -> ScheduledCaller | None:
+    """Read who may wake the drain, or nothing at all to keep it shut.
+
+    Missing configuration is not a permissive default here. Without a service
+    account there is nobody this deployment would believe, and the route refuses
+    every caller rather than falling back to something easier — an endpoint that
+    finishes other people's collections is not one to leave ajar.
+
+    The audience defaults to this deployment's own drain URL, which is the value
+    the scheduler job must be created with. Setting it explicitly is only for a
+    deployment reached under a different name than it knows itself by.
+    """
+
+    account = environment.get("YNA_DRAIN_SERVICE_ACCOUNT", "").strip()
+    if not account:
+        return None
+    audience = (
+        environment.get("YNA_DRAIN_AUDIENCE", "").strip()
+        or f"{base_url.rstrip('/')}/internal/drain"
+    )
+    return ScheduledCaller(account, audience)
 
 
 def google_config_from_env(
@@ -229,6 +262,7 @@ def build_services(
     state_dir: Path | None = None,
     youtube_api_key: str | None = None,
     durability: Durability | None = None,
+    drain_caller: ScheduledCaller | None = None,
 ) -> Services:
     """Wire every module, with demo gateways unless a real client is supplied.
 
@@ -293,4 +327,5 @@ def build_services(
         analysis=analysis,
         base_url=base_url,
         login=login,
+        drain_caller=drain_caller,
     )

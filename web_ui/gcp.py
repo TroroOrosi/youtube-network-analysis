@@ -31,6 +31,8 @@ METADATA_TOKEN_URL = (
 )
 SECRET_MANAGER_ROOT = "https://secretmanager.googleapis.com/v1"
 FIRESTORE_ROOT = "https://firestore.googleapis.com/v1"
+TOKENINFO_URL = "https://oauth2.googleapis.com/tokeninfo"
+GOOGLE_ISSUERS = frozenset({"https://accounts.google.com", "accounts.google.com"})
 STATE_COLLECTION = "state"
 DOCUMENT_FIELD = "document"
 REQUEST_TIMEOUT_SECONDS = 20.0
@@ -301,6 +303,75 @@ class FirestoreStateStore:
         )
         if status != 200:
             raise GcpUnavailable(f"writing {self._module} answered {status}")
+
+
+class ScheduledCaller:
+    """Decides whether a request really came from the scheduler job we made.
+
+    Cloud Scheduler signs every call it makes with an OIDC token minted for one
+    service account and one audience, and both halves have to be checked. The
+    account says who woke us. The audience says the token was minted for this
+    URL, so a token this deployment would accept cannot be replayed against
+    another service that happens to trust the same account.
+
+    Google checks the signature, not this code, because verifying one means
+    fetching Google's keys and rotating them on their schedule, and being
+    quietly wrong about that is the whole vulnerability. The token travels in a
+    POST body rather than a query string so that it does not come to rest in
+    anyone's request log.
+    """
+
+    def __init__(
+        self,
+        service_account: str,
+        audience: str,
+        *,
+        transport: Transport = http_transport,
+    ) -> None:
+        self._service_account = service_account
+        self._audience = audience
+        self._transport = transport
+
+    def verify(self, authorization: str | None) -> bool:
+        """True only for a live token this deployment asked Google to accept.
+
+        Every refusal looks the same from outside: a malformed header, a token
+        for another audience and an unreachable Google all answer False, because
+        the difference is only ever useful to someone probing the door.
+        """
+
+        scheme, _, token = (authorization or "").partition(" ")
+        token = token.strip()
+        if scheme.lower() != "bearer" or not token:
+            return False
+        try:
+            status, body = self._transport(
+                "POST",
+                TOKENINFO_URL,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                body=urllib.parse.urlencode({"id_token": token}).encode(),
+            )
+            if status >= 400:
+                return False
+            claims = _json(body)
+        except GcpUnavailable:
+            return False
+        return (
+            claims.get("email") == self._service_account
+            and claims.get("email_verified") in {"true", True}
+            and claims.get("aud") == self._audience
+            and claims.get("iss") in GOOGLE_ISSUERS
+            and _expiry(claims) > time.time()
+        )
+
+
+def _expiry(claims: Mapping[str, object]) -> float:
+    """Seconds since the epoch, or zero for anything that will not read as one."""
+
+    try:
+        return float(claims["exp"])  # type: ignore[arg-type]
+    except (KeyError, TypeError, ValueError):
+        return 0.0
 
 
 def _json(body: bytes) -> Mapping[str, object]:
