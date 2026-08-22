@@ -1167,3 +1167,74 @@ Windows; no `.writing` leftovers after a save.
 
 Command: `python -m unittest discover -s <module>/tests`, from the repository
 root. `cd`-ing into the module first breaks the cross-module imports.
+
+## Verified milestone: final repository, workflow, and UI review
+
+Date: 2026-08-23
+
+Branch: `feature/multi-channel-analytics`
+
+Verified implementation HEAD: `4518b66d73acf31047c18e52253f64a52e15fa7e`
+
+Reviewed the complete feature branch against `main`, including the approved
+specifications, repository conventions, security boundaries, dependency and
+container inputs, and the current web workflow and responsive/accessibility
+surface.
+
+Completed commits:
+
+- `7be05a3` fixes filter-aware pagination and CSV export, adds a reauthorization
+  path, moves collection progress from a side-effecting GET to a CSRF-protected
+  POST, adds workspace creation/selection and empty-result recovery UI, improves
+  keyboard/mobile table and action layouts, replaces duplicate segment cards
+  with an accessible distribution meter, and tightens response headers.
+- `0c16e87` changes the Docker build context to an allowlist, excludes local
+  analysis artifacts and secrets, and moves test-only `httpx` to the development
+  requirements.
+- `4518b66` puts the bounded collection step under the same 3-request-per-minute
+  rate limit as collection enqueueing, centralizes web filter conversion and
+  query serialization, and replaces a private test-state mutation with an
+  explicit demo dataset injection seam.
+
+Verification evidence:
+
+- workspace-access: 54 tests passed;
+- channel-connections: 155 tests passed;
+- channel-data: 44 tests passed;
+- collection-jobs: 108 tests passed;
+- analysis-api: 19 tests passed;
+- web-ui: 183 tests passed;
+- subscriber-analytics: 29 tests passed;
+- total: 592 tests passed, with one expected Windows-only POSIX permission
+  enforcement test skipped;
+- `python -m compileall`: passed;
+- `ruff check web_ui/app.py web_ui/container.py web_ui/tests/test_web.py`: passed;
+- `git diff --check`: passed;
+- `python -m pip check`: passed;
+- `pip install --dry-run -r web_ui/requirements-dev.txt`: passed;
+- no tracked `.env`, PEM/private-key file, or OAuth client secret was found.
+
+The final Spec review found no missing, partial, unrequested, or incorrect
+behavior in the review diff. The final Standards review found no hard violation
+or high-confidence smell. Its earlier findings on collection-step rate limiting,
+filter propagation, and private test state are all closed by `4518b66`.
+
+Verification limitations:
+
+- no browser instance was available in this session, so screenshots and
+  interactive real-browser validation were not run;
+- Docker CLI was installed but Docker Desktop's daemon was stopped, so the
+  image build itself was not run.
+
+Current product boundary: the web UI exposes sign-in, workspace creation and
+selection, channel connection/reauthorization, collection progress, single-
+channel filtered analysis, pagination, and CSV export. Membership management,
+scheduled collection, multi-channel comparison, and saved views exist in the
+domain/application capabilities but are not exposed in the approved web UI
+slice.
+
+Next steps:
+
+1. Commit this progress record as a narrow checkpoint.
+2. Push `feature/multi-channel-analytics` to its matching `origin` branch and
+   verify local and remote HEAD equality.
