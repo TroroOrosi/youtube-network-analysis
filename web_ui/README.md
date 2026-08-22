@@ -90,15 +90,24 @@ for `openid profile email` and never for a YouTube scope, keeps no token after
 the exchange, and hands `workspace-access` the subject Google vouched for. Each
 attempt carries a single-use state that expires in ten minutes and lives in this
 process only, so a restart cancels sign-ins in flight instead of honouring a
-stale one. A refused consent, a replayed state and an unreachable Google all end
-in the same message on purpose.
+stale one. The same state is written to the browser as a `HttpOnly`,
+`SameSite=Lax` cookie and has to come back with it: Google's answer says who
+consented, not whose browser asked, so without that binding somebody could
+finish their own consent and hand the callback URL to the owner, leaving the
+owner signed in as them and connecting a channel into their workspace. A refused
+consent, a replayed state, a state from another browser and an unreachable
+Google all end in the same message on purpose.
 
 ## Security controls in this layer
 
 - Session cookie: `HttpOnly`, `Secure`, `SameSite=Lax`, server-side revocable.
-- CSRF: a `SameSite=Strict` double-submit token required on every POST.
+- CSRF: a `HttpOnly`, `SameSite=Strict` double-submit token required on every
+  POST. The page carries the token because the server renders it into the
+  form, so nothing here needs to read the cookie from script.
 - Security headers: CSP with `frame-ancestors 'none'`, `X-Frame-Options: DENY`,
-  `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, and
+  `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`,
+  `Strict-Transport-Security` for a year so the first request of a session
+  cannot be the plain http one that carries the cookies, and
   `Cache-Control: no-store` so no page is kept by a shared cache or handed back
   by the back button after a sign-out.
 - `/collecting` does real work when it is fetched, so it only does that work for

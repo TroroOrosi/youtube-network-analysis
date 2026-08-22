@@ -615,6 +615,25 @@ class GoogleLoginTests(GoogleFixture):
         self.assertEqual(refused.status_code, 400)
 
 
+    def test_a_state_from_another_browser_signs_nobody_in(self) -> None:
+        """A sign-in belongs to the browser that started it.
+
+        Google only says who consented, not whose browser asked. Somebody who
+        finishes their own consent and then feeds the callback URL to the
+        owner would otherwise leave the owner working inside their workspace.
+        """
+
+        state = parse_qs(urlsplit(self.start_sign_in()).query)["state"][0]
+        other = TestClient(
+            self.client.app, base_url=BASE_URL, follow_redirects=False
+        )
+
+        refused = other.get(f"/login/callback?state={state}&code=auth-code")
+
+        self.assertEqual(refused.status_code, 400)
+        self.assertEqual(other.get("/").status_code, 303)
+
+
 class GoogleModeTests(GoogleFixture):
     """The same guided flow, wired to the real adapters against a fake Google."""
 

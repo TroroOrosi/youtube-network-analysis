@@ -307,6 +307,7 @@ class FirestoreStateStore:
             {"delete": self._name(index)}
             for index in range(len(pieces), self._parts)
         ]
+        body = json.dumps({"writes": writes}, ensure_ascii=False).encode()
         status, _ = self._transport(
             "POST",
             f"{FIRESTORE_ROOT}/{self._documents}:commit",
@@ -314,10 +315,18 @@ class FirestoreStateStore:
                 "Authorization": f"Bearer {self._token()}",
                 "Content-Type": "application/json",
             },
-            body=json.dumps({"writes": writes}, ensure_ascii=False).encode(),
+            body=body,
         )
         if status != 200:
-            raise GcpUnavailable(f"writing {self._module} answered {status}")
+            # The size is in the message because it is the one number that
+            # explains a refusal nothing else here can: a commit is capped at
+            # about 10 MiB, and a module that grew into it needs the parts
+            # written under a new prefix and the head swapped, not a shorter
+            # retention period.
+            raise GcpUnavailable(
+                f"writing {self._module} ({len(pieces)} parts, "
+                f"{len(body)} bytes) answered {status}"
+            )
         self._parts = len(pieces)
 
     def _name(self, index: int) -> str:

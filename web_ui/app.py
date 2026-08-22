@@ -58,11 +58,12 @@ from workspace_access.models import (
 from workspace_access.errors import WorkspaceAccessError
 
 from .container import Services, build_services
-from .google_login import GoogleLogin, LoginFailed
+from .google_login import STATE_TTL, GoogleLogin, LoginFailed
 
 SESSION_COOKIE = "yna_session"
 WORKSPACE_COOKIE = "yna_workspace"
 CSRF_COOKIE = "yna_csrf"
+LOGIN_COOKIE = "yna_login"
 
 CONSENT_ORIGIN = "https://accounts.google.com"
 WRITE_LIMIT_PER_MINUTE = 30
@@ -314,6 +315,12 @@ def create_app(services: Services | None = None, *, base_url: str = "https://loc
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["X-Frame-Options"] = "DENY"
+        # Every page is served over TLS by Cloud Run, but the first request
+        # of a session can still be a plain http one that carries the
+        # cookies before the redirect. A year of HSTS removes that request.
+        response.headers["Strict-Transport-Security"] = (
+            "max-age=31536000; includeSubDomains"
+        )
         # Every page here is a signed-in view of one workspace, or a redirect
         # that depends on one. Stored in a shared cache or replayed by the back
         # button after a sign-out, any of them shows one person's channels to
@@ -409,7 +416,7 @@ def _render(
     }
     response = TEMPLATES.TemplateResponse(request, template, payload, status_code=status_code)
     response.set_cookie(
-        CSRF_COOKIE, csrf, httponly=False, secure=True, samesite="strict", path="/"
+        CSRF_COOKIE, csrf, httponly=True, secure=True, samesite="strict", path="/"
     )
     return response
 
@@ -530,7 +537,18 @@ def _register_routes(app: FastAPI) -> None:
         request: Request, csrf_token: str = Form("")
     ) -> Response:
         _check_csrf(request, csrf_token)
-        return _redirect(_login_provider(request).start()[0])
+        url, state = _login_provider(request).start()
+        response = _redirect(url)
+        response.set_cookie(
+            LOGIN_COOKIE,
+            state,
+            httponly=True,
+            secure=True,
+            samesite="lax",
+            max_age=int(STATE_TTL.total_seconds()),
+            path="/",
+        )
+        return response
 
     @app.get("/login/callback")
     def login_return(
@@ -539,15 +557,27 @@ def _register_routes(app: FastAPI) -> None:
         code: str | None = Query(None),
         error: str | None = Query(None),
     ) -> Response:
-        """Google's redirect back. `state` is the only proof this is ours."""
+        """Google's redirect back. The state must match this browser too.
 
+        The provider proves who signed in, not whose browser asked. A state
+        kept only in this process would let somebody finish their own
+        sign-in inside your browser and leave you working in their
+        workspace, so `start` also wrote the state as a cookie and it has
+        to come back with it.
+        """
+
+        started = request.cookies.get(LOGIN_COOKIE) or ""
+        if not secrets.compare_digest(started, state):
+            raise AppError("LOGIN_FAILED")
         try:
             identity = _login_provider(request).complete(
                 state=state, code=code, error=error
             )
         except LoginFailed as failure:
             raise AppError("LOGIN_FAILED") from failure
-        return _session_response(request, identity)
+        response = _session_response(request, identity)
+        response.delete_cookie(LOGIN_COOKIE, path="/")
+        return response
 
     @app.post("/logout")
     def logout(request: Request, csrf_token: str = Form("")) -> Response:
