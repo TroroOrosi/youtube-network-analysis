@@ -51,13 +51,6 @@ class StateStore(Protocol):
     def save(self, document: str) -> None: ...
 
 
-class Envelope(Protocol):
-    """Seals and opens bytes with a key this process never holds."""
-
-    def encrypt(self, plaintext: bytes) -> str: ...
-
-    def decrypt(self, sealed: str) -> bytes: ...
-
 
 AUTHORIZATION_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
@@ -101,28 +94,28 @@ class GoogleCredentialStore:
     It satisfies the write-only `CredentialVault` port; the read side is
     internal so no service or route can reach credential material through it.
 
-    Given a `state_store` and an `envelope` it also outlives the process. Only
-    the refresh token is written: an access token is good for an hour and can be
-    asked for again, so keeping it would multiply writes by every refresh and
-    put a second live secret at rest for no gain. A restored slot therefore
-    comes back already expired, and the first call refreshes it — which is the
-    path that runs hourly anyway.
+    Given a `state_store` it also outlives the process. Only the refresh token
+    is written: an access token is good for an hour and can be asked for again,
+    so keeping it would multiply writes by every refresh and put a second live
+    secret at rest for no gain. A restored slot therefore comes back already
+    expired, and the first call refreshes it — which is the path that runs
+    hourly anyway.
 
-    What is written is ciphertext from `envelope`, so the store holding it never
-    holds a token. Without an envelope nothing is written at all: a deployment
-    does not get to persist credentials in the clear by forgetting a flag.
+    What is written is the token itself, so the store handed in must be the
+    vault and nothing else: `web_ui.container` gives it the Secret Manager
+    store, never a module store. Without a store nothing is written at all, and
+    a deployment that persists modules without a vault is refused at startup
+    rather than left quietly dropping every credential.
     """
 
     def __init__(
         self,
         *,
         state_store: StateStore | None = None,
-        envelope: Envelope | None = None,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._slots: dict[tuple[str, str], ProviderCredential] = {}
-        self._state_store = state_store if envelope is not None else None
-        self._envelope = envelope
+        self._state_store = state_store
         self._now = now
         self._restore()
 
@@ -147,7 +140,7 @@ class GoogleCredentialStore:
         return self._slots.get((workspace_id, slot_id))
 
     def _persist(self) -> None:
-        if self._state_store is None or self._envelope is None:
+        if self._state_store is None:
             return
         kept = {
             f"{workspace_id}\x1f{slot_id}": {
@@ -157,7 +150,7 @@ class GoogleCredentialStore:
             for (workspace_id, slot_id), credential in self._slots.items()
             if credential.refresh_token is not None
         }
-        self._state_store.save(self._envelope.encrypt(json.dumps(kept).encode()))
+        self._state_store.save(json.dumps(kept))
 
     def _restore(self) -> None:
         """Read the slots back, or refuse to start.
@@ -168,12 +161,12 @@ class GoogleCredentialStore:
         unread — so the start fails instead and a person looks at it.
         """
 
-        if self._state_store is None or self._envelope is None:
+        if self._state_store is None:
             return
-        sealed = self._state_store.load()
-        if sealed is None:
+        document = self._state_store.load()
+        if document is None:
             return
-        kept = json.loads(self._envelope.decrypt(sealed))
+        kept = json.loads(document)
         expired = self._now() - timedelta(seconds=1)
         for key, entry in kept.items():
             workspace_id, _, slot_id = key.partition("\x1f")

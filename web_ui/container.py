@@ -25,7 +25,7 @@ from collection_jobs.service import CollectionJobsService
 from workspace_access.models import AccessSecret
 from workspace_access.service import WorkspaceAccessService
 
-from .gcp import GcsStateStore, KmsEnvelope, MetadataToken
+from .gcp import FirestoreStateStore, MetadataToken, SecretManagerStateStore
 from .demo_provider import DemoAuthorizationGateway, DemoDataGateway
 from .google_login import LOGIN_REDIRECT_URI_ID, GoogleLogin
 from .google_provider import (
@@ -97,33 +97,36 @@ def youtube_api_key_from_env(environment: Mapping[str, str]) -> str | None:
 
 @dataclass(frozen=True, slots=True)
 class Durability:
-    """Where documents rest, and the key that seals the one holding credentials.
+    """Where the module documents rest, and the vault the credentials rest in.
 
-    A bucket and a directory are alternatives, not layers: a host with a disk
-    uses the directory, and a host without one — Cloud Run — uses the bucket.
-    Neither is required, and with neither the process starts clean.
+    Firestore and a directory are alternatives, not layers: a host with a disk
+    uses the directory, and a host without one — Cloud Run — uses Firestore.
+    The credential document goes somewhere else entirely, to one Secret Manager
+    secret, because a refresh token is not a session digest: the vault is
+    encrypted at rest, granted to one service account on that one secret, and
+    records every access. Nothing here is required, and with nothing configured
+    the process starts clean.
 
-    `kms_key` is only for the credential document. The others hold session
-    digests and who may reach which workspace, which the bucket's own encryption
-    covers; a refresh token is worth the second lock, so that whoever can read
-    the bucket still cannot use what is in that one file.
+    Both names are full resource paths — `projects/<project>/databases/<db>`
+    and `projects/<project>/secrets/<secret>` — so no code has to ask the
+    platform which project it is running in.
     """
 
     directory: Path | None = None
-    bucket: str | None = None
-    kms_key: str | None = None
+    database: str | None = None
+    credential_secret: str | None = None
 
-    def store(self, module: str) -> FileStateStore | GcsStateStore | None:
-        if self.bucket is not None:
-            return GcsStateStore(self.bucket, f"{module}.json", _gcp_token())
+    def store(self, module: str) -> FileStateStore | FirestoreStateStore | None:
+        if self.database is not None:
+            return FirestoreStateStore(self.database, module, _gcp_token())
         if self.directory is not None:
             return FileStateStore(self.directory / f"{module}.json")
         return None
 
-    def envelope(self) -> KmsEnvelope | None:
-        if self.kms_key is None:
+    def credential_store(self) -> SecretManagerStateStore | None:
+        if self.credential_secret is None:
             return None
-        return KmsEnvelope(self.kms_key, _gcp_token())
+        return SecretManagerStateStore(self.credential_secret, _gcp_token())
 
 
 @cache
@@ -134,23 +137,24 @@ def _gcp_token() -> MetadataToken:
 
 
 def durability_from_env(environment: Mapping[str, str]) -> Durability:
-    """Read where documents rest, refusing a shape that would keep tokens bare.
+    """Read where documents rest, refusing a shape that would drop the tokens.
 
-    Somewhere to write and no key is the one combination worth stopping for: the
-    credential document would simply not be written, so every restart would ask
-    every owner to authorize again while the deployment looked durable. Say so
-    at the start rather than let that be discovered a restart at a time.
+    Somewhere to write and no vault is the one combination worth stopping for:
+    the credential document would simply not be written, so every restart would
+    ask every owner to authorize again while the deployment looked durable. Say
+    so at the start rather than let that be discovered a restart at a time.
     """
 
     keep = Durability(
         directory=state_dir_from_env(environment),
-        bucket=environment.get("YNA_STATE_BUCKET", "").strip() or None,
-        kms_key=environment.get("YNA_KMS_KEY", "").strip() or None,
+        database=environment.get("YNA_FIRESTORE_DATABASE", "").strip() or None,
+        credential_secret=environment.get("YNA_CREDENTIAL_SECRET", "").strip() or None,
     )
-    if (keep.bucket or keep.directory) and keep.kms_key is None:
+    if (keep.database or keep.directory) and keep.credential_secret is None:
         raise RuntimeError(
-            "state is persisted but YNA_KMS_KEY is unset, so credentials would "
-            "not be kept at all: set the key, or persist nothing"
+            "state is persisted but YNA_CREDENTIAL_SECRET is unset, so "
+            "credentials would not be kept at all: name the secret, or "
+            "persist nothing"
         )
     return keep
 
@@ -230,13 +234,12 @@ def build_services(
 
     Without `google` the provider gateways are demo fakes: no request leaves
     this process and no real credential exists. With `google` the real adapters
-    talk to Google under the same ports; the credential vault is still the
-    in-memory reference one, so a deployment must replace it with a KMS.
+    talk to Google under the same ports, and the credential vault is the one
+    `durability` names — in memory unless that is a Secret Manager secret.
 
-    With `state_dir` every module keeps its state across a restart. The
-    credentials do not: the vault is still in memory, so a restored connection
-    is listed but must be authorized again before it can collect. A document
-    this code cannot read raises here rather than starting empty.
+    With `state_dir` every module keeps its state across a restart, and with a
+    `durability` that names a secret so do the credentials. A document this code
+    cannot read raises here rather than starting empty.
     """
 
     keep = durability if durability is not None else Durability(directory=state_dir)
@@ -251,10 +254,7 @@ def build_services(
         vault = InMemoryCredentialVault()
         authorization_hosts = (urlsplit(base_url).hostname or "localhost",)
     else:
-        store = GoogleCredentialStore(
-            state_store=keep.store("google_credentials"),
-            envelope=keep.envelope(),
-        )
+        store = GoogleCredentialStore(state_store=keep.credential_store())
         gateway = GoogleAuthorizationGateway(google, store, transport=transport)
         data_gateway = GoogleDataGateway(
             google, store, transport=transport, api_key=youtube_api_key

@@ -41,8 +41,8 @@ connect with `PROVIDER_AUTHORIZATION_FAILED`. Real Google authorization uses
 | Segments, filters, export | Real `analytics-core` and `analysis-api` |
 | Google OAuth and YouTube API | Real adapters in `google_provider.py`, used only when a client is registered; otherwise the demo gateways in `demo_provider.py` |
 | Login identity provider | Real Google sign-in in `google_login.py` when a client is registered; otherwise a demo display name |
-| Credential vault | **In-memory: not encryption and not a KMS** |
-| Storage | In-memory unless `YNA_STATE_DIR` is set; see below |
+| Credential vault | **In-memory unless `YNA_CREDENTIAL_SECRET` names a Secret Manager secret** |
+| Storage | In-memory unless `YNA_STATE_DIR` or `YNA_FIRESTORE_DATABASE` is set; see below |
 
 Without `YNA_GOOGLE_CLIENT_ID` and `YNA_GOOGLE_CLIENT_SECRET` the app stays on
 the demo gateways: the demo consent screen says so on the page, no request
@@ -128,6 +128,7 @@ its state there instead:
 
 ```powershell
 $env:YNA_STATE_DIR = "C:\ProgramData\yna-state"
+$env:YNA_CREDENTIAL_SECRET = "projects/<project>/secrets/yna-owner-credentials"
 ```
 
 - one document per module (`workspace_access.json`, `channel_connections.json`,
@@ -144,9 +145,20 @@ $env:YNA_STATE_DIR = "C:\ProgramData\yna-state"
   beginning empty, which would show a live owner an unlinked channel and spend
   YouTube quota collecting data that is already there.
 
-**Credentials are deliberately not kept.** The vault is still in memory, so
-after a restart a connection is listed but must be authorized again before it
-can collect. That ends when the KMS below is done, not before.
+**Persisting anything at all requires a vault for the credentials.** Set
+`YNA_CREDENTIAL_SECRET` to the full resource name of a Secret Manager secret,
+`projects/<project>/secrets/<secret>`, alongside either of the two stores here,
+or the start is refused. Keeping the module documents while dropping the tokens
+would leave every connection listed and unusable, and would look durable while
+doing it — the refusal exists so that is not discovered a restart at a time.
+Only the refresh token is written, so a restored connection comes back already
+expired and refreshes on its first call.
+
+On a host without a disk — Cloud Run — set `YNA_FIRESTORE_DATABASE` to
+`projects/<project>/databases/(default)` instead of a directory. The same four
+documents then live in a `state` collection, one document each holding the
+module's text in one field, and Firestore caps a document a little under 1 MiB;
+`channel_data` is the one whose text grows with what was collected.
 
 Two processes must not share one directory: each keeps the whole document in
 memory and the last writer wins.
@@ -364,20 +376,20 @@ enough to plan for:
   is gone while the record of it is not, and the next collection run fails until
   the owner presses 接続する and consents again.
 
-Either way the fix is the same KMS named below, and until it exists this is the
+Either way the fix is the same vault named below, and until it exists this is the
 behaviour to tell owners about rather than let them meet during a run.
 
 ## Still required before production
 
-A managed credential vault or KMS and background workers for collection. Each
-is an explicit later decision.
+A deployed credential vault and background workers for collection. Each is an
+explicit later decision.
 
-The vault is now half done and not yet deployed: the mechanism that lets
-credentials outlive a process is written and tested, and the two adapters that
-would carry it are the wrong ones — both cost money, and one creates a resource
-a project can never remove. [`PLAN-credential-vault.md`](../PLAN-credential-vault.md)
-says what replaces them and what is left to do. Until that lands, everything
-below about credentials still holds.
+The vault is written and not yet deployed: the mechanism that lets
+credentials outlive a process, the Secret Manager store that holds them and the
+Firestore store that holds the module documents are all in the code and tested,
+and no deployment uses them yet. [`PLAN-credential-vault.md`](../PLAN-credential-vault.md)
+holds the design and the deployment steps that remain. Until those land,
+everything below about credentials still holds.
 
 Persistent storage is now available but is not a database: `YNA_STATE_DIR`
 keeps one JSON document per module and rewrites each in full, which is right
