@@ -10,6 +10,13 @@ from types import MappingProxyType
 from typing import Mapping
 
 
+# What a principal that is a job, not a person, is called. Real user
+# identifiers are minted as `user_<hex>`, so nothing a person is ever called can
+# collide with this: a record naming one of these was written by work running on
+# a workspace's behalf with no member behind it.
+JOB_PRINCIPAL_PREFIX = "job:"
+
+
 class Role(str, Enum):
     OWNER = "OWNER"
     MEMBER = "MEMBER"

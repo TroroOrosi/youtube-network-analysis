@@ -34,6 +34,7 @@ from .models import (
     ErrorCode,
     GrantMembership,
     IssuedSession,
+    JOB_PRINCIPAL_PREFIX,
     Membership,
     Permission,
     RevokeMembership,
@@ -525,6 +526,51 @@ class WorkspaceAccessService:
                 state=actor,
                 workspace=workspace,
                 membership=membership,
+                resolved_at=self._now(),
+            )
+
+    def issue_job_context(
+        self, workspace_id: str, required_permission: Permission
+    ) -> WorkspaceContext:
+        """Authority for work nobody is watching, issued without a session.
+
+        A scheduled drain has no browser, no cookie, and no member behind it,
+        and the one thing it must never do is borrow one: a session is a
+        person's, it can be revoked by that person, and work that outlives
+        their evening would either die with it or, worse, keep acting as them.
+
+        So this issues a context instead of resolving one. It is bound to one
+        workspace, carries exactly the one permission asked for, and names a
+        principal that is not a user and a session id that is not a session, so
+        nothing it does can be mistaken in a record for something a member did.
+        Nothing stores it: it lasts as long as the call, and the next call makes
+        another.
+        """
+
+        if not isinstance(required_permission, Permission):
+            raise WorkspaceAccessError(
+                ErrorCode.INVALID_INPUT,
+                message="Required permission is invalid",
+                field="required_permission",
+            )
+        with self._lock:
+            if not self._valid_identifier(workspace_id):
+                raise_workspace_not_found_or_forbidden()
+            workspace = self._workspaces_by_id.get(workspace_id)
+            if workspace is None:
+                raise_workspace_not_found_or_forbidden()
+            principal = f"{JOB_PRINCIPAL_PREFIX}{workspace.workspace_id}"
+            return WorkspaceContext(
+                workspace_id=workspace.workspace_id,
+                user_id=principal,
+                membership_id=principal,
+                # The role is the lower of the two the MVP has, and it decides
+                # nothing here: the permissions are the single one asked for,
+                # not the set the role would carry.
+                role=Role.MEMBER,
+                permissions=frozenset({required_permission}),
+                session_id=principal,
+                authorization_revision=workspace.authorization_revision,
                 resolved_at=self._now(),
             )
 
