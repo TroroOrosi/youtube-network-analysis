@@ -1,5 +1,5 @@
-# Hosted deployment of web_ui. The domain modules are standard-library only, so
-# web_ui/requirements.txt is the whole dependency set.
+# Hosted deployment of web_ui. Test-only dependencies live in
+# web_ui/requirements-dev.txt and never enter this image.
 FROM python:3.14-slim
 
 WORKDIR /app

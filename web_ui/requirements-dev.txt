@@ -1,0 +1,4 @@
+-r requirements.txt
+
+# FastAPI/Starlette integration tests only; not installed in the runtime image.
+httpx==0.28.1
