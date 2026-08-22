@@ -167,9 +167,22 @@ expired and refreshes on its first call.
 
 On a host without a disk — Cloud Run — set `YNA_FIRESTORE_DATABASE` to
 `projects/<project>/databases/(default)` instead of a directory. The same four
-documents then live in a `state` collection, one document each holding the
-module's text in one field, and Firestore caps a document a little under 1 MiB;
-`channel_data` is the one whose text grows with what was collected.
+documents then live in a `state` collection, each holding the module's text in
+one field.
+
+Firestore caps a document a little under 1 MiB, and `channel_data` is the one
+whose text grows with what was collected, so a module's text is split when it
+passes `MAX_DOCUMENT_BYTES` (900,000). The head document, still named after the
+module, holds the first piece and how many pieces there are; `channel_data~1`,
+`channel_data~2` and so on hold the rest in order, and a read joins them back.
+Every piece is cut on a character boundary and every piece is written in one
+commit, which Firestore applies as a unit, so a save is still all or nothing
+and a document is still text a reader can decode without this code. A module
+that fits in one document is written exactly as it was before, which is what an
+already-deployed database holds and what it keeps being read as.
+
+What bounds a module is therefore the size of one commit — several megabytes —
+rather than the size of one document.
 
 Two processes must not share one directory: each keeps the whole document in
 memory and the last writer wins.
@@ -479,9 +492,9 @@ Both drivers also do the tidying that the stored state needs: the drain asks
 `collection-jobs` to drop what is past its retention, and the browser driver
 asks `channel-data` and `channel-connections` the same when a collection
 finishes, under the owner's own authority. Retention periods are unchanged;
-they simply have a caller now. Each module keeps its whole state in one stored
-document with a hard size limit, so records nobody removes are what eventually
-stop every write.
+they simply have a caller now. Each module keeps its whole state as one stored
+text that is rewritten in full on every change, so records nobody removes are
+paid for on every write, and past a few megabytes they stop the write outright.
 
 ### Setting up the scheduler
 
@@ -532,7 +545,9 @@ Nothing, and here is the arithmetic rather than the assurance:
   would leave under half of it for people using the site. The daily quota stops
   collection long before that, so it is a ceiling and not an expectation.
 - **Firestore** allows 20,000 writes a day. A slice writes the module documents
-  it touched, once per slice, not once per provider call.
+  it touched, once per slice, not once per provider call. A module whose text
+  has grown past one document counts as one write per piece, so a `channel_data`
+  of three pieces spends three of that allowance per save.
 - The scheduler job itself makes no image, holds no storage, and adds no
   always-on instance: `--min-instances 0` still stands, and the drain simply
   cold-starts.

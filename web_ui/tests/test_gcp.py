@@ -14,6 +14,7 @@ from web_ui.gcp import (
     FIRESTORE_ROOT,
     SECRET_MANAGER_ROOT,
     FirestoreStateStore,
+    MAX_DOCUMENT_BYTES,
     GcpUnavailable,
     MetadataToken,
     ScheduledCaller,
@@ -192,6 +193,7 @@ class SecretManagerStateStoreTests(unittest.TestCase):
 
 DATABASE = "projects/p/databases/(default)"
 DOCUMENT_URL = f"{FIRESTORE_ROOT}/{DATABASE}/documents/state/channel_data"
+COMMIT_URL = f"{FIRESTORE_ROOT}/{DATABASE}/documents:commit"
 
 
 class FirestoreStateStoreTests(unittest.TestCase):
@@ -202,9 +204,33 @@ class FirestoreStateStoreTests(unittest.TestCase):
             transport,
         )
 
-    def held(self, document: str) -> tuple[int, bytes]:
-        fields = {"fields": {"document": {"stringValue": document}}}
-        return 200, json.dumps(fields).encode()
+    def held(self, document: str, parts: int = 0) -> tuple[int, bytes]:
+        """A document as Firestore answers it; no count is one written before."""
+
+        fields: dict[str, object] = {"document": {"stringValue": document}}
+        if parts:
+            fields["parts"] = {"integerValue": str(parts)}
+        return 200, json.dumps({"fields": fields}).encode()
+
+    def chain(self, *pieces: str) -> dict[str, tuple[int, bytes]]:
+        """A split text as the documents holding it, parts named before the head.
+
+        `FakeTransport` answers the first key the url starts with, and the head
+        url is a prefix of every part url, so the parts have to come first.
+        """
+
+        replies = {
+            f"{DOCUMENT_URL}~{index}": self.held(piece)
+            for index, piece in enumerate(pieces[1:], start=1)
+        }
+        replies[DOCUMENT_URL] = self.held(pieces[0], len(pieces))
+        return replies
+
+    def written(self, transport) -> list[dict]:
+        method, url, _, body = transport.requests[-1]
+        self.assertEqual(method, "POST")
+        self.assertEqual(url, COMMIT_URL)
+        return json.loads(body or b"")["writes"]
 
     def test_a_missing_document_reads_as_nothing_rather_than_failing(self) -> None:
         store, _ = self.store({DOCUMENT_URL: (404, b"")})
@@ -226,21 +252,137 @@ class FirestoreStateStoreTests(unittest.TestCase):
             store.load()
 
     def test_saving_writes_the_text_as_the_one_field(self) -> None:
-        store, transport = self.store({DOCUMENT_URL: (200, b"{}")})
+        store, transport = self.store({COMMIT_URL: (200, b"{}")})
         store.save('{"a":1}')
-        method, url, headers, body = transport.requests[0]
-        self.assertEqual(method, "PATCH")
-        self.assertEqual(url, DOCUMENT_URL)
+        _, _, headers, _ = transport.requests[0]
         self.assertEqual(headers["Authorization"], "Bearer sa-token")
         self.assertEqual(
-            json.loads(body or b""),
-            {"fields": {"document": {"stringValue": '{"a":1}'}}},
+            self.written(transport),
+            [
+                {
+                    "update": {
+                        "name": f"{DATABASE}/documents/state/channel_data",
+                        "fields": {
+                            "document": {"stringValue": '{"a":1}'},
+                            "parts": {"integerValue": "1"},
+                        },
+                    }
+                }
+            ],
         )
 
     def test_a_refused_write_is_raised(self) -> None:
-        store, _ = self.store({DOCUMENT_URL: (403, b"")})
+        store, _ = self.store({COMMIT_URL: (403, b"")})
         with self.assertRaises(GcpUnavailable):
             store.save("{}")
+
+    def test_text_past_the_cap_is_split_across_documents_in_one_write(self) -> None:
+        """The 1 MiB a document holds is not the ceiling on a module."""
+
+        document = "あ" * MAX_DOCUMENT_BYTES
+        store, transport = self.store({COMMIT_URL: (200, b"{}")})
+        store.save(document)
+        writes = self.written(transport)
+        self.assertEqual(len(transport.requests), 1)
+        self.assertGreater(len(writes), 1)
+        names = [write["update"]["name"] for write in writes]
+        self.assertEqual(names[0], f"{DATABASE}/documents/state/channel_data")
+        self.assertEqual(names[1], f"{DATABASE}/documents/state/channel_data~1")
+        pieces = [
+            write["update"]["fields"]["document"]["stringValue"] for write in writes
+        ]
+        self.assertEqual("".join(pieces), document)
+        self.assertEqual(
+            writes[0]["update"]["fields"]["parts"],
+            {"integerValue": str(len(writes))},
+        )
+
+    def test_no_piece_is_larger_than_a_document_or_a_broken_character(self) -> None:
+        """A cut inside a character would store bytes nothing can decode."""
+
+        store, transport = self.store({COMMIT_URL: (200, b"{}")})
+        store.save("あ" * MAX_DOCUMENT_BYTES)
+        for write in self.written(transport):
+            piece = write["update"]["fields"]["document"]["stringValue"]
+            self.assertLessEqual(len(piece.encode()), MAX_DOCUMENT_BYTES)
+            self.assertGreater(len(piece), 0)
+
+    def test_a_split_text_is_read_back_whole_and_in_order(self) -> None:
+        store, transport = self.store(self.chain("one", "two", "three"))
+        self.assertEqual(store.load(), "onetwothree")
+        self.assertEqual(len(transport.requests), 3)
+
+    def test_a_part_the_head_counts_but_nothing_holds_stops_the_start(self) -> None:
+        """Text that stops early is not the text this wrote."""
+
+        replies = self.chain("one", "two")
+        replies[f"{DOCUMENT_URL}~1"] = (404, b"")
+        store, _ = self.store(replies)
+        with self.assertRaises(GcpUnavailable):
+            store.load()
+
+    def test_shrunk_text_drops_the_parts_it_no_longer_fills(self) -> None:
+        replies = self.chain("one", "two", "three")
+        replies[COMMIT_URL] = (200, b"{}")
+        store, transport = self.store(replies)
+        store.load()
+        store.save("small")
+        self.assertEqual(
+            [write for write in self.written(transport) if "delete" in write],
+            [
+                {"delete": f"{DATABASE}/documents/state/channel_data~1"},
+                {"delete": f"{DATABASE}/documents/state/channel_data~2"},
+            ],
+        )
+
+
+class FakeFirestore:
+    """Enough of the database to answer what the store writes into it."""
+
+    def __init__(self) -> None:
+        self.documents: dict[str, dict] = {}
+
+    def __call__(
+        self, method: str, url: str, *, headers: dict[str, str], body: bytes | None
+    ) -> tuple[int, bytes]:
+        if method == "GET":
+            held = self.documents.get(url[len(FIRESTORE_ROOT) + 1 :])
+            if held is None:
+                return 404, b""
+            return 200, json.dumps({"fields": held}).encode()
+        for write in json.loads(body or b"")["writes"]:
+            if "delete" in write:
+                self.documents.pop(write["delete"], None)
+            else:
+                self.documents[write["update"]["name"]] = write["update"]["fields"]
+        return 200, b"{}"
+
+
+class FirestoreRoundTripTests(unittest.TestCase):
+    """What a restart reads has to be what the process before it wrote."""
+
+    def store(self, database: FakeFirestore) -> FirestoreStateStore:
+        return FirestoreStateStore(DATABASE, "channel_data", token, transport=database)
+
+    def big(self) -> str:
+        document = json.dumps({"titles": ["視聴者の名前" * 12] * 4_000})
+        self.assertGreater(len(document.encode()), MAX_DOCUMENT_BYTES)
+        return document
+
+    def test_a_module_larger_than_a_document_reads_back_exactly(self) -> None:
+        database = FakeFirestore()
+        document = self.big()
+        self.store(database).save(document)
+        self.assertGreater(len(database.documents), 1)
+        self.assertEqual(self.store(database).load(), document)
+
+    def test_a_module_that_shrinks_leaves_no_stale_part_to_read(self) -> None:
+        database = FakeFirestore()
+        store = self.store(database)
+        store.save(self.big())
+        store.save('{"titles":[]}')
+        self.assertEqual(len(database.documents), 1)
+        self.assertEqual(self.store(database).load(), '{"titles":[]}')
 
 
 class DurabilityTests(unittest.TestCase):

@@ -35,6 +35,8 @@ TOKENINFO_URL = "https://oauth2.googleapis.com/tokeninfo"
 GOOGLE_ISSUERS = frozenset({"https://accounts.google.com", "accounts.google.com"})
 STATE_COLLECTION = "state"
 DOCUMENT_FIELD = "document"
+PARTS_FIELD = "parts"
+MAX_DOCUMENT_BYTES = 900_000
 REQUEST_TIMEOUT_SECONDS = 20.0
 TOKEN_REFRESH_MARGIN_SECONDS = 60
 
@@ -238,22 +240,28 @@ class SecretManagerStateStore:
 
 
 class FirestoreStateStore:
-    """One module's state document, kept as one Firestore document.
+    """One module's state text, kept as a Firestore document and its parts.
 
     It satisfies the same `StateStore` port as the file store and is what a host
-    without a disk uses instead. A write replaces the whole document or does not
-    happen, so a process killed mid-save leaves the previous text intact — the
-    property the file store gets from a rename.
+    without a disk uses instead. A write replaces the whole text or does not
+    happen — every part goes in one commit, which Firestore applies as a unit —
+    so a process killed mid-save leaves the previous text intact, the property
+    the file store gets from a rename.
 
-    The document is a single field holding the module's own text, so this store
+    A document is a single field holding the module's own text, so this store
     never learns what is inside and the modules stay independently extractable.
-    Firestore caps one document a little under 1 MiB; `channel_data` is the one
-    whose text grows with what was collected, and it is the one that would meet
-    that ceiling first.
+    Firestore caps one document a little under 1 MiB and `channel_data` grows
+    with what was collected, so text past `MAX_DOCUMENT_BYTES` is split: the
+    head document holds the first piece and how many pieces there are, and
+    `module~1`, `module~2` ... hold the rest in order. A piece is cut on a
+    character boundary, so each one is text a reader can decode on its own.
+    What bounds a module is now the size of one commit, several megabytes,
+    rather than the size of one document.
 
     A read that fails is raised, not swallowed: starting empty would show a live
     owner an unlinked channel and spend YouTube quota collecting data that is
-    already there.
+    already there. A part the head counts but the database does not hold is such
+    a failure too — text that stops early is not the text this wrote.
     """
 
     def __init__(
@@ -265,16 +273,67 @@ class FirestoreStateStore:
         transport: Transport = http_transport,
     ) -> None:
         self._module = module
-        self._url = (
-            f"{FIRESTORE_ROOT}/{database}/documents/{STATE_COLLECTION}/{module}"
-        )
+        self._documents = f"{database}/documents"
         self._token = token
         self._transport = transport
+        self._parts = 1
 
     def load(self) -> str | None:
+        head = self._read(0)
+        if head is None:
+            return None
+        text, parts = head
+        pieces = [text]
+        for index in range(1, parts):
+            part = self._read(index)
+            if part is None:
+                raise GcpUnavailable(f"{self._module} is missing part {index}")
+            pieces.append(part[0])
+        self._parts = parts
+        return "".join(pieces)
+
+    def save(self, document: str) -> None:
+        pieces = _split(document, MAX_DOCUMENT_BYTES)
+        writes: list[dict[str, object]] = [
+            {
+                "update": {
+                    "name": self._name(index),
+                    "fields": self._fields(piece, index, len(pieces)),
+                }
+            }
+            for index, piece in enumerate(pieces)
+        ]
+        writes += [
+            {"delete": self._name(index)}
+            for index in range(len(pieces), self._parts)
+        ]
+        status, _ = self._transport(
+            "POST",
+            f"{FIRESTORE_ROOT}/{self._documents}:commit",
+            headers={
+                "Authorization": f"Bearer {self._token()}",
+                "Content-Type": "application/json",
+            },
+            body=json.dumps({"writes": writes}, ensure_ascii=False).encode(),
+        )
+        if status != 200:
+            raise GcpUnavailable(f"writing {self._module} answered {status}")
+        self._parts = len(pieces)
+
+    def _name(self, index: int) -> str:
+        tail = self._module if index == 0 else f"{self._module}~{index}"
+        return f"{self._documents}/{STATE_COLLECTION}/{tail}"
+
+    def _fields(self, piece: str, index: int, parts: int) -> dict[str, object]:
+        fields: dict[str, object] = {DOCUMENT_FIELD: {"stringValue": piece}}
+        if index == 0:
+            fields[PARTS_FIELD] = {"integerValue": str(parts)}
+        return fields
+
+    def _read(self, index: int) -> tuple[str, int] | None:
         status, body = self._transport(
             "GET",
-            self._url,
+            f"{FIRESTORE_ROOT}/{self._name(index)}",
             headers={"Authorization": f"Bearer {self._token()}"},
             body=None,
         )
@@ -282,27 +341,13 @@ class FirestoreStateStore:
             return None
         if status != 200:
             raise GcpUnavailable(f"reading {self._module} answered {status}")
-        fields = _json(body).get("fields")
-        field = fields.get(DOCUMENT_FIELD) if isinstance(fields, Mapping) else None
+        held = _json(body).get("fields")
+        fields = held if isinstance(held, Mapping) else {}
+        field = fields.get(DOCUMENT_FIELD)
         text = field.get("stringValue") if isinstance(field, Mapping) else None
         if not isinstance(text, str):
             raise GcpUnavailable(f"{self._module} holds no document this wrote")
-        return text
-
-    def save(self, document: str) -> None:
-        status, _ = self._transport(
-            "PATCH",
-            self._url,
-            headers={
-                "Authorization": f"Bearer {self._token()}",
-                "Content-Type": "application/json",
-            },
-            body=json.dumps(
-                {"fields": {DOCUMENT_FIELD: {"stringValue": document}}}
-            ).encode(),
-        )
-        if status != 200:
-            raise GcpUnavailable(f"writing {self._module} answered {status}")
+        return text, _parts_held(fields.get(PARTS_FIELD))
 
 
 class ScheduledCaller:
@@ -372,6 +417,43 @@ def _expiry(claims: Mapping[str, object]) -> float:
         return float(claims["exp"])  # type: ignore[arg-type]
     except (KeyError, TypeError, ValueError):
         return 0.0
+
+
+def _split(text: str, limit: int) -> list[str]:
+    """The text as pieces of at most `limit` bytes, each one decodable alone.
+
+    Firestore measures a document in UTF-8 bytes and a Japanese title is three
+    of them per character, so the cut is made on the encoded form and then
+    walked back to a character boundary. Text that already fits is one piece,
+    which is what every module's text is until a collection grows past the cap.
+    """
+
+    raw = text.encode()
+    if len(raw) <= limit:
+        return [text]
+    pieces: list[str] = []
+    start = 0
+    while start < len(raw):
+        end = min(start + limit, len(raw))
+        while end < len(raw) and raw[end] & 0xC0 == 0x80:
+            end -= 1
+        pieces.append(raw[start:end].decode())
+        start = end
+    return pieces
+
+
+def _parts_held(field: object) -> int:
+    """How many documents the text was split across; one, before it ever was.
+
+    A document written before this store could split reads as a single part,
+    which is exactly what it is.
+    """
+
+    value = field.get("integerValue") if isinstance(field, Mapping) else None
+    try:
+        return max(1, int(value))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 1
 
 
 def _json(body: bytes) -> Mapping[str, object]:
