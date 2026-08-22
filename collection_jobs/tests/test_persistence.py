@@ -112,6 +112,51 @@ class RunRestartTests(RestartFixture):
         )
 
 
+class SuspendedRunTests(RestartFixture):
+    """A run that stopped for want of units, restarted in another process.
+
+    This is the case the whole resume mechanism exists for: the collection is
+    larger than a day of quota, and the process that started it is long gone by
+    the time the budget refills. What it covered has to still count, and what it
+    covered must not be fetched again.
+    """
+
+    quota_units = 12
+
+    def owner_content(self, key: str = "content-1"):
+        return self.jobs.enqueue_run(
+            self.owner,
+            EnqueueRun(
+                connection_id=self.connection.connection_id,
+                kind=RunKind.OWNER_CONTENT,
+                idempotency_key=key,
+            ),
+        )
+
+    def test_a_run_that_ran_out_of_units_continues_in_the_next_process(self) -> None:
+        run = self.owner_content()
+        stopped = self.jobs.execute_run(
+            self.owner, ExecuteRun(run_id=run.run_id, idempotency_key="execute-1")
+        )
+        self.assertEqual(stopped.status, RunStatus.QUEUED)
+        self.assertIsNotNone(stopped.next_attempt_at)
+
+        self.restart()
+        self.stack.clock.advance(timedelta(days=1))
+        finished = self.jobs.execute_run(
+            self.owner, ExecuteRun(run_id=run.run_id, idempotency_key="execute-2")
+        )
+
+        self.assertEqual(finished.status, RunStatus.SUCCEEDED)
+        covered = [
+            call.video_id
+            for call in self.stack.data_gateway.calls
+            if call.operation == "LIST_VIDEO_COMMENT_AUTHORS"
+        ]
+        self.assertEqual(sorted(set(covered)), ["video-1", "video-2", "video-3"])
+        self.assertEqual(len(covered), len(set(covered)))
+
+
 class SpentQuotaTests(RestartFixture):
     """One call costs more than what a run leaves behind, so the ledger shows."""
 

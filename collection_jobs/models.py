@@ -279,12 +279,24 @@ class EnqueueRun:
 
 @dataclass(frozen=True, slots=True)
 class ExecuteRun:
+    """One slice of a run.
+
+    `slice_seconds` bounds how long this call may keep working before it saves
+    where it got to and returns the run to `QUEUED`. Without it a run works
+    until it finishes or stops, which is what a caller with no deadline of its
+    own wants; with it, a caller that must answer an HTTP request can hand back
+    a run that is still making progress.
+    """
+
     run_id: str
     idempotency_key: str
+    slice_seconds: int | None = None
 
     def __post_init__(self) -> None:
         _identifier(self.run_id, "run_id")
         _identifier(self.idempotency_key, "idempotency_key")
+        if self.slice_seconds is not None:
+            _count(self.slice_seconds, "slice_seconds", minimum=1)
 
 
 @dataclass(frozen=True, slots=True)

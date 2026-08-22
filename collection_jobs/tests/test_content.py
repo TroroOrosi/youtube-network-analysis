@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import unittest
+from datetime import UTC, datetime, timedelta
 
 from channel_connections.ports import ProviderUnavailable
 from channel_data.models import CollectionKind, CollectionStatus
 from collection_jobs.errors import CollectionJobsError
 from collection_jobs.models import EnqueueRun, ExecuteRun, RunFailureReason, RunKind, RunStatus
-from collection_jobs.tests.support import build_stack, context
+from collection_jobs.tests.support import NOW, TickingClock, build_stack, context
 
 
 class OwnerContentFixture(unittest.TestCase):
@@ -109,7 +110,115 @@ class OwnerContentExecutionTests(OwnerContentFixture):
             self.stack.channel_data.load_silent_analysis_dataset(self.owner, "UC_channel_1")
         self.assertEqual(getattr(raised.exception, "code", None), "DATASET_NOT_READY")
 
-    def test_a_quota_stop_during_coverage_keeps_prior_data_readable(self) -> None:
+    def test_a_quota_stop_during_coverage_queues_the_run_for_tomorrow(self) -> None:
+        """Out of units is not a failure any more: it is a run waiting for midnight.
+
+        The budget is spent for the UTC day, so there is nothing this run can
+        do until the ledger rolls over. It keeps what it covered, holds the
+        collection open, and names the first moment it can afford to continue.
+        """
+
+        limited = build_stack(daily_quota_units=6)
+        owner = context()
+        connection = limited.connect(owner)
+        queued = limited.jobs.enqueue_run(
+            owner,
+            EnqueueRun(
+                connection_id=connection.connection_id,
+                kind=RunKind.OWNER_CONTENT,
+                idempotency_key="c1",
+            ),
+        )
+
+        stopped = limited.jobs.execute_run(
+            owner, ExecuteRun(run_id=queued.run_id, idempotency_key="x1")
+        )
+
+        self.assertEqual(stopped.status, RunStatus.QUEUED)
+        self.assertIsNone(stopped.failure_reason)
+        self.assertEqual(
+            stopped.next_attempt_at, datetime(2026, 8, 22, tzinfo=UTC)
+        )
+
+    def test_a_run_out_of_units_continues_the_next_day_without_refetching(self) -> None:
+        """The whole point of suspending: yesterday's calls are not spent again.
+
+        A collection larger than one day of units can only ever finish if the
+        second day starts where the first stopped. The gateway records every
+        call it was asked for, so covering a video twice would show up here.
+        """
+
+        limited = build_stack(daily_quota_units=12)
+        owner = context()
+        connection = limited.connect(owner)
+        queued = limited.jobs.enqueue_run(
+            owner,
+            EnqueueRun(
+                connection_id=connection.connection_id,
+                kind=RunKind.OWNER_CONTENT,
+                idempotency_key="c1",
+            ),
+        )
+        stopped = limited.jobs.execute_run(
+            owner, ExecuteRun(run_id=queued.run_id, idempotency_key="x1")
+        )
+        self.assertEqual(stopped.status, RunStatus.QUEUED)
+
+        limited.clock.advance(timedelta(days=1))
+        finished = limited.jobs.execute_run(
+            owner, ExecuteRun(run_id=queued.run_id, idempotency_key="x2")
+        )
+
+        self.assertEqual(finished.status, RunStatus.SUCCEEDED)
+        covered = [
+            call.video_id
+            for call in limited.data_gateway.calls
+            if call.operation == "LIST_VIDEO_COMMENT_AUTHORS"
+        ]
+        self.assertEqual(sorted(set(covered)), ["video-1", "video-2", "video-3"])
+        self.assertEqual(len(covered), len(set(covered)))
+
+    def test_a_slice_that_runs_out_of_time_is_continued_by_the_next_call(self) -> None:
+        """What a browser does: many short calls, one run, nothing lost between them."""
+
+        sliced = build_stack(jobs_clock=TickingClock(NOW, timedelta(seconds=1)))
+        owner = context()
+        connection = sliced.connect(owner)
+        queued = sliced.jobs.enqueue_run(
+            owner,
+            EnqueueRun(
+                connection_id=connection.connection_id,
+                kind=RunKind.OWNER_CONTENT,
+                idempotency_key="c1",
+            ),
+        )
+
+        statuses = []
+        run = queued
+        for index in range(12):
+            run = sliced.jobs.execute_run(
+                owner,
+                ExecuteRun(
+                    run_id=queued.run_id,
+                    idempotency_key=f"slice-{index}",
+                    slice_seconds=4,
+                ),
+            )
+            statuses.append(run.status)
+            if run.status is not RunStatus.QUEUED:
+                break
+
+        self.assertEqual(run.status, RunStatus.SUCCEEDED)
+        self.assertGreater(len(statuses), 1)
+        covered = [
+            call.video_id
+            for call in sliced.data_gateway.calls
+            if call.operation == "LIST_VIDEO_COMMENT_AUTHORS"
+        ]
+        self.assertEqual(sorted(set(covered)), ["video-1", "video-2", "video-3"])
+        self.assertEqual(len(covered), len(set(covered)))
+
+    def test_a_suspended_run_leaves_the_accepted_dataset_alone(self) -> None:
         self.run_subscribers()
         self.run_owner_content()
         before = self.stack.channel_data.load_silent_analysis_dataset(
@@ -127,12 +236,10 @@ class OwnerContentExecutionTests(OwnerContentFixture):
                 idempotency_key="c1",
             ),
         )
-        finished = limited.jobs.execute_run(
+        limited.jobs.execute_run(
             owner, ExecuteRun(run_id=queued.run_id, idempotency_key="x1")
         )
 
-        self.assertEqual(finished.status, RunStatus.PARTIAL)
-        self.assertEqual(finished.failure_reason, RunFailureReason.QUOTA_EXHAUSTED)
         after = self.stack.channel_data.load_silent_analysis_dataset(
             self.owner, "UC_channel_1"
         )

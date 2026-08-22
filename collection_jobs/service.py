@@ -12,7 +12,7 @@ import hashlib
 import json
 import logging
 from dataclasses import replace
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from threading import RLock
 from types import TracebackType
 from typing import Any, Callable
@@ -44,7 +44,13 @@ from workspace_access.models import Permission, WorkspaceContext
 
 from . import snapshot
 from .errors import CollectionJobsError, ErrorCode
-from .memory import CursorRecord, IdempotencyRecord, MemoryState, QuotaLedgerEntry
+from .memory import (
+    CursorRecord,
+    IdempotencyRecord,
+    MemoryState,
+    QuotaLedgerEntry,
+    ResumePoint,
+)
 from .models import (
     ACTIVE_STATUSES,
     BACKOFF_SCHEDULE,
@@ -122,6 +128,17 @@ def _key(*parts: str) -> str:
 def _require(context: WorkspaceContext, permission: Permission) -> None:
     if permission not in context.permissions:
         raise _safe_error(ErrorCode.PERMISSION_DENIED, field="context.permissions")
+
+
+def _next_utc_day(moment: datetime) -> datetime:
+    """The first moment the daily quota budget is a fresh one.
+
+    The ledger is keyed by UTC date, so a run that ran out of units cannot
+    afford another call until midnight UTC, however many hours away that is.
+    Waking it earlier would spend a request to learn nothing.
+    """
+
+    return datetime.combine(moment.date() + timedelta(days=1), time.min, tzinfo=UTC)
 
 
 def _failure_reason(error: ChannelConnectionsError) -> RunFailureReason:
@@ -319,9 +336,14 @@ class CollectionJobsService:
                     ErrorCode.INVALID_RUN_TRANSITION, field="run_id", retryable=True
                 )
 
+            deadline = (
+                now + timedelta(seconds=command.slice_seconds)
+                if command.slice_seconds is not None
+                else None
+            )
             running = replace(run, status=RunStatus.RUNNING, started_at=now)
             self._store(running)
-            finished = self._execute(context, running, now)
+            finished = self._execute(context, running, now, deadline)
             self._store(finished)
             self._remember(record_key, payload, finished, now)
             return finished
@@ -353,6 +375,7 @@ class CollectionJobsService:
                 failure_reason=RunFailureReason.CANCELLED,
                 next_attempt_at=None,
             )
+            self._forget_resume(run)
             self._store(cancelled)
             self._remember(record_key, payload, cancelled, now)
             return cancelled
@@ -400,6 +423,11 @@ class CollectionJobsService:
                 key: record
                 for key, record in self._state.idempotency.items()
                 if key[0] != workspace_id
+            }
+            self._state.resume = {
+                key: point
+                for key, point in self._state.resume.items()
+                if point.workspace_id != workspace_id
             }
             self._bump_revision(workspace_id)
             self._remember(record_key, payload, command.idempotency_key, now)
@@ -568,6 +596,93 @@ class CollectionJobsService:
                 enqueued.append(run)
             return tuple(enqueued)
 
+    def execute_due_runs(
+        self,
+        context: WorkspaceContext,
+        reference_time: datetime,
+        slice_seconds: int,
+    ) -> tuple[CollectionRun, ...]:
+        """Work every queued run that is due, until the slice is spent.
+
+        This is the whole of what a driver has to know. A browser calls it with
+        the seconds it dares hold a request open, a scheduler with the seconds
+        it is willing to pay for, and neither decides anything else: what is due
+        and what a run does next are decided here, once.
+
+        A run whose `next_attempt_at` is still ahead is skipped rather than
+        waited for, because the caller is a request that has to answer. Each run
+        is offered at most one slice per call, so a run that suspends
+        immediately cannot spin this loop.
+        """
+
+        _require(context, Permission.COLLECTION_RUN)
+        if (
+            not isinstance(reference_time, datetime)
+            or reference_time.utcoffset() is None
+        ):
+            raise _safe_error(ErrorCode.INVALID_INPUT, field="reference_time")
+        if isinstance(slice_seconds, bool) or not isinstance(slice_seconds, int):
+            raise _safe_error(ErrorCode.INVALID_INPUT, field="slice_seconds")
+        with self._lock:
+            deadline = reference_time + timedelta(seconds=slice_seconds)
+            worked: list[CollectionRun] = []
+            for _, run in sorted(self._state.runs.items()):
+                if (
+                    run.workspace_id != context.workspace_id
+                    or run.status is not RunStatus.QUEUED
+                ):
+                    continue
+                if (
+                    run.next_attempt_at is not None
+                    and reference_time < run.next_attempt_at
+                ):
+                    continue
+                remaining = int((deadline - self._now()).total_seconds())
+                if remaining < 1:
+                    break
+                worked.append(
+                    self.execute_run(
+                        context,
+                        ExecuteRun(
+                            run_id=run.run_id,
+                            idempotency_key=f"drain-{self._tokens.new_token()}",
+                            slice_seconds=remaining,
+                        ),
+                    )
+                )
+            return tuple(worked)
+
+    def due_workspace_ids(self, reference_time: datetime) -> tuple[str, ...]:
+        """Which workspaces have work waiting, for a driver that has no session.
+
+        A scheduler wakes with no membership, no session, and nothing to scope
+        itself by, so it has to be told where to ask. This is the one thing it
+        may ask without a context, and it answers with nothing but workspace
+        identifiers: never a run, a schedule, a count, or a time. The caller
+        turns each identifier into its own least-privilege authority before it
+        may do anything with it.
+        """
+
+        if (
+            not isinstance(reference_time, datetime)
+            or reference_time.utcoffset() is None
+        ):
+            raise _safe_error(ErrorCode.INVALID_INPUT, field="reference_time")
+        with self._lock:
+            return tuple(
+                sorted(
+                    {
+                        run.workspace_id
+                        for run in self._state.runs.values()
+                        if run.status is RunStatus.QUEUED
+                        and (
+                            run.next_attempt_at is None
+                            or run.next_attempt_at <= reference_time
+                        )
+                    }
+                )
+            )
+
     # Reads
 
     def get_run(self, context: WorkspaceContext, run_id: str) -> CollectionRun:
@@ -659,7 +774,11 @@ class CollectionJobsService:
     # Internal execution
 
     def _execute(
-        self, context: WorkspaceContext, run: CollectionRun, now: datetime
+        self,
+        context: WorkspaceContext,
+        run: CollectionRun,
+        now: datetime,
+        deadline: datetime | None,
     ) -> CollectionRun:
         try:
             authority = self._broker.issue_execution_authority(
@@ -670,7 +789,7 @@ class CollectionJobsService:
 
         if run.kind is RunKind.SUBSCRIBERS:
             return self._run_subscribers(context, run, authority, now)
-        return self._run_owner_content(context, run, authority, now)
+        return self._run_owner_content(context, run, authority, now, deadline)
 
     def _run_subscribers(
         self,
@@ -731,7 +850,28 @@ class CollectionJobsService:
         run: CollectionRun,
         authority: ExecutionAuthority,
         now: datetime,
+        deadline: datetime | None,
     ) -> CollectionRun:
+        resuming = self._state.resume.get(_key(run.workspace_id, run.run_id))
+        if resuming is not None:
+            # The inventory phase is finished and promoted; the comment
+            # collection named in the resume point is still open and already
+            # holds every video covered so far. None of that is fetched again.
+            return self._cover_comments(
+                context,
+                run,
+                authority,
+                now,
+                deadline,
+                collection_id=resuming.collection_id,
+                inventory_id=resuming.inventory_id,
+                pending=resuming.pending_video_ids,
+                covered=resuming.covered,
+                pages=resuming.pages_fetched,
+                spent=resuming.quota_spent,
+                opened=True,
+            )
+
         videos_collection = f"{run.run_id}-a{run.attempt}-videos"
         videos = self._collect_inventory(
             context, run, authority, now, videos_collection
@@ -763,7 +903,20 @@ class CollectionJobsService:
             ),
         )
         self._finish_collection(context, run, videos_collection, now, videos)
-        return self._cover_comments(context, run, authority, now, videos, inventory_id)
+        return self._cover_comments(
+            context,
+            run,
+            authority,
+            now,
+            deadline,
+            collection_id=f"{run.run_id}-a{run.attempt}-comments",
+            inventory_id=inventory_id,
+            pending=tuple(row.video_id for row in videos.rows),
+            covered=0,
+            pages=videos.pages,
+            spent=videos.quota_spent,
+            opened=False,
+        )
 
     def _collect_inventory(
         self,
@@ -791,33 +944,73 @@ class CollectionJobsService:
         run: CollectionRun,
         authority: ExecutionAuthority,
         now: datetime,
-        videos: TraversalOutcome,
+        deadline: datetime | None,
+        *,
+        collection_id: str,
         inventory_id: str,
+        pending: tuple[str, ...],
+        covered: int,
+        pages: int,
+        spent: int,
+        opened: bool,
     ) -> CollectionRun:
-        collection_id = f"{run.run_id}-a{run.attempt}-comments"
-        self._channel_data.start_collection(
-            context,
-            StartCollection(
-                channel_id=run.provider_channel_id,
-                collection_id=collection_id,
-                kind=CollectionKind.COMMENTS,
-                started_at=now,
-                idempotency_key=f"{collection_id}-start",
-            ),
-        )
-        pages = videos.pages
-        spent = videos.quota_spent
-        covered = 0
-        for video in videos.rows:
+        """Cover every video in the accepted inventory, over as many slices as it takes.
+
+        This is the only phase that can be stopped and continued, and it is the
+        one that needs to be: it costs a call per video, so an inventory larger
+        than the daily budget can never be covered by a traversal that has to
+        start again. It can be continued because `channel-data` accepts coverage
+        one video at a time and keeps the candidate open until it is told the
+        coverage is complete — so a slice that stops leaves behind work that
+        counts, and nothing is promoted until the last video is covered.
+        """
+
+        if not opened:
+            self._channel_data.start_collection(
+                context,
+                StartCollection(
+                    channel_id=run.provider_channel_id,
+                    collection_id=collection_id,
+                    kind=CollectionKind.COMMENTS,
+                    started_at=now,
+                    idempotency_key=f"{collection_id}-start",
+                ),
+            )
+        for index, video_id in enumerate(pending):
+            if deadline is not None and self._now() >= deadline:
+                return self._suspend(
+                    run,
+                    now,
+                    collection_id=collection_id,
+                    inventory_id=inventory_id,
+                    pending=pending[index:],
+                    covered=covered,
+                    pages=pages,
+                    spent=spent,
+                    until=now,
+                )
             activity = self._traverse(
                 context,
                 authority,
                 ProviderOperation.LIST_VIDEO_COMMENT_AUTHORS,
-                video.video_id,
+                video_id,
             )
             pages += activity.pages
             spent += activity.quota_spent
+            if activity.reason is RunFailureReason.QUOTA_EXHAUSTED:
+                return self._suspend(
+                    run,
+                    now,
+                    collection_id=collection_id,
+                    inventory_id=inventory_id,
+                    pending=pending[index:],
+                    covered=covered,
+                    pages=pages,
+                    spent=spent,
+                    until=_next_utc_day(now),
+                )
             if activity.reason is not None:
+                self._forget_resume(run)
                 self._finish_partial(
                     context, run, collection_id, now, activity.reason, covered
                 )
@@ -830,7 +1023,7 @@ class CollectionJobsService:
                     channel_id=run.provider_channel_id,
                     collection_id=collection_id,
                     inventory_id=inventory_id,
-                    video_id=video.video_id,
+                    video_id=video_id,
                     replaced_at=now,
                     activity=tuple(
                         VideoCommentActivityInput(
@@ -840,7 +1033,7 @@ class CollectionJobsService:
                         )
                         for row in activity.rows
                     ),
-                    idempotency_key=f"{collection_id}-{video.video_id}",
+                    idempotency_key=f"{collection_id}-{video_id}",
                 ),
             )
             covered += 1
@@ -858,7 +1051,55 @@ class CollectionJobsService:
                 idempotency_key=f"{collection_id}-finish",
             ),
         )
+        self._forget_resume(run)
         return self._terminal(run, now, None, pages=pages, spent=spent)
+
+    def _suspend(
+        self,
+        run: CollectionRun,
+        now: datetime,
+        *,
+        collection_id: str,
+        inventory_id: str,
+        pending: tuple[str, ...],
+        covered: int,
+        pages: int,
+        spent: int,
+        until: datetime,
+    ) -> CollectionRun:
+        """Remember where a run stopped and put it back in the queue.
+
+        A suspended run is not finished and has not failed: it is queued again
+        with the moment it may next be picked up, which is now when a slice ran
+        out of wall clock and tomorrow when the day's units ran out. What it
+        already collected stays in an open candidate that nothing reads, so the
+        previously accepted dataset is still the one on show until this run
+        covers its last video.
+        """
+
+        self._state.resume[_key(run.workspace_id, run.run_id)] = ResumePoint(
+            workspace_id=run.workspace_id,
+            run_id=run.run_id,
+            inventory_id=inventory_id,
+            collection_id=collection_id,
+            covered=covered,
+            pending_video_ids=tuple(pending),
+            pages_fetched=pages,
+            quota_spent=spent,
+            saved_at=now,
+        )
+        return replace(
+            run,
+            status=RunStatus.QUEUED,
+            finished_at=None,
+            failure_reason=None,
+            pages_fetched=pages,
+            quota_spent=spent,
+            next_attempt_at=until,
+        )
+
+    def _forget_resume(self, run: CollectionRun) -> None:
+        self._state.resume.pop(_key(run.workspace_id, run.run_id), None)
 
     def _finish_partial(
         self,

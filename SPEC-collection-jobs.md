@@ -67,10 +67,56 @@ Safe failure reasons: `QUOTA_EXHAUSTED`, `PROVIDER_UNAVAILABLE`,
 
 Each workspace has a daily budget in provider units, defaulting to 10000, keyed
 by workspace and UTC date. Every brokered call deducts the cost the gateway
-reported. A run stops before a call it cannot afford, finishes as `PARTIAL`
-with `QUOTA_EXHAUSTED`, and finishes its `channel-data` collection as `PARTIAL`
-so nothing is promoted. A partial run does not resume a provider cursor: an
-accepted generation requires a complete traversal, so the next run restarts.
+reported. A run stops before a call it cannot afford.
+
+What happens then depends on the phase it stopped in. A run that has reached
+comment coverage is **suspended**: it returns to `QUEUED` with
+`next_attempt_at` set to the next UTC midnight, carries no failure reason, and
+keeps its `channel-data` collection open with everything covered so far still
+in it. A run stopped in an earlier phase finishes as `PARTIAL` with
+`QUOTA_EXHAUSTED` and its collection is finished as `PARTIAL` so nothing is
+promoted.
+
+The difference is not a policy choice; it is what the data allows. Comment
+coverage is published to `channel-data` one video at a time, so a suspended run
+resumes by covering the videos it has not covered yet. Subscribers and video
+inventory are published in a single call each, so a partial traversal of either
+has nowhere to rest between two processes and must restart. A collection larger
+than one day of units is therefore possible for comments and not for the other
+two phases.
+
+## Slices, suspension, and resuming
+
+`ExecuteRun` carries an optional `slice_seconds`. With one, execution stops at
+the deadline and suspends exactly as a quota stop does, except that
+`next_attempt_at` is the moment it stopped, so the next caller continues at
+once. Without one, execution runs to completion as before.
+
+A suspended run records where it stopped: the open collection, the accepted
+inventory it is bound to, the videos still to cover, and the pages and units
+already spent. The rows already gathered are not in that record and never can
+be — they are in the `channel-data` collection, which is the only place large
+enough to hold them. The record survives a restart with the rest of the
+module's state, so a run may span processes and days.
+
+`QUEUED` is deliberately reused for a suspended run rather than a new status:
+it is exactly what a suspended run is, and every rule about at most one active
+run per connection and kind then applies without a second case.
+
+Two callers drive suspended work, and neither decides policy:
+
+- `execute_due_runs(context, reference_time, slice_seconds)` works every queued
+  run of one workspace whose `next_attempt_at` has arrived, offering each at
+  most one slice and stopping when the budget is spent.
+- `due_workspace_ids(reference_time)` answers which workspaces have work
+  waiting, and nothing else about them. It takes no context because a caller
+  with no session cannot have one; it is therefore the only operation here that
+  is not permission-checked, and it returns identifiers a caller must then be
+  separately authorized for.
+
+A driver with no session obtains authority from `workspace-access`, which
+issues a context bound to one workspace and carrying one permission. A browser
+session is never reused as job authority.
 
 ## Retries
 
@@ -93,6 +139,8 @@ records the enqueue time. Enqueuing is idempotent within an interval window.
 | Enqueue, execute, cancel a run | `collection.run` |
 | Create, update, delete a schedule | `collection.run` |
 | Enqueue due runs | `collection.run` |
+| Execute due runs | `collection.run` |
+| Ask which workspaces have work waiting | none: names no other fact |
 | Read runs and schedules | `collection.read` |
 | Workspace cascade | `workspace.delete` |
 | Retention purge | `collection.run` |
@@ -148,10 +196,16 @@ to a ready silent-analysis dataset.
 - Finish the `channel-data` collection exactly once per phase, promoting only
   complete traversals.
 - Keep comment data reduced to per-video, per-author counts and latest times.
+- Suspend rather than fail when comment coverage runs out of units or time, and
+  continue from the recorded point rather than refetching.
 
 ### Ask first
 
 - Add a dependency, queue, worker platform, database, or scheduler daemon.
+  *Asked and answered: on 2026-08-22 the owner approved a run that resumes and
+  a generation that spans days, driven by the browser and by one Cloud Scheduler
+  job calling an internal endpoint. No queue, worker platform or daemon was
+  added; both drivers call this module's own synchronous methods.*
 - Change quota defaults, retry policy, or minimum schedule interval.
 - Run against a real Google account or real channel data.
 
@@ -167,8 +221,10 @@ to a ready silent-analysis dataset.
 1. Every operation requires a trusted context and the exact permission.
 2. A successful `SUBSCRIBERS` run publishes exactly one accepted snapshot; a
    successful `OWNER_CONTENT` run publishes an inventory and complete coverage.
-3. Quota exhaustion, transient failure, cancellation, and reauthorization each
-   produce the documented terminal state and leave prior data intact.
+3. Quota exhaustion during comment coverage suspends the run for the next UTC
+   day; in any earlier phase, and for transient failure, cancellation and
+   reauthorization, the documented terminal state is produced and prior data is
+   left intact.
 4. Retries follow the exact 1, 5, 25 minute backoff and stop after three
    attempts.
 5. Schedules enqueue at most one active run per connection and kind.
@@ -177,5 +233,8 @@ to a ready silent-analysis dataset.
    purged.
 8. The end-to-end fixture produces a `channel-data` dataset that
    `analytics-core` classifies into all four segments.
-9. No dependency, network call, credential, database, queue, or real data is
+9. A collection larger than one day of units finishes across days without
+   refetching a video already covered, and across processes without losing what
+   it covered.
+10. No dependency, network call, credential, database, queue, or real data is
    introduced.
