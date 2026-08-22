@@ -556,6 +556,43 @@ If the drain is not set up, nothing breaks. Collections still finish while the
 browser is on `/collecting`, and one that runs out of units waits for an owner
 to come back and press the button again.
 
+### The build leaves rubbish behind
+
+`gcloud run deploy --source` builds an image into Artifact Registry and uploads
+the sources it built from into a bucket, and it keeps every one of them. Neither
+is needed once the revision exists — the image the serving revision runs is the
+only one that has to survive, and the sources are in git. Left alone they are
+what fills the 0.5 GB Artifact Registry allowance, and the source bucket is
+regional storage in `asia-northeast1`, which the always-free 5 GB does not cover
+because that allowance is US-only.
+
+Rather than remembering to delete them, let the platform do it:
+
+```powershell
+# policy.json
+# [
+#   {"name": "keep-recent-images", "action": {"type": "Keep"},
+#    "mostRecentVersions": {"keepCount": 3}},
+#   {"name": "delete-superseded-images", "action": {"type": "Delete"},
+#    "condition": {"tagState": "any", "olderThan": "1d"}}
+# ]
+gcloud artifacts repositories set-cleanup-policies cloud-run-source-deploy `
+  --location asia-northeast1 --policy=policy.json --no-dry-run
+
+# lifecycle.json
+# {"lifecycle": {"rule": [{"action": {"type": "Delete"},
+#                          "condition": {"age": 3}}]}}
+gcloud storage buckets update gs://run-sources-<project>-asia-northeast1 `
+  --lifecycle-file=lifecycle.json
+```
+
+Keep rules win over delete rules, so the three newest images survive whatever
+their age: the serving revision, the one before it, and one more. Older images
+go, and with them the ability to roll back to the revisions that ran them —
+those revisions stay listed and stop being startable. `--dry-run` instead of
+`--no-dry-run` writes what it would have deleted to the logs and deletes
+nothing.
+
 ## Still required before production
 
 Background workers for collection are done, in the smallest form that works: no
