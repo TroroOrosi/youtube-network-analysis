@@ -16,6 +16,7 @@ import urllib.request
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from threading import RLock
 from typing import Protocol, TypeVar
 from urllib.parse import urlencode
 
@@ -106,6 +107,13 @@ class GoogleCredentialStore:
     store, never a module store. Without a store nothing is written at all, and
     a deployment that persists modules without a vault is refused at startup
     rather than left quietly dropping every credential.
+
+    The lock covers the slots and the write together. Two owners finishing an
+    authorization at the same moment run in different request threads, and the
+    vault behind this is a store where a save adds a version and destroys the
+    ones it replaced: interleaved, each save would destroy the other's version
+    and the surviving document could be the older one, silently missing a
+    connection nobody will be asked to make again.
     """
 
     def __init__(
@@ -117,27 +125,32 @@ class GoogleCredentialStore:
         self._slots: dict[tuple[str, str], ProviderCredential] = {}
         self._state_store = state_store
         self._now = now
+        self._lock = RLock()
         self._restore()
 
     def put(
         self, workspace_id: str, slot_id: str, credential: ProviderCredential
     ) -> None:
-        previous = self._slots.get((workspace_id, slot_id))
-        self._slots[(workspace_id, slot_id)] = credential
-        if _refresh_material(previous) != _refresh_material(credential):
-            self._persist()
+        with self._lock:
+            previous = self._slots.get((workspace_id, slot_id))
+            self._slots[(workspace_id, slot_id)] = credential
+            if _refresh_material(previous) != _refresh_material(credential):
+                self._persist()
 
     def delete(self, workspace_id: str, slot_id: str) -> None:
-        if self._slots.pop((workspace_id, slot_id), None) is not None:
-            self._persist()
+        with self._lock:
+            if self._slots.pop((workspace_id, slot_id), None) is not None:
+                self._persist()
 
     def slot_ids(self, workspace_id: str) -> tuple[str, ...]:
-        return tuple(
-            slot_id for stored, slot_id in self._slots if stored == workspace_id
-        )
+        with self._lock:
+            return tuple(
+                slot_id for stored, slot_id in self._slots if stored == workspace_id
+            )
 
     def _read(self, workspace_id: str, slot_id: str) -> ProviderCredential | None:
-        return self._slots.get((workspace_id, slot_id))
+        with self._lock:
+            return self._slots.get((workspace_id, slot_id))
 
     def _persist(self) -> None:
         if self._state_store is None:

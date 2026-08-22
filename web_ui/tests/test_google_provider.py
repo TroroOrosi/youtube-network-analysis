@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 import unittest
 from datetime import UTC, datetime, timedelta
 from urllib.parse import parse_qs, urlsplit
@@ -154,6 +156,20 @@ class FakeStateStore:
         self.saves += 1
 
 
+class SlowStateStore(FakeStateStore):
+    """A vault that takes long enough for a second thread to reach it."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.events: list[str] = []
+
+    def save(self, document: str) -> None:
+        self.events.append("enter")
+        time.sleep(0.02)
+        super().save(document)
+        self.events.append("leave")
+
+
 def credential(refresh: str | None = "rt-1", **overrides: object) -> ProviderCredential:
     fields: dict[str, object] = {
         "access_token": RedactedSecret("at-1"),
@@ -233,6 +249,30 @@ class CredentialPersistenceTests(unittest.TestCase):
     def test_a_document_it_cannot_read_stops_the_start(self) -> None:
         with self.assertRaises(ValueError):
             self.build("this is not the document")
+
+    def test_two_threads_do_not_interleave_a_save(self) -> None:
+        """Route handlers run in a thread pool, so two owners can finish at once.
+
+        Interleaved, both saves would add a version to the vault and destroy
+        the one the other added, and the document left readable could be the
+        earlier of the two: a connection silently missing from a store nobody
+        will be asked to authorize again.
+        """
+
+        state = SlowStateStore()
+        store = GoogleCredentialStore(state_store=state, now=lambda: NOW)
+        threads = [
+            threading.Thread(
+                target=store.put, args=("ws-1", f"slot-{index}", credential(f"rt-{index}"))
+            )
+            for index in (1, 2)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(state.events, ["enter", "leave", "enter", "leave"])
+        self.assertEqual(len(json.loads(state.document or "{}")), 2)
 
     def test_without_a_store_it_keeps_the_slots_in_memory_only(self) -> None:
         store = GoogleCredentialStore(now=lambda: NOW)

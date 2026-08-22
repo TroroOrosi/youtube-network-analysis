@@ -351,14 +351,25 @@ def _register_routes(app: FastAPI) -> None:
         mapped = _domain_error(error)
         return _error_response(request, mapped.code, mapped.status_code)
 
+    # The routes below are deliberately not `async def`. Every one of them ends
+    # up in a blocking call: the state stores are Firestore over HTTP, the
+    # provider adapters are the YouTube Data API, and none of that is written
+    # against an event loop. Declared `async`, each of those waits held the one
+    # loop this process has, so a slow Google call stalled every other request
+    # in flight, including the ones that touch nothing. Declared as ordinary
+    # functions, Starlette runs them in its thread pool and the waits overlap.
+    #
+    # The price is that handlers now run concurrently in threads, which is why
+    # every service this reaches guards its own state with a lock — including
+    # `GoogleCredentialStore`, whose vault would otherwise interleave two saves.
     @app.get("/login", response_class=HTMLResponse)
-    async def login_form(request: Request) -> Response:
+    def login_form(request: Request) -> Response:
         return _render(
             request, "login.html", {"google_login": _services(request).login is not None}
         )
 
     @app.post("/login")
-    async def login(
+    def login(
         request: Request, display_name: str = Form(...), csrf_token: str = Form("")
     ) -> Response:
         """Open a session from a typed name, only where no real provider exists.
@@ -384,14 +395,14 @@ def _register_routes(app: FastAPI) -> None:
         )
 
     @app.post("/login/google")
-    async def login_with_google(
+    def login_with_google(
         request: Request, csrf_token: str = Form("")
     ) -> Response:
         _check_csrf(request, csrf_token)
         return _redirect(_login_provider(request).start()[0])
 
     @app.get("/login/callback")
-    async def login_return(
+    def login_return(
         request: Request,
         state: str = Query(...),
         code: str | None = Query(None),
@@ -408,7 +419,7 @@ def _register_routes(app: FastAPI) -> None:
         return _session_response(request, identity)
 
     @app.post("/logout")
-    async def logout(request: Request, csrf_token: str = Form("")) -> Response:
+    def logout(request: Request, csrf_token: str = Form("")) -> Response:
         _check_csrf(request, csrf_token)
         raw = request.cookies.get(SESSION_COOKIE)
         if raw:
@@ -424,7 +435,7 @@ def _register_routes(app: FastAPI) -> None:
         return response
 
     @app.get("/", response_class=HTMLResponse)
-    async def dashboard(request: Request) -> Response:
+    def dashboard(request: Request) -> Response:
         session = _require_session(request)
         services = _services(request)
         try:
@@ -472,7 +483,7 @@ def _register_routes(app: FastAPI) -> None:
         )
 
     @app.post("/workspaces")
-    async def create_workspace(
+    def create_workspace(
         request: Request, name: str = Form(...), csrf_token: str = Form("")
     ) -> Response:
         _check_csrf(request, csrf_token)
@@ -492,7 +503,7 @@ def _register_routes(app: FastAPI) -> None:
         return response
 
     @app.post("/workspaces/select")
-    async def select_workspace(
+    def select_workspace(
         request: Request, workspace_id: str = Form(...), csrf_token: str = Form("")
     ) -> Response:
         _check_csrf(request, csrf_token)
@@ -514,7 +525,7 @@ def _register_routes(app: FastAPI) -> None:
         return response
 
     @app.post("/connections/start")
-    async def start_connection(request: Request, csrf_token: str = Form("")) -> Response:
+    def start_connection(request: Request, csrf_token: str = Form("")) -> Response:
         _check_csrf(request, csrf_token)
         session = _require_session(request)
         context = _context(request, session, Permission.CHANNEL_MANAGE_CONNECTION)
@@ -524,11 +535,11 @@ def _register_routes(app: FastAPI) -> None:
         return RedirectResponse(start.authorization_url, status_code=303)
 
     @app.get("/demo/consent", response_class=HTMLResponse)
-    async def demo_consent(request: Request, state: str = Query(...)) -> Response:
+    def demo_consent(request: Request, state: str = Query(...)) -> Response:
         return _render(request, "consent.html", {"state": state})
 
     @app.get("/oauth/callback")
-    async def oauth_return(
+    def oauth_return(
         request: Request,
         state: str = Query(...),
         code: str | None = Query(None),
@@ -550,7 +561,7 @@ def _register_routes(app: FastAPI) -> None:
         return _redirect("/", "connected")
 
     @app.post("/oauth/callback")
-    async def oauth_callback(
+    def oauth_callback(
         request: Request,
         state: str = Form(...),
         decision: str = Form("approve"),
@@ -579,7 +590,7 @@ def _register_routes(app: FastAPI) -> None:
         return _redirect("/", "connected")
 
     @app.post("/connections/{connection_id}/disconnect")
-    async def disconnect(
+    def disconnect(
         request: Request, connection_id: str, csrf_token: str = Form("")
     ) -> Response:
         _check_csrf(request, csrf_token)
@@ -594,7 +605,7 @@ def _register_routes(app: FastAPI) -> None:
         return _redirect("/", "disconnected")
 
     @app.post("/connections/{connection_id}/collect")
-    async def collect(
+    def collect(
         request: Request, connection_id: str, csrf_token: str = Form("")
     ) -> Response:
         _check_csrf(request, csrf_token)
@@ -623,7 +634,7 @@ def _register_routes(app: FastAPI) -> None:
         return _redirect("/", outcome)
 
     @app.get("/analysis", response_class=HTMLResponse)
-    async def analysis(
+    def analysis(
         request: Request,
         channel_id: str = Query(...),
         never_commented: bool = Query(False),
@@ -676,7 +687,7 @@ def _register_routes(app: FastAPI) -> None:
         )
 
     @app.post("/analysis/export")
-    async def export(
+    def export(
         request: Request,
         channel_id: str = Form(...),
         never_commented: bool = Form(False),

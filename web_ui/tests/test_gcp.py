@@ -67,9 +67,13 @@ def access_reply(document: str | None) -> tuple[int, bytes]:
     return 200, json.dumps({"payload": {"data": data}}).encode()
 
 
-def version_list(*numbers: int) -> tuple[int, bytes]:
-    versions = [{"name": f"{SECRET}/versions/{number}"} for number in numbers]
-    return 200, json.dumps({"versions": versions}).encode()
+def version_list(*numbers: int, following: str | None = None) -> tuple[int, bytes]:
+    body: dict[str, object] = {
+        "versions": [{"name": f"{SECRET}/versions/{number}"} for number in numbers]
+    }
+    if following is not None:
+        body["nextPageToken"] = following
+    return 200, json.dumps(body).encode()
 
 
 class SecretManagerStateStoreTests(unittest.TestCase):
@@ -128,6 +132,45 @@ class SecretManagerStateStoreTests(unittest.TestCase):
         store.save("{}")
         destroyed = [url for _, url, _, _ in transport.requests if ":destroy" in url]
         self.assertEqual(destroyed, [f"{SECRET_URL}/versions/1:destroy"])
+
+    def test_a_version_on_the_second_page_is_destroyed_too(self) -> None:
+        """A version left enabled is a live refresh token, wherever it listed."""
+
+        replies = self.saving_replies(1, 2)
+        replies = {
+            f"{SECRET_URL}/versions?filter=state%3AENABLED&pageToken=page-2": (
+                version_list(3)
+            ),
+            **replies,
+        }
+        replies[f"{SECRET_URL}/versions?"] = version_list(1, 2, following="page-2")
+        store, transport = self.store(replies)
+        store.save("{}")
+        destroyed = [url for _, url, _, _ in transport.requests if ":destroy" in url]
+        self.assertEqual(
+            destroyed,
+            [f"{SECRET_URL}/versions/1:destroy", f"{SECRET_URL}/versions/3:destroy"],
+        )
+
+    def test_nothing_is_destroyed_before_the_listing_ends(self) -> None:
+        """Destroying mid-walk shortens the filter under the page cursor."""
+
+        replies = self.saving_replies(1, 2)
+        replies = {
+            f"{SECRET_URL}/versions?filter=state%3AENABLED&pageToken=page-2": (
+                version_list(3)
+            ),
+            **replies,
+        }
+        replies[f"{SECRET_URL}/versions?"] = version_list(1, 2, following="page-2")
+        store, transport = self.store(replies)
+        store.save("{}")
+        kinds = [
+            "list" if "/versions?" in url else "destroy"
+            for _, url, _, _ in transport.requests
+            if "/versions?" in url or ":destroy" in url
+        ]
+        self.assertEqual(kinds, ["list", "list", "destroy", "destroy"])
 
     def test_housekeeping_that_fails_does_not_fail_the_save(self) -> None:
         """The credential is already stored; the next save lists again."""

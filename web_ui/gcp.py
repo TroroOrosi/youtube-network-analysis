@@ -185,20 +185,8 @@ class SecretManagerStateStore:
         connection over housekeeping.
         """
 
-        query = urllib.parse.urlencode({"filter": "state:ENABLED"})
-        status, body = self._transport(
-            "GET",
-            f"{SECRET_MANAGER_ROOT}/{self._secret}/versions?{query}",
-            headers=self._headers(),
-            body=None,
-        )
-        if status != 200:
-            _LOG.warning("listing credential secret versions answered %s", status)
-            return
-        versions = _json(body).get("versions")
-        for version in versions if isinstance(versions, list) else []:
-            name = version.get("name") if isinstance(version, Mapping) else None
-            if not isinstance(name, str) or name == keep:
+        for name in self._enabled_versions():
+            if name == keep:
                 continue
             destroyed, _ = self._transport(
                 "POST",
@@ -208,6 +196,43 @@ class SecretManagerStateStore:
             )
             if destroyed != 200:
                 _LOG.warning("destroying a superseded version answered %s", destroyed)
+
+    def _enabled_versions(self) -> list[str]:
+        """Every enabled version, read to the end before anything is destroyed.
+
+        The listing is paged, and destroying versions as each page arrived
+        would shorten the filtered result under the cursor, so the page after
+        it would begin past entries never looked at. The whole list is cheap
+        here — one save is meant to leave one version behind — and a page that
+        is refused ends the walk with what it has, which really is superseded.
+        """
+
+        names: list[str] = []
+        page_token: str | None = None
+        while True:
+            query = {"filter": "state:ENABLED"}
+            if page_token is not None:
+                query["pageToken"] = page_token
+            status, body = self._transport(
+                "GET",
+                f"{SECRET_MANAGER_ROOT}/{self._secret}/versions"
+                f"?{urllib.parse.urlencode(query)}",
+                headers=self._headers(),
+                body=None,
+            )
+            if status != 200:
+                _LOG.warning("listing credential secret versions answered %s", status)
+                return names
+            payload = _json(body)
+            versions = payload.get("versions")
+            for version in versions if isinstance(versions, list) else []:
+                name = version.get("name") if isinstance(version, Mapping) else None
+                if isinstance(name, str):
+                    names.append(name)
+            following = payload.get("nextPageToken")
+            if not isinstance(following, str) or not following:
+                return names
+            page_token = following
 
 
 class FirestoreStateStore:

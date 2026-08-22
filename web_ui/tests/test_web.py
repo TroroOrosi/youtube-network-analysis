@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import inspect
 import shutil
 import stat
 import tempfile
@@ -537,6 +538,23 @@ class ProviderConfigurationTests(unittest.TestCase):
         config = google_config_from_env(self.ENVIRONMENT, BASE_URL)
 
         self.assertNotIn("client-secret", repr(config))
+
+
+class EventLoopTests(WebFixture):
+    """Handlers block on Firestore and on Google, so none may hold the loop."""
+
+    def test_no_route_is_a_coroutine(self) -> None:
+        """One `async def` here stalls every other request during that wait."""
+
+        app = create_app(self.services)
+        holding = [
+            route.path
+            for route in app.routes
+            if getattr(route, "endpoint", None) is not None
+            and route.endpoint.__module__ == "web_ui.app"
+            and inspect.iscoroutinefunction(route.endpoint)
+        ]
+        self.assertEqual(holding, [])
 
 
 class SafetyTests(WebFixture):
