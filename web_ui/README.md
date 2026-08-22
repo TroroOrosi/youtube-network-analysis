@@ -207,7 +207,7 @@ has to hold the OAuth client and the YouTube Data API:
 
 ```powershell
 gcloud run deploy yna-web --source . --region asia-northeast1 `
-  --allow-unauthenticated --max-instances 1 --min-instances 1 `
+  --allow-unauthenticated --max-instances 1 --min-instances 0 `
   --set-env-vars "FORWARDED_ALLOW_IPS=*"
 ```
 
@@ -221,18 +221,22 @@ Three flags are not preferences:
 - `--max-instances 1`, because the credential vault, the rate-limit counters and
   the state document all live in one process. A second instance would show an
   owner a session or a connection that exists only in its sibling.
-- `--min-instances 1`, because scaling to zero ends the process, and everything
-  above is in memory. At zero a visitor returning after an idle period finds
-  their workspace gone. This is the one line here that costs money; drop it and
-  the demo still works, it just forgets.
+- `--min-instances 0`, which is what the vault below buys: state survives the
+  instance, so a visitor returning after an idle period finds their workspace
+  where they left it. An always-on instance was the one line here that cost
+  money, and it is no longer needed. A cold start still drops the rate-limit
+  counters and any authorization in flight, so a sign-in or a consent
+  interrupted halfway has to be started again.
 - `FORWARDED_ALLOW_IPS=*`, because Cloud Run's front end is not on loopback and
   uvicorn trusts only loopback by default. It is safe **there** — the container
   has no address of its own and the front end overwrites `X-Forwarded-For`. On a
   host where the container is directly reachable, `*` lets any client forge its
   address and walk past the rate limiter; name the proxy instead.
 
-`YNA_STATE_DIR` buys nothing on Cloud Run: the filesystem is memory that dies
-with the instance. It is for a host with a real disk.
+`YNA_STATE_DIR` is for a host with a real disk: on Cloud Run the filesystem is
+memory that dies with the instance. What this deployment sets instead is
+`YNA_FIRESTORE_DATABASE` for the module documents and `YNA_CREDENTIAL_SECRET`
+for the credentials, both below.
 
 Left unset, `YNA_GOOGLE_CLIENT_ID` and `YNA_GOOGLE_CLIENT_SECRET` keep a public
 deployment on the demo gateways, which is the honest thing to publish first —
@@ -315,11 +319,48 @@ gcloud secrets add-iam-policy-binding yna-google-client-secret `
   --role roles/secretmanager.secretAccessor
 
 gcloud run deploy yna-web --source . --region asia-northeast1 `
-  --allow-unauthenticated --max-instances 1 --min-instances 1 `
+  --allow-unauthenticated --max-instances 1 --min-instances 0 `
   --service-account "yna-web@<project>.iam.gserviceaccount.com" `
   --set-env-vars "YNA_BASE_URL=https://<service>.run.app,FORWARDED_ALLOW_IPS=*,YNA_REQUIRE_GOOGLE=1,YNA_GOOGLE_CLIENT_ID=<client id>.apps.googleusercontent.com" `
   --set-secrets "YNA_GOOGLE_CLIENT_SECRET=yna-google-client-secret:latest"
 ```
+
+Then the two stores state rests in, neither of which costs anything at this
+scale:
+
+```powershell
+gcloud firestore databases create --location asia-northeast1 --type firestore-native
+gcloud secrets create yna-owner-credentials
+
+gcloud secrets add-iam-policy-binding yna-owner-credentials `
+  --member "serviceAccount:yna-web@<project>.iam.gserviceaccount.com" `
+  --role roles/secretmanager.secretAccessor
+gcloud secrets add-iam-policy-binding yna-owner-credentials `
+  --member "serviceAccount:yna-web@<project>.iam.gserviceaccount.com" `
+  --role roles/secretmanager.secretVersionManager
+gcloud projects add-iam-policy-binding <project> `
+  --member "serviceAccount:yna-web@<project>.iam.gserviceaccount.com" `
+  --role roles/datastore.user
+
+gcloud run services update yna-web --region asia-northeast1 --min-instances 0 `
+  --update-env-vars "YNA_CREDENTIAL_SECRET=projects/<project>/secrets/yna-owner-credentials,YNA_FIRESTORE_DATABASE=projects/<project>/databases/(default)"
+```
+
+Four things there are not arbitrary:
+
+- **Native mode cannot later become Datastore mode.** It is the only one-way
+  step in this procedure, and it is a mode, not a bill.
+- **The database is the project's first, which is what carries the free tier.**
+  The daily allowance does not depend on the location; only the price of
+  exceeding it does.
+- **`secretVersionManager`, because there is no `secretVersionDestroyer` role.**
+  The store destroys the version it replaced — a superseded refresh token is a
+  live secret while it can be read, and enabled versions are what the free tier
+  counts — so it needs `versions.add`, `versions.list` and `versions.destroy`.
+  The role that holds those, scoped to this one secret, is that one.
+- **Both names are full resource paths**, so nothing in the process has to ask
+  the platform which project it is running in.
+
 
 The service account is its own rather than the default compute one, which can
 read every secret in the project; this one reads the single secret it needs.
@@ -361,39 +402,39 @@ That costs the request log for exactly the two paths most likely to need
 debugging, which is why it is not the default here.
 
 **What a hosted owner cannot guess, and should be told:** an instance that goes
-away takes the whole application's memory with it. New revision, maintenance,
-crash — `min-instances 1` makes that rarer, not impossible.
+away takes the process's memory with it, and at `--min-instances 0` that is
+routine — after an idle period, on every new revision, on maintenance.
 
-What is lost depends on `YNA_STATE_DIR`, and the two outcomes are different
-enough to plan for:
+What survives is what was written: the four module documents in Firestore and
+the owners' refresh tokens in Secret Manager. A restored connection comes back
+with an expired access token and refreshes it on its first call, which is the
+path that runs hourly anyway, so an owner sees nothing.
 
-- **Unset, which is what Cloud Run gets** — everything goes: sign-ins,
-  workspaces, connections, collected data, and the tokens. An owner returns to
-  an empty application and starts over. Nothing is left inconsistent, because
-  nothing is left.
-- **Set, on a host with a disk** — the modules come back, so a connection is
-  listed and reads as connected, but the vault it points at is empty. The grant
-  is gone while the record of it is not, and the next collection run fails until
-  the owner presses 接続する and consents again.
+What does not survive is the rate-limit counters and any authorization in
+flight: a sign-in or a consent interrupted by the instance going away has to be
+started again from the beginning.
 
-Either way the fix is the same vault named below, and until it exists this is the
-behaviour to tell owners about rather than let them meet during a run.
+Where neither store is configured — the reference default, and any host that
+sets nothing — the older behaviour still applies: everything goes with the
+instance, and an owner returns to an empty application and starts over.
 
 ## Still required before production
 
-A deployed credential vault and background workers for collection. Each is an
+Background workers for collection. That is now the only one, and it is an
 explicit later decision.
 
-The vault is written and not yet deployed: the mechanism that lets
-credentials outlive a process, the Secret Manager store that holds them and the
-Firestore store that holds the module documents are all in the code and tested,
-and no deployment uses them yet. [`PLAN-credential-vault.md`](../PLAN-credential-vault.md)
-holds the design and the deployment steps that remain. Until those land,
-everything below about credentials still holds.
+The credential vault is done and deployed: the module documents rest in
+Firestore, the owners' refresh tokens in one Secret Manager secret, and a new
+revision no longer asks anyone to authorize again. Verified against the
+deployment on 2026-08-22 — sign in, connect, collect, force a new revision,
+collect again without consenting, with the secret still holding exactly one
+version afterwards. [`PLAN-credential-vault.md`](../PLAN-credential-vault.md)
+holds the design and why these two stores rather than KMS and a bucket.
 
-Persistent storage is now available but is not a database: `YNA_STATE_DIR`
-keeps one JSON document per module and rewrites each in full, which is right
-for a single process and wrong for two. The write cost is described below.
+Storage is a database now, but the shape it is used in has not changed: one
+document per module, rewritten in full on every change, which is right for a
+single process and wrong for two — hence `--max-instances 1`. The write cost is
+described below.
 
 ## Verification
 

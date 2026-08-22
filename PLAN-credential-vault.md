@@ -1,10 +1,18 @@
 # Plan: give the credential vault a life beyond the process, for nothing
 
-Status on 2026-08-22: steps 1 to 5 are done and committed as `55f8059` — the
-KMS and GCS adapters are gone, the Secret Manager and Firestore stores are in
-and tested, and 496 tests are green. Nothing is deployed: steps 6 and 7 remain,
-and `web_ui/README.md` still lists the vault under "Still required before
-production" until they land.
+Status on 2026-08-22: **done and verified against the deployment.** The code
+landed as `55f8059`; Firestore Native `(default)` in `asia-northeast1` and the
+secret `yna-owner-credentials` exist, the service account holds
+`secretAccessor` and `secretVersionManager` on that secret and `datastore.user`
+on the project, and `yna-web` runs at `--min-instances 0`. Step 7 was walked
+end to end: sign in, connect, collect, force a new revision, collect again
+without consenting, secret still holding exactly one version. `web_ui/README.md`
+no longer lists the vault under "Still required before production".
+
+One correction to step 6 below: **there is no `roles/secretmanager.secretVersionDestroyer`.**
+The role that carries `versions.add`, `versions.list` and `versions.destroy` on
+a single secret is `roles/secretmanager.secretVersionManager`, and it makes
+`secretVersionAdder` redundant.
 
 ## What is wrong today
 
