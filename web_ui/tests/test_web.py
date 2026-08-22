@@ -35,6 +35,7 @@ from web_ui.container import (
     google_config_from_env,
     state_dir_from_env,
 )
+from web_ui.demo_provider import build_demo_dataset
 from web_ui.google_provider import GoogleOAuthConfig
 from web_ui.tests.test_google_provider import FakeTransport, default_replies
 
@@ -251,6 +252,17 @@ class RateLimitTests(WebFixture):
         self.assertEqual(statuses[-1], 429)
         self.assertLess(COLLECT_LIMIT_PER_MINUTE, WRITE_LIMIT_PER_MINUTE)
 
+    def test_collection_steps_share_the_collection_rate_limit(self) -> None:
+        self.login()
+        self.create_workspace()
+
+        statuses = [
+            self.post("/collecting/step").status_code
+            for _ in range(COLLECT_LIMIT_PER_MINUTE + 1)
+        ]
+
+        self.assertEqual(statuses[-1], 429)
+
     def test_reading_a_page_is_never_rate_limited(self) -> None:
         self.login()
         self.create_workspace()
@@ -379,17 +391,23 @@ class GuidedFlowTests(WebFixture):
         self.assertIn('class="table-scroll"', analysis.text)
 
     def test_filtered_pagination_keeps_the_filter_query(self) -> None:
-        dataset = self.services.connections._data_gateway._dataset
-        self.services.connections._data_gateway._dataset = replace(
-            dataset,
-            subscribers=tuple(
-                replace(
-                    dataset.subscribers[0],
-                    subscriber_channel_id=f"UC_demo_sub_{index}",
-                    title=f"視聴者{index}",
-                )
-                for index in range(1, 61)
+        dataset = build_demo_dataset()
+        self.services = build_services(
+            BASE_URL,
+            demo_dataset=replace(
+                dataset,
+                subscribers=tuple(
+                    replace(
+                        dataset.subscribers[0],
+                        subscriber_channel_id=f"UC_demo_sub_{index}",
+                        title=f"視聴者{index}",
+                    )
+                    for index in range(1, 61)
+                ),
             ),
+        )
+        self.client = TestClient(
+            create_app(self.services), base_url=BASE_URL, follow_redirects=False
         )
         self.login()
         self.create_workspace()

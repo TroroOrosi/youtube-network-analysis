@@ -8,6 +8,7 @@ resolves a workspace context, renders safe values, and never sees a credential.
 from __future__ import annotations
 
 import secrets
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Lock
@@ -70,6 +71,7 @@ LOGIN_COOKIE = "yna_login"
 CONSENT_ORIGIN = "https://accounts.google.com"
 WRITE_LIMIT_PER_MINUTE = 30
 COLLECT_LIMIT_PER_MINUTE = 3
+COLLECTION_WRITE_PATHS = frozenset({"/collecting/step"})
 # How long one call may spend collecting. The browser's slice is short
 # because a person is watching a page that is not answering yet; the
 # scheduler's is long because nobody is, and the only cost of a longer one
@@ -203,6 +205,12 @@ class _RateLimiter:
             return True
 
 
+def _is_collection_write(path: str) -> bool:
+    return path in COLLECTION_WRITE_PATHS or (
+        path.startswith("/connections/") and path.endswith("/collect")
+    )
+
+
 def _client_key(request: Request) -> str:
     """Who to count a request against, behind Cloud Run's front end.
 
@@ -294,7 +302,7 @@ def create_app(services: Services | None = None, *, base_url: str = "https://loc
         if request.method != "GET":
             limit = (
                 COLLECT_LIMIT_PER_MINUTE
-                if request.url.path.endswith("/collect")
+                if _is_collection_write(request.url.path)
                 else WRITE_LIMIT_PER_MINUTE
             )
             client = _client_key(request)
@@ -377,6 +385,32 @@ def _context(request: Request, session, permission: Permission):
 OptionalInt = Annotated[
     int | None, BeforeValidator(lambda value: None if value == "" else value)
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class _AnalysisFilters:
+    never_commented: bool = False
+    subscribed_within_days: int | None = None
+    segment: str | None = None
+
+    def domain_input(self) -> AnalysisFilterInput:
+        return AnalysisFilterInput(
+            never_commented=self.never_commented,
+            subscribed_within_days=self.subscribed_within_days,
+            segments=(self.segment,) if self.segment else (),
+        )
+
+    def query_pairs(self) -> list[tuple[str, str]]:
+        pairs: list[tuple[str, str]] = []
+        if self.segment:
+            pairs.append(("segment", self.segment))
+        if self.subscribed_within_days is not None:
+            pairs.append(
+                ("subscribed_within_days", str(self.subscribed_within_days))
+            )
+        if self.never_commented:
+            pairs.append(("never_commented", "true"))
+        return pairs
 
 
 def _login_provider(request: Request) -> GoogleLogin:
@@ -949,27 +983,19 @@ def _register_routes(app: FastAPI) -> None:
     ) -> Response:
         session = _require_session(request)
         context = _context(request, session, Permission.ANALYSIS_READ)
-        filters = AnalysisFilterInput(
+        filters = _AnalysisFilters(
             never_commented=never_commented,
             subscribed_within_days=subscribed_within_days,
-            segments=(segment,) if segment else (),
+            segment=segment,
         )
         page = _services(request).analysis.run_analysis(
             context,
-            RunAnalysis(channel_id=channel_id, filters=filters),
+            RunAnalysis(channel_id=channel_id, filters=filters.domain_input()),
             AnalysisPageRequest(cursor=cursor, limit=50),
         )
         next_url = None
         if page.next_cursor is not None:
-            next_query = [("channel_id", channel_id)]
-            if segment:
-                next_query.append(("segment", segment))
-            if subscribed_within_days is not None:
-                next_query.append(
-                    ("subscribed_within_days", str(subscribed_within_days))
-                )
-            if never_commented:
-                next_query.append(("never_commented", "true"))
+            next_query = [("channel_id", channel_id), *filters.query_pairs()]
             next_query.append(("cursor", page.next_cursor))
             next_url = f"/analysis?{urlencode(next_query)}"
         return _render(
@@ -994,11 +1020,7 @@ def _register_routes(app: FastAPI) -> None:
                     }
                     for row in page.rows
                 ],
-                "filters": {
-                    "never_commented": never_commented,
-                    "subscribed_within_days": subscribed_within_days,
-                    "segment": segment,
-                },
+                "filters": filters,
                 "next_url": next_url,
                 "segment_options": list(SEGMENT_LABELS.items()),
             },
@@ -1016,15 +1038,16 @@ def _register_routes(app: FastAPI) -> None:
         _check_csrf(request, csrf_token)
         session = _require_session(request)
         context = _context(request, session, Permission.ANALYSIS_EXPORT)
+        filters = _AnalysisFilters(
+            never_commented=never_commented,
+            subscribed_within_days=subscribed_within_days,
+            segment=segment,
+        )
         document = _services(request).analysis.export_analysis(
             context,
             ExportAnalysis(
                 channel_id=channel_id,
-                filters=AnalysisFilterInput(
-                    never_commented=never_commented,
-                    subscribed_within_days=subscribed_within_days,
-                    segments=(segment,) if segment else (),
-                ),
+                filters=filters.domain_input(),
             ),
         )
         return Response(

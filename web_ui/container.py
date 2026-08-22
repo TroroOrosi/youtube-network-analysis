@@ -31,7 +31,7 @@ from .gcp import (
     ScheduledCaller,
     SecretManagerStateStore,
 )
-from .demo_provider import DemoAuthorizationGateway, DemoDataGateway
+from .demo_provider import DemoAuthorizationGateway, DemoDataGateway, DemoDataSet
 from .google_login import LOGIN_REDIRECT_URI_ID, GoogleLogin
 from .google_provider import (
     AUTHORIZATION_ENDPOINT,
@@ -263,6 +263,7 @@ def build_services(
     youtube_api_key: str | None = None,
     durability: Durability | None = None,
     drain_caller: ScheduledCaller | None = None,
+    demo_dataset: DemoDataSet | None = None,
 ) -> Services:
     """Wire every module, with demo gateways unless a real client is supplied.
 
@@ -284,7 +285,7 @@ def build_services(
     login = None if google is None else GoogleLogin(google, transport=transport)
     if google is None:
         gateway = DemoAuthorizationGateway(base_url)
-        data_gateway = DemoDataGateway()
+        data_gateway = DemoDataGateway(demo_dataset)
         vault = InMemoryCredentialVault()
         authorization_hosts = (urlsplit(base_url).hostname or "localhost",)
     else:
