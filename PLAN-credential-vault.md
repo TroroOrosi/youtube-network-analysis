@@ -1,9 +1,10 @@
 # Plan: give the credential vault a life beyond the process, for nothing
 
-Status on 2026-08-21: the mechanism is written and green; the two adapters that
-carry it are the wrong ones and are replaced below. Nothing here has been
-deployed. `web_ui/README.md` still lists the vault under "Still required before
-production" and should keep saying so until this lands.
+Status on 2026-08-22: steps 1 to 5 are done and committed as `55f8059` — the
+KMS and GCS adapters are gone, the Secret Manager and Firestore stores are in
+and tested, and 496 tests are green. Nothing is deployed: steps 6 and 7 remain,
+and `web_ui/README.md` still lists the vault under "Still required before
+production" until they land.
 
 ## What is wrong today
 
