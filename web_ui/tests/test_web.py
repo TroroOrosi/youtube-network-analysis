@@ -13,9 +13,14 @@ from urllib.parse import parse_qs, urlsplit
 
 from fastapi.testclient import TestClient
 
-from workspace_access.models import AccessSecret
+from workspace_access.models import AccessSecret, Permission
 
-from web_ui.app import COLLECT_LIMIT_PER_MINUTE, WRITE_LIMIT_PER_MINUTE, create_app
+from web_ui.app import (
+    COLLECT_LIMIT_PER_MINUTE,
+    WRITE_LIMIT_PER_MINUTE,
+    _every_run,
+    create_app,
+)
 from web_ui.container import (
     FileStateStore,
     build_services,
@@ -916,6 +921,172 @@ class StateDirectoryTests(unittest.TestCase):
             state_dir_from_env({"YNA_STATE_DIR": " /var/lib/yna "}),
             Path("/var/lib/yna"),
         )
+
+
+class RequestSafetyTests(WebFixture):
+    """What a page does for someone who is not the person who asked for it."""
+
+    def prepare(self) -> str:
+        self.login()
+        self.create_workspace()
+        self.connect_channel()
+        return self.client.get("/").text.split("/connections/")[1].split("/collect")[0]
+
+    def runs(self):
+        return list(self.services.jobs._state.runs.values())
+
+    def test_no_page_may_be_kept_by_a_cache(self) -> None:
+        """Every page here is one workspace's, shown to one signed-in person.
+
+        A shared cache, a proxy, or the back button after a sign-out would
+        otherwise be able to hand it to somebody else.
+        """
+
+        self.login()
+
+        response = self.client.get("/")
+
+        self.assertEqual(response.headers["cache-control"], "no-store")
+
+    def test_a_cross_site_fetch_of_the_collecting_page_collects_nothing(self) -> None:
+        """Loading a page must not be a way for another site to spend our quota.
+
+        `/collecting` works the queue as a side effect of being fetched, and any
+        page on the internet can cause a fetch with an `<img>` or a prefetch.
+        The browser says what it was doing, and only its own navigation counts.
+        """
+
+        connection_id = self.prepare()
+        self.post(f"/connections/{connection_id}/collect")
+
+        page = self.client.get(
+            "/collecting",
+            headers={"sec-fetch-site": "cross-site", "sec-fetch-dest": "image"},
+        )
+
+        self.assertEqual(page.status_code, 200)
+        self.assertEqual({run.status.value for run in self.runs()}, {"QUEUED"})
+        self.assertEqual({run.pages_fetched for run in self.runs()}, {0})
+
+    def test_the_browser_opening_the_page_still_collects(self) -> None:
+        connection_id = self.prepare()
+        self.post(f"/connections/{connection_id}/collect")
+
+        self.client.get(
+            "/collecting",
+            headers={"sec-fetch-site": "same-origin", "sec-fetch-dest": "document"},
+        )
+
+        self.assertNotEqual({run.pages_fetched for run in self.runs()}, {0})
+
+    def test_one_visitor_hitting_the_limit_does_not_lock_out_another(self) -> None:
+        """Behind the front end every request has the same peer address.
+
+        Counting that address would make one impatient visitor a denial of
+        service for everybody else, so the count follows the address the front
+        end recorded for the connection instead.
+        """
+
+        self.login()
+        self.create_workspace()
+
+        noisy = [
+            self.client.post(
+                "/workspaces",
+                data={
+                    "name": f"連打{index}",
+                    "csrf_token": self.client.cookies["yna_csrf"],
+                },
+                headers={"x-forwarded-for": "203.0.113.7"},
+            ).status_code
+            for index in range(WRITE_LIMIT_PER_MINUTE + 2)
+        ]
+        other = self.client.post(
+            "/workspaces",
+            data={"name": "別の人", "csrf_token": self.client.cookies["yna_csrf"]},
+            headers={"x-forwarded-for": "198.51.100.4"},
+        )
+
+        self.assertIn(429, noisy)
+        self.assertNotEqual(other.status_code, 429)
+
+    def test_a_written_forwarded_header_cannot_shift_the_count(self) -> None:
+        """Only the last hop is the front end's word; the rest the caller wrote."""
+
+        self.login()
+        self.create_workspace()
+
+        blocked = [
+            self.client.post(
+                "/workspaces",
+                data={
+                    "name": f"連打{index}",
+                    "csrf_token": self.client.cookies["yna_csrf"],
+                },
+                headers={"x-forwarded-for": f"10.0.0.{index}, 203.0.113.7"},
+            ).status_code
+            for index in range(WRITE_LIMIT_PER_MINUTE + 2)
+        ]
+
+        self.assertIn(429, blocked)
+
+    def test_the_waiting_judgment_reads_past_the_first_page(self) -> None:
+        """A workspace with a long history has runs the first page never shows.
+
+        The collecting page decides whether to come back by whether anything is
+        still queued, so reading one page would call the work done while a
+        queued run sat on the next one.
+        """
+
+        connection_id = self.prepare()
+        self.post(f"/connections/{connection_id}/collect")
+        context = self.services.access.issue_job_context(
+            self.runs()[0].workspace_id, Permission.COLLECTION_READ
+        )
+
+        with mock.patch("web_ui.app.RUN_PAGE_SIZE", 1):
+            paged = _every_run(self.services, context)
+
+        self.assertEqual(len(paged), len(self.runs()))
+        self.assertGreater(len(paged), 1)
+
+
+class RetentionSweepTests(WebFixture):
+    """Kept data has a stated end; something has to be the one that enforces it."""
+
+    def prepare(self) -> str:
+        self.login()
+        self.create_workspace()
+        self.connect_channel()
+        return self.client.get("/").text.split("/connections/")[1].split("/collect")[0]
+
+    def test_a_finished_collection_drops_what_has_aged_out(self) -> None:
+        """The cutoffs live in `purge_retention`, so they only hold if it runs.
+
+        All of a module's state is one stored document with a hard size limit.
+        Records that are past their retention and never removed are what
+        eventually make every write fail, so the end of a collection asks each
+        module to let go of what it is no longer allowed to keep.
+        """
+
+        connection_id = self.prepare()
+
+        with (
+            mock.patch.object(
+                self.services.channel_data,
+                "purge_retention",
+                wraps=self.services.channel_data.purge_retention,
+            ) as data_sweep,
+            mock.patch.object(
+                self.services.connections,
+                "purge_retention",
+                wraps=self.services.connections.purge_retention,
+            ) as connection_sweep,
+        ):
+            self.assertIn("msg=collected", self.collect_now(connection_id))
+
+        self.assertTrue(data_sweep.called)
+        self.assertTrue(connection_sweep.called)
 
 
 if __name__ == "__main__":

@@ -103,5 +103,39 @@ class DrainTests(unittest.TestCase):
         self.assertEqual(self.stack.jobs.execute_due_runs(stranger, NOW, 60), ())
 
 
+    def test_working_a_slice_leaves_no_record_of_its_own(self) -> None:
+        """A slice is not a caller's mutation, so it writes no ledger entry.
+
+        Idempotency records are kept for ninety days and share the one document
+        that holds all of this module's state. A drain that minted a record per
+        slice would grow that document every minute of every day, whether or not
+        any work was waiting, until the document hit the store's limit and no
+        write succeeded at all. The run itself is the record of what happened.
+        """
+
+        sliced = build_stack(jobs_clock=TickingClock(NOW, timedelta(seconds=1)))
+        owner = context()
+        connection = sliced.connect(owner)
+        queued = sliced.jobs.enqueue_run(
+            owner,
+            EnqueueRun(
+                connection_id=connection.connection_id,
+                kind=RunKind.OWNER_CONTENT,
+                idempotency_key="c1",
+            ),
+        )
+        after_enqueue = len(sliced.jobs._state.idempotency)
+
+        for minute in range(40):
+            sliced.jobs.execute_due_runs(owner, NOW + timedelta(minutes=minute), 4)
+            if sliced.jobs.get_run(owner, queued.run_id).status is not RunStatus.QUEUED:
+                break
+
+        self.assertEqual(len(sliced.jobs._state.idempotency), after_enqueue)
+        self.assertEqual(
+            sliced.jobs.get_run(owner, queued.run_id).status, RunStatus.SUCCEEDED
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

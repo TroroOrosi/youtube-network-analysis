@@ -40,13 +40,19 @@ from channel_connections.models import (
 )
 from channel_data.errors import ChannelDataError
 from collection_jobs.errors import CollectionJobsError
-from collection_jobs.models import CollectionRun, EnqueueRun, RunKind
+from collection_jobs.models import (
+    CollectionRun,
+    EnqueueRun,
+    JobsPageRequest,
+    RunKind,
+)
 from workspace_access.models import (
     AccessSecret,
     CreateWorkspace,
     Permission,
     SessionEvidence,
     VerifiedIdentity,
+    WorkspaceContext,
     WorkspaceSelection,
 )
 from workspace_access.errors import WorkspaceAccessError
@@ -67,6 +73,11 @@ COLLECT_LIMIT_PER_MINUTE = 3
 # is request time we are already paying for.
 BROWSER_SLICE_SECONDS = 20
 DRAIN_SLICE_SECONDS = 120
+# How many pages of runs one view will read before it stops asking. Fifty
+# thousand runs is far more history than any page needs, and the cap is what
+# keeps one request from walking a whole workspace's past.
+RUN_PAGE_CAP = 20
+RUN_PAGE_SIZE = 100
 RATE_WINDOW = timedelta(minutes=1)
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
@@ -189,6 +200,89 @@ class _RateLimiter:
             return True
 
 
+def _client_key(request: Request) -> str:
+    """Who to count a request against, behind Cloud Run's front end.
+
+    Every request arrives from the same proxy, so `request.client.host` is one
+    address for the whole internet: one visitor hitting the limit would lock
+    out everybody. The front end appends the address it accepted the connection
+    from to `X-Forwarded-For`, after anything the caller sent, so the last
+    element is the one entry a caller cannot choose for itself. Earlier
+    elements are caller-supplied and are ignored on purpose.
+    """
+
+    forwarded = request.headers.get("x-forwarded-for", "")
+    hops = [hop.strip() for hop in forwarded.split(",") if hop.strip()]
+    if hops:
+        return hops[-1]
+    return request.client.host if request.client else "unknown"
+
+
+def _purge_aged_out(services: Services, context: WorkspaceContext) -> None:
+    """Drop what the retention rules already say is over.
+
+    `channel-data` keeps subscriber snapshots for a year and collection records
+    for ninety days, and `channel-connections` keeps a consent intent only
+    until it expires. Those cutoffs are enforced inside `purge_retention`, and
+    nothing was calling it. Each module keeps all of its state in one stored
+    document with a hard size limit, so what is never dropped is what
+    eventually stops every write. A collection that has just finished is the
+    moment to ask, because it is the moment the workspace grew.
+
+    Only an owner may sweep; for a member it waits for an owner's visit rather
+    than failing the page they were looking at.
+    """
+
+    if Permission.CHANNEL_MANAGE_CONNECTION not in context.permissions:
+        return
+    moment = datetime.now(UTC)
+    services.channel_data.purge_retention(context, moment)
+    services.connections.purge_retention(context, moment)
+
+
+def _every_run(services: Services, context: WorkspaceContext) -> tuple[CollectionRun, ...]:
+    """Every run of a workspace, not the first page of them.
+
+    Whether the collecting page keeps refreshing is decided by whether anything
+    is still queued. A workspace that has collected for a while has more runs
+    than one page holds, and reading only the first page would call the work
+    finished while a queued run sat on the second. Paging stops at
+    `RUN_PAGE_CAP` so a long history cannot turn one page view into an
+    unbounded read.
+    """
+
+    runs: list[CollectionRun] = []
+    cursor: str | None = None
+    for _ in range(RUN_PAGE_CAP):
+        page = services.jobs.list_runs(
+            context, page=JobsPageRequest(cursor=cursor, limit=RUN_PAGE_SIZE)
+        )
+        runs.extend(page.items)
+        cursor = page.next_cursor
+        if cursor is None:
+            break
+    return tuple(runs)
+
+
+def _is_user_navigation(request: Request) -> bool:
+    """Whether this GET is the browser opening the page, not a page embedding it.
+
+    `/collecting` does work as a side effect of being fetched, which any other
+    site could trigger with an `<img>` or a prefetch pointing at it. Fetch
+    metadata says what the browser was doing: a document it is navigating to,
+    from this origin or typed in. Browsers that send no metadata at all are
+    allowed through, because refusing them would break the page entirely.
+    """
+
+    site = request.headers.get("sec-fetch-site")
+    if site is None:
+        return True
+    if site not in {"same-origin", "none"}:
+        return False
+    dest = request.headers.get("sec-fetch-dest")
+    return dest in {None, "document"}
+
+
 def create_app(services: Services | None = None, *, base_url: str = "https://localhost") -> FastAPI:
     app = FastAPI(title="YouTube 分析", docs_url=None, redoc_url=None)
     app.state.services = services or build_services(base_url)
@@ -205,7 +299,7 @@ def create_app(services: Services | None = None, *, base_url: str = "https://loc
                 if request.url.path.endswith("/collect")
                 else WRITE_LIMIT_PER_MINUTE
             )
-            client = request.client.host if request.client else "unknown"
+            client = _client_key(request)
             if not limiter.allow(f"{client}|{limit}", limit):
                 return _error_response(request, "TOO_MANY_REQUESTS", 429)
         return await call_next(request)
@@ -220,6 +314,12 @@ def create_app(services: Services | None = None, *, base_url: str = "https://loc
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["X-Frame-Options"] = "DENY"
+        # Every page here is a signed-in view of one workspace, or a redirect
+        # that depends on one. Stored in a shared cache or replayed by the back
+        # button after a sign-out, any of them shows one person's channels to
+        # whoever uses the browser next.
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
         return response
 
     _register_routes(app)
@@ -681,13 +781,22 @@ def _register_routes(app: FastAPI) -> None:
         session = _require_session(request)
         context = _context(request, session, Permission.COLLECTION_RUN)
         services = _services(request)
-        worked = services.jobs.execute_due_runs(
-            context, datetime.now(UTC), BROWSER_SLICE_SECONDS
+        # Fetching this page does real work, and a page can be fetched by
+        # something that is not a person: another site's <img>, a link
+        # prefetch, a scanner. The queue is only worked when the browser says
+        # it is opening this page as a document, from here.
+        worked = (
+            services.jobs.execute_due_runs(
+                context, datetime.now(UTC), BROWSER_SLICE_SECONDS
+            )
+            if _is_user_navigation(request)
+            else ()
         )
-        runs = services.jobs.list_runs(context).items
+        runs = _every_run(services, context)
         waiting = [run for run in runs if run.status.value in {"QUEUED", "RUNNING"}]
         moment = datetime.now(UTC)
         if not waiting:
+            _purge_aged_out(services, context)
             return _redirect("/", _collect_outcome(worked) if worked else None)
         if all(
             run.next_attempt_at is not None and run.next_attempt_at > moment
@@ -738,16 +847,46 @@ def _register_routes(app: FastAPI) -> None:
             return Response(status_code=401)
         services = _services(request)
         deadline = datetime.now(UTC) + timedelta(seconds=DRAIN_SLICE_SECONDS)
+        # Keep going until the slice is spent, rather than making one pass over
+        # the workspaces that were due at the start. A run that stops because
+        # its own slice ran out is due again immediately, and the point of this
+        # endpoint is to be the caller that finishes it.
         worked = 0
-        for workspace_id in services.jobs.due_workspace_ids(datetime.now(UTC)):
+        purged: set[str] = set()
+        while True:
             moment = datetime.now(UTC)
-            remaining = int((deadline - moment).total_seconds())
-            if remaining < 1:
+            if int((deadline - moment).total_seconds()) < 1:
                 break
-            context = services.access.issue_job_context(
-                workspace_id, Permission.COLLECTION_RUN
-            )
-            worked += len(services.jobs.execute_due_runs(context, moment, remaining))
+            due = services.jobs.due_workspace_ids(moment)
+            if not due:
+                break
+            before = worked
+            for workspace_id in due:
+                moment = datetime.now(UTC)
+                remaining = int((deadline - moment).total_seconds())
+                if remaining < 1:
+                    break
+                context = services.access.issue_job_context(
+                    workspace_id, Permission.COLLECTION_RUN
+                )
+                worked += len(
+                    services.jobs.execute_due_runs(context, moment, remaining)
+                )
+                if workspace_id not in purged:
+                    # Runs, quota rows and idempotency records all live in one
+                    # stored document with a hard size limit, and their
+                    # retention cutoffs only take effect when something asks
+                    # for them. This is the only caller that comes round on its
+                    # own, so it is the one that has to ask, once per workspace
+                    # per call. It needs no permission beyond the one it
+                    # already holds for collecting.
+                    services.jobs.purge_retention(context, moment)
+                    purged.add(workspace_id)
+            if worked == before:
+                # A pass that moved nothing will not move anything on the next
+                # one either: whatever is due cannot be worked right now, and
+                # spinning until the deadline would only burn the instance.
+                break
         return JSONResponse({"worked": worked})
 
     @app.get("/analysis", response_class=HTMLResponse)

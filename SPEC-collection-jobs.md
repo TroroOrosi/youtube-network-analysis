@@ -118,6 +118,34 @@ A driver with no session obtains authority from `workspace-access`, which
 issues a context bound to one workspace and carrying one permission. A browser
 session is never reused as job authority.
 
+### When a suspended run gives up
+
+Suspension carries no attempt counter, so nothing in the rules above ever ends
+a run that keeps waking up and getting nowhere. A workspace whose day of units
+cannot pay for even one video would requeue such a run every midnight for good,
+holding its candidate collection open and its pending list with it.
+
+A wake that covers no video at all is therefore counted. `MAX_STALLED_DAYS`
+(three) consecutive wakes that cover nothing end the run `PARTIAL` with
+`QUOTA_EXHAUSTED` and drop its resume point, which is exactly what a quota stop
+in an earlier phase does. Any wake that covers at least one video clears the
+count: a collection that needs a month of days is slow, not stalled, and is
+allowed to take the month.
+
+### What a slice is not
+
+A slice is internal execution, not a caller's mutation, and it writes no
+idempotency record of its own. The ledger exists so that a caller repeating a
+command is answered once; a scheduled driver repeats every minute for as long
+as the deployment lives, so a record per slice would grow this module's stored
+state without bound and would never be replayed by anyone. What happened is
+recorded in the run itself.
+
+Execution also gives the module's lock back at short intervals. One call works
+a single run for at most `MAX_LOCK_SLICE_SECONDS` (twenty) even when the caller
+offered minutes, because the same process answers people's pages under the same
+lock. The caller comes straight back for the rest.
+
 ## Retries
 
 A retryable provider failure returns the run to `QUEUED` with `attempt + 1` and
@@ -169,6 +197,14 @@ internals of the provider, credentials, and stack traces are never public.
 | Quota ledger entries | 90 days |
 | Schedules | until deleted or workspace cascade |
 | Mutation idempotency records | 90 days |
+
+A retention period is a promise about what is no longer kept, and it only holds
+if somebody asks: `purge_retention` is a caller's operation, not a background
+sweep, and this module runs no timer of its own. The scheduled drain calls it
+once per workspace per visit, under the collection authority it already holds
+and needing nothing wider. The periods above are unchanged by that; what
+changed is that they are now enforced rather than merely stated.
+
 
 `delete_workspace_jobs` removes schedules, runs, quota ledger entries, cursors,
 and idempotency records for one workspace, leaving identically named foreign

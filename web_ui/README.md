@@ -98,15 +98,26 @@ in the same message on purpose.
 - Session cookie: `HttpOnly`, `Secure`, `SameSite=Lax`, server-side revocable.
 - CSRF: a `SameSite=Strict` double-submit token required on every POST.
 - Security headers: CSP with `frame-ancestors 'none'`, `X-Frame-Options: DENY`,
-  `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`.
+  `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, and
+  `Cache-Control: no-store` so no page is kept by a shared cache or handed back
+  by the back button after a sign-out.
+- `/collecting` does real work when it is fetched, so it only does that work for
+  a browser that says it is navigating to it as a document from this origin
+  (`Sec-Fetch-Site`, `Sec-Fetch-Dest`). Another site cannot spend the quota with
+  an `<img>` or a prefetch. Browsers that send no fetch metadata are still
+  served, since refusing them would break the page.
 - Errors render a stable Japanese message plus the next action, never a provider
   response, credential, or internal identifier.
 - The workspace cookie is only a hint: every request re-resolves a real
   `WorkspaceContext` and the module checks the exact permission.
 - Rate limiting: 30 writes per minute per client, and 3 collection runs per
-  minute, refused with a Japanese 429 page. Reads are never limited. The
-  counters live in one process, so a multi-instance deployment needs a shared
-  store; they are not the provider quota guard, which `collection-jobs` owns.
+  minute, refused with a Japanese 429 page. Reads are never limited. A client is
+  the last entry of `X-Forwarded-For`, which is the one the front end wrote and
+  the caller cannot choose; behind Cloud Run every request otherwise has the
+  same peer address, and counting that would let one visitor lock out everybody.
+  The counters live in one process, so a multi-instance deployment needs a
+  shared store; they are not the provider quota guard, which `collection-jobs`
+  owns.
 - `form-action` allows only this origin and `https://accounts.google.com`, the
   one host an owner is ever sent to.
 
@@ -456,6 +467,21 @@ scheduler exists. The reply on success is a count and no workspace names.
 The service itself stays public, because owners sign in through it with a
 browser. That is why the token is checked in the application rather than left
 to `roles/run.invoker`: a public URL has no invoker check to lean on.
+
+Neither driver runs for ever in one call. The drain keeps working until its
+slice is spent and then answers with how many runs it moved, and it stops early
+when a pass moves nothing, so a queue that cannot be worked right now costs a
+few milliseconds instead of two minutes of instance time. A single run holds
+`collection-jobs` for at most twenty seconds at a time, so a page loaded while
+the drain is running still answers.
+
+Both drivers also do the tidying that the stored state needs: the drain asks
+`collection-jobs` to drop what is past its retention, and the browser driver
+asks `channel-data` and `channel-connections` the same when a collection
+finishes, under the owner's own authority. Retention periods are unchanged;
+they simply have a caller now. Each module keeps its whole state in one stored
+document with a hard size limit, so records nobody removes are what eventually
+stop every write.
 
 ### Setting up the scheduler
 

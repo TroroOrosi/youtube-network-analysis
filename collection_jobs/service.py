@@ -81,6 +81,17 @@ _LOG = logging.getLogger(__name__)
 ESTIMATED_CALL_UNITS = 3
 IDEMPOTENCY_TTL = timedelta(days=90)
 RETENTION_TTL = timedelta(days=90)
+# Days a suspended run may wake, cover no video at all and sleep again before
+# it is called finished. A collection larger than the daily budget still makes
+# progress every day; one whose budget cannot buy a single video makes none,
+# and waiting another day will not change that.
+MAX_STALLED_DAYS = 3
+
+# The longest one run may hold this module's lock in a single call. A scheduled
+# caller has minutes to spend, but the same process serves pages with the same
+# lock, so the work is handed back at short intervals rather than held for the
+# whole slice. The caller comes straight back for the rest.
+MAX_LOCK_SLICE_SECONDS = 20
 
 _MESSAGES = {
     ErrorCode.INVALID_INPUT: "The request contains an unsupported value",
@@ -253,6 +264,13 @@ class CollectionJobsService:
     def _flush(self) -> None:
         """Write the whole state document once a command has finished.
 
+        A write that fails takes its change with it. Without that, memory holds
+        a run the document has never heard of, the caller is told the write
+        failed, and the next restart quietly reinstates the older truth — the
+        one shape of data loss nobody goes looking for. Putting the state back
+        to what the store still holds keeps the two readings of the world the
+        same, and the error is raised so the caller knows nothing was kept.
+
         ponytail: the document is rewritten in full on every command; move to
         per-run rows when a workspace keeps more than a few thousand runs.
         """
@@ -262,7 +280,15 @@ class CollectionJobsService:
         document = snapshot.dump(self._state)
         if document == self._document:
             return
-        self._state_store.save(document)
+        try:
+            self._state_store.save(document)
+        except Exception:
+            self._state = (
+                snapshot.load(self._document)
+                if self._document is not None
+                else MemoryState()
+            )
+            raise
         self._document = document
 
     # Runs
@@ -328,25 +354,46 @@ class CollectionJobsService:
             if replayed is not None:
                 return replayed
 
-            run = self._run(context.workspace_id, command.run_id)
-            if run.status is not RunStatus.QUEUED:
-                raise _safe_error(ErrorCode.INVALID_RUN_TRANSITION, field="run_id")
-            if run.next_attempt_at is not None and now < run.next_attempt_at:
-                raise _safe_error(
-                    ErrorCode.INVALID_RUN_TRANSITION, field="run_id", retryable=True
-                )
-
-            deadline = (
-                now + timedelta(seconds=command.slice_seconds)
-                if command.slice_seconds is not None
-                else None
-            )
-            running = replace(run, status=RunStatus.RUNNING, started_at=now)
-            self._store(running)
-            finished = self._execute(context, running, now, deadline)
-            self._store(finished)
+            finished = self._work_one(context, command.run_id, command.slice_seconds, now)
             self._remember(record_key, payload, finished, now)
             return finished
+
+    def _work_one(
+        self,
+        context: WorkspaceContext,
+        run_id: str,
+        slice_seconds: int | None,
+        now: datetime,
+    ) -> CollectionRun:
+        """One slice of one run, with no ledger entry of its own.
+
+        `execute_run` records what it did against the caller's idempotency key,
+        because a client that retries a command must get the first answer back
+        rather than a second collection. A driver working the queue has no such
+        key and needs none: it never repeats a request, it asks what is due and
+        does it. Giving each slice a synthetic key would write a record per
+        slice into a document that is rewritten whole, which is how a state
+        document grows until it cannot be written at all.
+        """
+
+        run = self._run(context.workspace_id, run_id)
+        if run.status is not RunStatus.QUEUED:
+            raise _safe_error(ErrorCode.INVALID_RUN_TRANSITION, field="run_id")
+        if run.next_attempt_at is not None and now < run.next_attempt_at:
+            raise _safe_error(
+                ErrorCode.INVALID_RUN_TRANSITION, field="run_id", retryable=True
+            )
+
+        deadline = (
+            now + timedelta(seconds=slice_seconds)
+            if slice_seconds is not None
+            else None
+        )
+        running = replace(run, status=RunStatus.RUNNING, started_at=now)
+        self._store(running)
+        finished = self._execute(context, running, now, deadline)
+        self._store(finished)
+        return finished
 
     def cancel_run(
         self, context: WorkspaceContext, command: CancelRun
@@ -613,6 +660,13 @@ class CollectionJobsService:
         waited for, because the caller is a request that has to answer. Each run
         is offered at most one slice per call, so a run that suspends
         immediately cannot spin this loop.
+
+        The lock is taken once per run and not once for the whole call. Holding
+        it across the slice would be simpler, and would also stop every other
+        request touching this module for as long as the slice lasts — two
+        minutes, on a deployment that is one process. Between runs another
+        caller may take a run this list still names, so what is due is checked
+        again under the lock that works it.
         """
 
         _require(context, Permission.COLLECTION_RUN)
@@ -624,33 +678,39 @@ class CollectionJobsService:
         if isinstance(slice_seconds, bool) or not isinstance(slice_seconds, int):
             raise _safe_error(ErrorCode.INVALID_INPUT, field="slice_seconds")
         with self._lock:
-            deadline = reference_time + timedelta(seconds=slice_seconds)
-            worked: list[CollectionRun] = []
-            for _, run in sorted(self._state.runs.items()):
-                if (
-                    run.workspace_id != context.workspace_id
-                    or run.status is not RunStatus.QUEUED
-                ):
-                    continue
-                if (
-                    run.next_attempt_at is not None
-                    and reference_time < run.next_attempt_at
-                ):
-                    continue
-                remaining = int((deadline - self._now()).total_seconds())
+            due = [
+                run.run_id
+                for _, run in sorted(self._state.runs.items())
+                if run.workspace_id == context.workspace_id
+                and run.status is RunStatus.QUEUED
+                and (
+                    run.next_attempt_at is None
+                    or reference_time >= run.next_attempt_at
+                )
+            ]
+
+        # One clock decides both halves: the budget is spent in the same time
+        # the runs are judged by, so a caller whose `reference_time` has drifted
+        # cannot be given a longer slice than it asked for.
+        deadline = self._now() + timedelta(seconds=slice_seconds)
+        worked: list[CollectionRun] = []
+        for run_id in due:
+            with self._lock:
+                moment = self._now()
+                remaining = int((deadline - moment).total_seconds())
                 if remaining < 1:
                     break
+                run = self._state.runs.get(_key(context.workspace_id, run_id))
+                if run is None or run.status is not RunStatus.QUEUED:
+                    continue
+                if run.next_attempt_at is not None and moment < run.next_attempt_at:
+                    continue
                 worked.append(
-                    self.execute_run(
-                        context,
-                        ExecuteRun(
-                            run_id=run.run_id,
-                            idempotency_key=f"drain-{self._tokens.new_token()}",
-                            slice_seconds=remaining,
-                        ),
+                    self._work_one(
+                        context, run_id, min(remaining, MAX_LOCK_SLICE_SECONDS), moment
                     )
                 )
-            return tuple(worked)
+        return tuple(worked)
 
     def due_workspace_ids(self, reference_time: datetime) -> tuple[str, ...]:
         """Which workspaces have work waiting, for a driver that has no session.
@@ -870,6 +930,7 @@ class CollectionJobsService:
                 pages=resuming.pages_fetched,
                 spent=resuming.quota_spent,
                 opened=True,
+                stalled=resuming.stalled,
             )
 
         videos_collection = f"{run.run_id}-a{run.attempt}-videos"
@@ -916,6 +977,7 @@ class CollectionJobsService:
             pages=videos.pages,
             spent=videos.quota_spent,
             opened=False,
+            stalled=0,
         )
 
     def _collect_inventory(
@@ -953,6 +1015,7 @@ class CollectionJobsService:
         pages: int,
         spent: int,
         opened: bool,
+        stalled: int,
     ) -> CollectionRun:
         """Cover every video in the accepted inventory, over as many slices as it takes.
 
@@ -976,8 +1039,12 @@ class CollectionJobsService:
                     idempotency_key=f"{collection_id}-start",
                 ),
             )
+        started_with = covered
         for index, video_id in enumerate(pending):
             if deadline is not None and self._now() >= deadline:
+                # A slice that covered nothing is not a stalled run: it is a
+                # slice that was short. Only a day's units failing to buy a
+                # single video counts against the run.
                 return self._suspend(
                     run,
                     now,
@@ -988,6 +1055,7 @@ class CollectionJobsService:
                     pages=pages,
                     spent=spent,
                     until=now,
+                    stalled=stalled,
                 )
             activity = self._traverse(
                 context,
@@ -998,6 +1066,20 @@ class CollectionJobsService:
             pages += activity.pages
             spent += activity.quota_spent
             if activity.reason is RunFailureReason.QUOTA_EXHAUSTED:
+                # A day whose units bought no video at all proves nothing new.
+                # Let that repeat MAX_STALLED_DAYS times and the run is not
+                # slow, it is larger than any day this workspace is allowed to
+                # spend, so stop and hand back what was already covered rather
+                # than wake forever.
+                idle = covered == started_with
+                if idle and stalled + 1 >= MAX_STALLED_DAYS:
+                    self._forget_resume(run)
+                    self._finish_partial(
+                        context, run, collection_id, now, activity.reason, covered
+                    )
+                    return self._terminal(
+                        run, now, activity.reason, pages=pages, spent=spent
+                    )
                 return self._suspend(
                     run,
                     now,
@@ -1008,6 +1090,7 @@ class CollectionJobsService:
                     pages=pages,
                     spent=spent,
                     until=_next_utc_day(now),
+                    stalled=stalled + 1 if idle else 0,
                 )
             if activity.reason is not None:
                 self._forget_resume(run)
@@ -1066,6 +1149,7 @@ class CollectionJobsService:
         pages: int,
         spent: int,
         until: datetime,
+        stalled: int,
     ) -> CollectionRun:
         """Remember where a run stopped and put it back in the queue.
 
@@ -1087,6 +1171,7 @@ class CollectionJobsService:
             pages_fetched=pages,
             quota_spent=spent,
             saved_at=now,
+            stalled=stalled,
         )
         return replace(
             run,

@@ -139,6 +139,11 @@ class WorkspaceAccessService:
         document = self._store.load()
         if document is None:
             return
+        self._adopt(document)
+
+    def _adopt(self, document: str) -> None:
+        """Make a written document the state this process is working from."""
+
         state = snapshot.load(document)
         self._document = document
         self._users_by_id = state.users
@@ -166,6 +171,13 @@ class WorkspaceAccessService:
 
         ponytail: the document is rewritten in full on every command; move to
         per-aggregate rows if a deployment ever holds more than one team.
+
+        A write that fails takes its change with it. Without that, memory holds
+        a membership the document has never heard of, the caller is told the
+        write failed, and the next restart quietly reinstates the older truth —
+        the one shape of data loss nobody goes looking for. Putting the state
+        back to what the store still holds keeps the two readings of the world
+        the same, and the error is raised so the caller knows nothing was kept.
         """
 
         if self._store is None:
@@ -183,8 +195,29 @@ class WorkspaceAccessService:
         )
         if document == self._document:
             return
-        self._store.save(document)
+        try:
+            self._store.save(document)
+        except Exception:
+            if self._document is not None:
+                self._adopt(self._document)
+            else:
+                self._forget_everything()
+            raise
         self._document = document
+
+    def _forget_everything(self) -> None:
+        """Back to the empty start, for a first write that never landed."""
+
+        self._users_by_id = {}
+        self._user_id_by_identity = {}
+        self._sessions_by_digest = {}
+        self._session_digest_by_id = {}
+        self._workspaces_by_id = {}
+        self._memberships_by_id = {}
+        self._membership_id_by_pair = {}
+        self._preferred_workspace_by_user = {}
+        self._idempotency_records = {}
+        self._audit_log = InMemoryAuditLog()
 
     def __repr__(self) -> str:
         return (

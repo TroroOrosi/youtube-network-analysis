@@ -22,11 +22,14 @@ class FakeStore:
     def __init__(self) -> None:
         self.document: str | None = None
         self.saves = 0
+        self.failure: Exception | None = None
 
     def load(self) -> str | None:
         return self.document
 
     def save(self, document: str) -> None:
+        if self.failure is not None:
+            raise self.failure
         self.document = document
         self.saves += 1
 
@@ -206,6 +209,70 @@ class DocumentTests(RestartFixture):
         )
 
         self.assertEqual(run.status, RunStatus.QUEUED)
+
+
+class FlushFailureTests(RestartFixture):
+    """A write that never landed must not be believed by this process either.
+
+    The store can refuse: the document outgrew its limit, or the network went
+    away mid-save. What must not survive that is the change itself. If the
+    process kept a run the store has never heard of, every later write would be
+    built on top of it, and a restart would produce a different history than
+    the one the caller was shown.
+    """
+
+    def schedule(self, key: str = "schedule-1"):
+        return self.jobs.create_schedule(
+            self.owner,
+            CreateSchedule(
+                connection_id=self.connection.connection_id,
+                kind=RunKind.SUBSCRIBERS,
+                interval=timedelta(days=1),
+                idempotency_key=key,
+            ),
+        )
+
+    def test_a_refused_write_leaves_the_state_the_store_still_has(self) -> None:
+        first = self.schedule("schedule-1")
+        self.store.failure = RuntimeError("document too large")
+
+        with self.assertRaises(RuntimeError):
+            self.schedule("schedule-2")
+
+        self.store.failure = None
+        listed = self.jobs.list_schedules(self.owner)
+        self.assertEqual(
+            [item.schedule_id for item in listed.items], [first.schedule_id]
+        )
+
+    def test_the_rolled_back_state_is_what_a_restart_reads(self) -> None:
+        self.schedule("schedule-1")
+        self.store.failure = RuntimeError("document too large")
+        with self.assertRaises(RuntimeError):
+            self.schedule("schedule-2")
+        self.store.failure = None
+
+        before = [
+            item.schedule_id for item in self.jobs.list_schedules(self.owner).items
+        ]
+        self.restart()
+
+        self.assertEqual(
+            [item.schedule_id for item in self.jobs.list_schedules(self.owner).items],
+            before,
+        )
+
+    def test_a_first_write_that_never_landed_leaves_nothing_behind(self) -> None:
+        """Nothing was saved yet, so the rollback has no document to go back to."""
+
+        self.store.failure = RuntimeError("network gone")
+
+        with self.assertRaises(RuntimeError):
+            self.schedule("schedule-1")
+
+        self.store.failure = None
+        self.assertIsNone(self.store.document)
+        self.assertEqual(self.jobs.list_schedules(self.owner).items, ())
 
 
 if __name__ == "__main__":

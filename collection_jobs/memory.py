@@ -50,6 +50,10 @@ class ResumePoint:
     pages_fetched: int
     quota_spent: int
     saved_at: datetime
+    # Days that bought nothing: a run that wakes, cannot afford its next video
+    # and sleeps again has not moved, and counting that is the only way to tell
+    # a long collection apart from one the daily budget can never cover.
+    stalled: int = 0
 
 
 @dataclass(slots=True)

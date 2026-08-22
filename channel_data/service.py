@@ -172,6 +172,13 @@ class ChannelDataService:
 
         ponytail: the document is rewritten in full on every command; move to
         per-collection rows when a workspace holds more than a few channels.
+
+        A write that fails takes its change with it. Without that, memory holds
+        rows the document has never heard of, the caller is told the write
+        failed, and the next restart quietly reinstates the older truth — the
+        one shape of data loss nobody goes looking for. Putting the state back
+        to what the store still holds keeps the two readings of the world the
+        same, and the error is raised so the caller knows nothing was kept.
         """
 
         if self._store is None:
@@ -179,7 +186,15 @@ class ChannelDataService:
         document = snapshot.dump(self._state)
         if document == self._document:
             return
-        self._store.save(document)
+        try:
+            self._store.save(document)
+        except Exception:
+            self._state = (
+                snapshot.load(self._document)
+                if self._document is not None
+                else MemoryState()
+            )
+            raise
         self._document = document
 
     def start_collection(

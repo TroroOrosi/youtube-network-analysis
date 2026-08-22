@@ -1,0 +1,8 @@
+# Every text file in this repository is stored with LF, which is what it has
+# always been; this says so, so that a checkout on a machine configured
+# differently cannot commit CRLF back and turn a one-line change into a
+# whole-file diff. Working copies on Windows still get CRLF.
+* text=auto
+
+*.png binary
+*.ttf binary
