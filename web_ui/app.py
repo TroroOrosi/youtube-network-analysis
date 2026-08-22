@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Lock
 from typing import Annotated, Any
+from urllib.parse import urlencode
 
 from fastapi import FastAPI, Form, Query, Request
 from fastapi.exceptions import RequestValidationError
@@ -34,6 +35,7 @@ from analysis_api.models import (
 from channel_connections.errors import ChannelConnectionsError
 from channel_connections.models import (
     BeginAuthorization,
+    BeginReauthorization,
     CompleteAuthorization,
     DisconnectConnection,
     RedactedSecret,
@@ -265,23 +267,18 @@ def _every_run(services: Services, context: WorkspaceContext) -> tuple[Collectio
     return tuple(runs)
 
 
-def _is_user_navigation(request: Request) -> bool:
-    """Whether this GET is the browser opening the page, not a page embedding it.
-
-    `/collecting` does work as a side effect of being fetched, which any other
-    site could trigger with an `<img>` or a prefetch pointing at it. Fetch
-    metadata says what the browser was doing: a document it is navigating to,
-    from this origin or typed in. Browsers that send no metadata at all are
-    allowed through, because refusing them would break the page entirely.
-    """
-
-    site = request.headers.get("sec-fetch-site")
-    if site is None:
-        return True
-    if site not in {"same-origin", "none"}:
-        return False
-    dest = request.headers.get("sec-fetch-dest")
-    return dest in {None, "document"}
+def _collection_progress(
+    services: Services, context: WorkspaceContext, moment: datetime
+) -> tuple[tuple[CollectionRun, ...], tuple[CollectionRun, ...], bool]:
+    runs = _every_run(services, context)
+    waiting = tuple(
+        run for run in runs if run.status.value in {"QUEUED", "RUNNING"}
+    )
+    suspended = bool(waiting) and all(
+        run.next_attempt_at is not None and run.next_attempt_at > moment
+        for run in waiting
+    )
+    return runs, waiting, suspended
 
 
 def create_app(services: Services | None = None, *, base_url: str = "https://localhost") -> FastAPI:
@@ -309,12 +306,16 @@ def create_app(services: Services | None = None, *, base_url: str = "https://loc
     async def security_headers(request: Request, call_next: Any) -> Response:
         response = await call_next(request)
         response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; style-src 'self' 'unsafe-inline';"
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';"
             f" form-action 'self' {CONSENT_ORIGIN}; frame-ancestors 'none'"
         )
         response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-XSS-Protection"] = "0"
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Permissions-Policy"] = (
+            "camera=(), microphone=(), geolocation=()"
+        )
         # Every page is served over TLS by Cloud Run, but the first request
         # of a session can still be a plain http one that carries the
         # cookies before the redirect. A year of HSTS removes that request.
@@ -527,7 +528,7 @@ def _register_routes(app: FastAPI) -> None:
             VerifiedIdentity(
                 issuer="urn:demo:local",
                 subject=subject,
-                authenticated_at=_services(request).access._now(),
+                authenticated_at=datetime.now(UTC),
                 display_name=subject,
             ),
         )
@@ -695,6 +696,22 @@ def _register_routes(app: FastAPI) -> None:
         )
         return RedirectResponse(start.authorization_url, status_code=303)
 
+    @app.post("/connections/{connection_id}/reauthorize")
+    def reauthorize_connection(
+        request: Request, connection_id: str, csrf_token: str = Form("")
+    ) -> Response:
+        _check_csrf(request, csrf_token)
+        session = _require_session(request)
+        context = _context(request, session, Permission.CHANNEL_MANAGE_CONNECTION)
+        start = _services(request).connections.begin_reauthorization(
+            context,
+            BeginReauthorization(
+                connection_id=connection_id,
+                idempotency_key=secrets.token_urlsafe(16),
+            ),
+        )
+        return RedirectResponse(start.authorization_url, status_code=303)
+
     @app.get("/demo/consent", response_class=HTMLResponse)
     def demo_consent(request: Request, state: str = Query(...)) -> Response:
         return _render(request, "consent.html", {"state": state})
@@ -795,43 +812,17 @@ def _register_routes(app: FastAPI) -> None:
 
     @app.get("/collecting", response_class=HTMLResponse)
     def collecting(request: Request) -> Response:
-        """One slice of the queued work, then a page that asks for the next.
-
-        The browser is the driver: each visit collects for as long as
-        `BROWSER_SLICE_SECONDS` allows and then answers, and the page it returns
-        asks for another visit while anything is still due. Nothing is held open
-        and nothing is kept in this process, so a closed tab costs only the slice
-        it was in the middle of — the runs stay queued, and the next visit, or
-        the scheduler, carries on from where the last one stopped.
-
-        A run waiting for tomorrow's quota is not something a refresh can help
-        with, so that case stops the loop and says so instead of spinning.
-        """
+        """Show progress without changing state or spending provider quota."""
 
         session = _require_session(request)
         context = _context(request, session, Permission.COLLECTION_RUN)
         services = _services(request)
-        # Fetching this page does real work, and a page can be fetched by
-        # something that is not a person: another site's <img>, a link
-        # prefetch, a scanner. The queue is only worked when the browser says
-        # it is opening this page as a document, from here.
-        worked = (
-            services.jobs.execute_due_runs(
-                context, datetime.now(UTC), BROWSER_SLICE_SECONDS
-            )
-            if _is_user_navigation(request)
-            else ()
+        runs, waiting, suspended = _collection_progress(
+            services, context, datetime.now(UTC)
         )
-        runs = _every_run(services, context)
-        waiting = [run for run in runs if run.status.value in {"QUEUED", "RUNNING"}]
-        moment = datetime.now(UTC)
         if not waiting:
-            _purge_aged_out(services, context)
-            return _redirect("/", _collect_outcome(worked) if worked else None)
-        if all(
-            run.next_attempt_at is not None and run.next_attempt_at > moment
-            for run in waiting
-        ):
+            return _redirect("/")
+        if suspended:
             return _redirect("/", "collect_suspended")
         return _render(
             request,
@@ -851,6 +842,34 @@ def _register_routes(app: FastAPI) -> None:
                     for run in runs[:5]
                 ],
             },
+        )
+
+    @app.post("/collecting/step")
+    def collecting_step(request: Request, csrf_token: str = Form("")) -> Response:
+        """Run one bounded slice; only a CSRF-protected write may spend quota."""
+
+        _check_csrf(request, csrf_token)
+        session = _require_session(request)
+        context = _context(request, session, Permission.COLLECTION_RUN)
+        services = _services(request)
+        worked = services.jobs.execute_due_runs(
+            context, datetime.now(UTC), BROWSER_SLICE_SECONDS
+        )
+        _, waiting, suspended = _collection_progress(
+            services, context, datetime.now(UTC)
+        )
+        if not waiting:
+            _purge_aged_out(services, context)
+            return _redirect("/", _collect_outcome(worked) if worked else None)
+        if suspended:
+            return _redirect("/", "collect_suspended")
+        return _redirect("/collecting")
+
+    @app.get("/assets/collecting.js", include_in_schema=False)
+    def collecting_script() -> Response:
+        return Response(
+            "document.getElementById('collection-step')?.requestSubmit();\n",
+            media_type="application/javascript",
         )
 
     @app.post("/internal/drain")
@@ -940,6 +959,19 @@ def _register_routes(app: FastAPI) -> None:
             RunAnalysis(channel_id=channel_id, filters=filters),
             AnalysisPageRequest(cursor=cursor, limit=50),
         )
+        next_url = None
+        if page.next_cursor is not None:
+            next_query = [("channel_id", channel_id)]
+            if segment:
+                next_query.append(("segment", segment))
+            if subscribed_within_days is not None:
+                next_query.append(
+                    ("subscribed_within_days", str(subscribed_within_days))
+                )
+            if never_commented:
+                next_query.append(("never_commented", "true"))
+            next_query.append(("cursor", page.next_cursor))
+            next_url = f"/analysis?{urlencode(next_query)}"
         return _render(
             request,
             "analysis.html",
@@ -967,7 +999,7 @@ def _register_routes(app: FastAPI) -> None:
                     "subscribed_within_days": subscribed_within_days,
                     "segment": segment,
                 },
-                "next_cursor": page.next_cursor,
+                "next_url": next_url,
                 "segment_options": list(SEGMENT_LABELS.items()),
             },
         )
@@ -977,6 +1009,8 @@ def _register_routes(app: FastAPI) -> None:
         request: Request,
         channel_id: str = Form(...),
         never_commented: bool = Form(False),
+        subscribed_within_days: Annotated[OptionalInt, Form()] = None,
+        segment: str | None = Form(None),
         csrf_token: str = Form(""),
     ) -> Response:
         _check_csrf(request, csrf_token)
@@ -986,7 +1020,11 @@ def _register_routes(app: FastAPI) -> None:
             context,
             ExportAnalysis(
                 channel_id=channel_id,
-                filters=AnalysisFilterInput(never_commented=never_commented),
+                filters=AnalysisFilterInput(
+                    never_commented=never_commented,
+                    subscribed_within_days=subscribed_within_days,
+                    segments=(segment,) if segment else (),
+                ),
             ),
         )
         return Response(

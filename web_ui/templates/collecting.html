@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% block title %}収集中 | YouTube 分析{% endblock %}
-{% block head %}<meta http-equiv="refresh" content="1;url=/collecting">{% endblock %}
+{% block head %}<script src="/assets/collecting.js" defer></script>{% endblock %}
 {% block content %}
 <h2>データを収集しています</h2>
 <p class="notice" role="status" aria-live="polite">
@@ -12,7 +12,14 @@
   時間をおくと続きから再開します。
 </p>
 
-<h2>収集の状況</h2>
+<form id="collection-step" method="post" action="/collecting/step">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <p><button type="submit">収集を続ける</button></p>
+  <p class="limits">自動で進まない場合は、このボタンを押してください。</p>
+</form>
+
+<h2 id="collection-status-heading">収集の状況</h2>
+<div class="table-scroll" role="region" aria-labelledby="collection-status-heading" tabindex="0">
 <table>
   <thead>
     <tr><th scope="col">種類</th><th scope="col">状態</th><th scope="col">取得ページ</th><th scope="col">使用量</th></tr>
@@ -28,6 +35,7 @@
   {% endfor %}
   </tbody>
 </table>
+</div>
 
 <p><a href="/?msg=collect_stopped">中断してホームに戻る</a></p>
 {% endblock %}

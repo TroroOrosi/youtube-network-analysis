@@ -10,7 +10,7 @@ build step. Domain modules stay standard-library only; the dependencies in
 ## Running locally
 
 ```powershell
-python -m pip install -r web_ui/requirements.txt
+python -m pip install -r web_ui/requirements-dev.txt
 python -m uvicorn web_ui.main:app --host 127.0.0.1 --port 8000
 ```
 
@@ -110,11 +110,10 @@ Google all end in the same message on purpose.
   cannot be the plain http one that carries the cookies, and
   `Cache-Control: no-store` so no page is kept by a shared cache or handed back
   by the back button after a sign-out.
-- `/collecting` does real work when it is fetched, so it only does that work for
-  a browser that says it is navigating to it as a document from this origin
-  (`Sec-Fetch-Site`, `Sec-Fetch-Dest`). Another site cannot spend the quota with
-  an `<img>` or a prefetch. Browsers that send no fetch metadata are still
-  served, since refusing them would break the page.
+- `GET /collecting` is a read-only progress page. A CSRF-protected
+  `POST /collecting/step` is the only browser action that advances a run or
+  spends provider quota, so an image, prefetch, scanner, or cross-site form
+  cannot start work.
 - Errors render a stable Japanese message plus the next action, never a provider
   response, credential, or internal identifier.
 - The workspace cookie is only a hint: every request re-resolves a real
@@ -467,14 +466,14 @@ finish today says when it can continue instead of failing.
 
 Two things drive those slices, and they are the same code path:
 
-**The browser.** `/collecting` collects for up to `BROWSER_SLICE_SECONDS`
-(20 s), then returns a page carrying `<meta http-equiv="refresh">` that asks for
-another slice a second later. It is a `<meta>` tag and not a script because the
-Content-Security-Policy here is `default-src 'self'` with no `script-src`; there
-is no JavaScript in this application at all. Closing the tab costs only the
-slice in flight: the runs stay queued and everything already collected is in
+**The browser.** `GET /collecting` shows progress without changing anything.
+Its same-origin script submits a CSRF-protected form to `POST /collecting/step`,
+which collects for up to `BROWSER_SLICE_SECONDS` (20 s) and redirects back to
+the progress page. Without JavaScript the same form exposes a **収集を続ける**
+button, so collection remains usable. Closing the tab costs only the slice in
+flight: the runs stay queued and everything already collected is in
 `channel-data`. When only a wait for tomorrow's quota is left, the page stops
-refreshing and says so rather than spinning until midnight.
+and says so rather than spinning until midnight.
 
 **Cloud Scheduler.** `POST /internal/drain` continues every workspace's queued
 work with no session involved, which is the only way a run suspended for

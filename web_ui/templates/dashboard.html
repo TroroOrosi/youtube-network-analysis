@@ -1,8 +1,32 @@
 {% extends "base.html" %}
 {% block title %}ホーム | YouTube 分析{% endblock %}
 {% block content %}
-<h2>接続中のチャンネル</h2>
+<h2 id="workspace-heading">ワークスペース</h2>
+<form method="post" action="/workspaces/select" class="form-row">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <div>
+    <label for="workspace_id">表示するワークスペース</label>
+    <select id="workspace_id" name="workspace_id">
+      {% for workspace in workspaces %}
+      <option value="{{ workspace.workspace_id }}" {% if workspace.workspace_id == current_workspace_id %}selected{% endif %}>{{ workspace.name }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <button type="submit">切り替える</button>
+</form>
+<details>
+  <summary>新しいワークスペースを作成</summary>
+  <form method="post" action="/workspaces">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="new_workspace_name">ワークスペース名</label>
+    <input id="new_workspace_name" name="name" required maxlength="80">
+    <p><button type="submit">作成する</button></p>
+  </form>
+</details>
+
+<h2 id="connections-heading">接続中のチャンネル</h2>
 {% if connections %}
+<div class="table-scroll" role="region" aria-labelledby="connections-heading" tabindex="0">
 <table>
   <caption class="limits">接続の状態と次にできる操作</caption>
   <thead>
@@ -13,21 +37,29 @@
     <tr>
       <th scope="row">{{ item.title }}</th>
       <td>{{ item.status_label }}</td>
-      <td>
+      <td><div class="actions">
+        {% if item.status == "ACTIVE" %}
         <form method="post" action="/connections/{{ item.connection_id }}/collect" class="inline">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <button type="submit">データを収集する</button>
         </form>
+        {% else %}
+        <form method="post" action="/connections/{{ item.connection_id }}/reauthorize" class="inline">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit">再認可する</button>
+        </form>
+        {% endif %}
         <a href="/analysis?channel_id={{ item.channel_id }}">分析を見る</a>
         <form method="post" action="/connections/{{ item.connection_id }}/disconnect" class="inline">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <button type="submit" class="secondary">接続を解除</button>
         </form>
-      </td>
+      </div></td>
     </tr>
   {% endfor %}
   </tbody>
 </table>
+</div>
 {% else %}
 <p>まだチャンネルを接続していません。次の手順は「チャンネルを接続する」です。</p>
 {% endif %}
@@ -37,8 +69,9 @@
   <p><button type="submit">チャンネルを接続する</button></p>
 </form>
 
-<h2>最近の収集</h2>
+<h2 id="runs-heading">最近の収集</h2>
 {% if runs %}
+<div class="table-scroll" role="region" aria-labelledby="runs-heading" tabindex="0">
 <table>
   <thead>
     <tr><th scope="col">種類</th><th scope="col">結果</th><th scope="col">使用量</th></tr>
@@ -49,6 +82,7 @@
   {% endfor %}
   </tbody>
 </table>
+</div>
 {% else %}
 <p>収集の履歴はまだありません。</p>
 {% endif %}

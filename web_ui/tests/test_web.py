@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+import io
 import os
 import inspect
 import shutil
@@ -13,7 +15,13 @@ from urllib.parse import parse_qs, urlsplit
 
 from fastapi.testclient import TestClient
 
-from workspace_access.models import AccessSecret, Permission
+from channel_connections.models import ReportCredentialInvalidation
+from workspace_access.models import (
+    AccessSecret,
+    Permission,
+    SessionEvidence,
+    WorkspaceSelection,
+)
 
 from web_ui.app import (
     COLLECT_LIMIT_PER_MINUTE,
@@ -35,7 +43,7 @@ BASE_URL = "https://testserver"
 
 
 def drive_collection(test: unittest.TestCase, client: TestClient) -> str:
-    """Follow `/collecting` the way a browser follows its meta refresh.
+    """Follow `/collecting` the way its progressively enhanced form does.
 
     The page answers 200 while there is more to do and redirects when there is
     not, so this is the whole of what a browser contributes: ask again. The cap
@@ -47,6 +55,14 @@ def drive_collection(test: unittest.TestCase, client: TestClient) -> str:
         page = client.get("/collecting")
         if page.status_code != 200:
             return page.headers["location"]
+        step = client.post(
+            "/collecting/step",
+            data={"csrf_token": client.cookies["yna_csrf"]},
+        )
+        if step.status_code != 303:
+            test.fail(f"the collecting step answered {step.status_code}")
+        if step.headers["location"] != "/collecting":
+            return step.headers["location"]
     test.fail("the collecting page never stopped asking for another slice")
     raise AssertionError  # unreachable; keeps the return type honest
 
@@ -154,7 +170,13 @@ class AuthenticationTests(WebFixture):
 
         self.assertEqual(response.headers["X-Content-Type-Options"], "nosniff")
         self.assertEqual(response.headers["X-Frame-Options"], "DENY")
+        self.assertEqual(response.headers["X-XSS-Protection"], "0")
         self.assertEqual(response.headers["Referrer-Policy"], "no-referrer")
+        self.assertEqual(
+            response.headers["Permissions-Policy"],
+            "camera=(), microphone=(), geolocation=()",
+        )
+        self.assertIn("script-src 'self'", response.headers["Content-Security-Policy"])
         self.assertIn("frame-ancestors 'none'", response.headers["Content-Security-Policy"])
 
     def test_the_policy_allows_the_google_consent_screen_only(self) -> None:
@@ -167,6 +189,13 @@ class AuthenticationTests(WebFixture):
         ]
 
         self.assertEqual(directive, [" form-action 'self' https://accounts.google.com"])
+
+    def test_pages_offer_a_keyboard_skip_link(self) -> None:
+        page = self.client.get("/login")
+
+        self.assertIn('class="skip-link"', page.text)
+        self.assertIn('href="#main-content"', page.text)
+        self.assertIn('id="main-content"', page.text)
 
 
 class DemoLoginTests(WebFixture):
@@ -252,6 +281,16 @@ class GuidedFlowTests(WebFixture):
         self.assertIn("まだチャンネルを接続していません", page.text)
         self.assertIn("チャンネルを接続する", page.text)
 
+    def test_the_dashboard_exposes_workspace_selection_and_creation(self) -> None:
+        self.login()
+        self.create_workspace("最初の運用")
+
+        page = self.client.get("/")
+
+        self.assertIn('action="/workspaces/select"', page.text)
+        self.assertIn("最初の運用", page.text)
+        self.assertIn("新しいワークスペースを作成", page.text)
+
     def test_the_consent_screen_states_the_only_requested_scope(self) -> None:
         self.login()
         self.create_workspace()
@@ -277,6 +316,8 @@ class GuidedFlowTests(WebFixture):
         analysis = self.client.get("/analysis?channel_id=UC_demo_channel")
         self.assertEqual(analysis.status_code, 200)
         self.assertIn("分析結果", analysis.text)
+        self.assertIn("セグメント分布", analysis.text)
+        self.assertIn("<meter", analysis.text)
         for label in ("新規サイレント", "長期サイレント", "休眠", "アクティブ"):
             self.assertIn(label, analysis.text)
         self.assertIn("登録を公開している人", analysis.text)
@@ -306,6 +347,66 @@ class GuidedFlowTests(WebFixture):
         self.assertEqual(filtered.status_code, 200)
         self.assertIn("長期サイレント", filtered.text)
         self.assertNotIn("アクティブ</td>", filtered.text)
+
+    def test_an_empty_filter_result_explains_how_to_continue(self) -> None:
+        self.login()
+        self.create_workspace()
+        self.connect_channel()
+        connection_id = self.client.get("/").text.split("/connections/")[1].split("/collect")[0]
+        self.collect_now(connection_id)
+
+        page = self.client.get(
+            "/analysis?channel_id=UC_demo_channel&segment=ACTIVE"
+            "&never_commented=true"
+        )
+
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("条件に一致する登録者はいません", page.text)
+        self.assertIn("条件をリセット", page.text)
+
+    def test_data_tables_have_keyboard_scroll_regions(self) -> None:
+        self.login()
+        self.create_workspace()
+        self.connect_channel()
+        dashboard = self.client.get("/")
+        connection_id = dashboard.text.split("/connections/")[1].split("/collect")[0]
+        self.collect_now(connection_id)
+
+        analysis = self.client.get("/analysis?channel_id=UC_demo_channel")
+
+        self.assertIn('class="table-scroll"', dashboard.text)
+        self.assertIn('role="region"', dashboard.text)
+        self.assertIn('class="table-scroll"', analysis.text)
+
+    def test_filtered_pagination_keeps_the_filter_query(self) -> None:
+        dataset = self.services.connections._data_gateway._dataset
+        self.services.connections._data_gateway._dataset = replace(
+            dataset,
+            subscribers=tuple(
+                replace(
+                    dataset.subscribers[0],
+                    subscriber_channel_id=f"UC_demo_sub_{index}",
+                    title=f"視聴者{index}",
+                )
+                for index in range(1, 61)
+            ),
+        )
+        self.login()
+        self.create_workspace()
+        self.connect_channel()
+        connection_id = self.client.get("/").text.split("/connections/")[1].split("/collect")[0]
+        self.collect_now(connection_id)
+
+        page = self.client.get(
+            "/analysis?channel_id=UC_demo_channel&segment=NEW_SILENT"
+            "&subscribed_within_days=30&never_commented=true"
+        )
+
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("cursor=", page.text)
+        self.assertIn("segment=NEW_SILENT", page.text)
+        self.assertIn("subscribed_within_days=30", page.text)
+        self.assertIn("never_commented=true", page.text)
 
     def test_the_run_history_shows_japanese_labels_only(self) -> None:
         self.login()
@@ -366,6 +467,28 @@ class GuidedFlowTests(WebFixture):
         self.assertTrue(export.content.startswith(b"\xef\xbb\xbf"))
         self.assertIn("subscriber_channel_id", export.text)
 
+    def test_csv_export_uses_the_filters_shown_on_screen(self) -> None:
+        self.login()
+        self.create_workspace()
+        self.connect_channel()
+        connection_id = self.client.get("/").text.split("/connections/")[1].split("/collect")[0]
+        self.collect_now(connection_id)
+
+        export = self.post(
+            "/analysis/export",
+            {
+                "channel_id": "UC_demo_channel",
+                "segment": "OLD_SILENT",
+                "subscribed_within_days": "3650",
+                "never_commented": "true",
+            },
+        )
+        rows = list(csv.DictReader(io.StringIO(export.content.decode("utf-8-sig"))))
+
+        self.assertEqual(export.status_code, 200)
+        self.assertTrue(rows)
+        self.assertEqual({row["segment"] for row in rows}, {"OLD_SILENT"})
+
     def test_disconnecting_keeps_the_collected_data(self) -> None:
         self.login()
         self.create_workspace()
@@ -379,6 +502,45 @@ class GuidedFlowTests(WebFixture):
         self.assertIn("msg=disconnected", response.headers["location"])
         analysis = self.client.get("/analysis?channel_id=UC_demo_channel")
         self.assertEqual(analysis.status_code, 200)
+
+    def test_a_connection_that_needs_attention_can_be_reauthorized(self) -> None:
+        self.login()
+        self.create_workspace()
+        self.connect_channel()
+        connection_id = self.client.get("/").text.split("/connections/")[1].split("/collect")[0]
+        session = self.services.access.authenticate_session(
+            SessionEvidence(AccessSecret(self.client.cookies["yna_session"]))
+        )
+        context = self.services.access.resolve_workspace_context(
+            session,
+            WorkspaceSelection(self.client.cookies["yna_workspace"]),
+            Permission.CHANNEL_MANAGE_CONNECTION,
+        )
+        self.services.connections.report_credential_invalidation(
+            context,
+            ReportCredentialInvalidation(
+                connection_id=connection_id,
+                idempotency_key="invalidate-for-web-test",
+            ),
+        )
+
+        dashboard = self.client.get("/")
+        self.assertIn("再認可する", dashboard.text)
+        self.assertNotIn(f'/connections/{connection_id}/collect', dashboard.text)
+        started = self.post(f"/connections/{connection_id}/reauthorize")
+
+        self.assertEqual(started.status_code, 303)
+        consent_url = started.headers["location"]
+        consent = self.client.get(consent_url)
+        state = parse_qs(urlsplit(consent_url).query)["state"][0]
+        completed = self.post(
+            "/oauth/callback", {"state": state, "decision": "approve"}
+        )
+
+        self.assertEqual(consent.status_code, 200)
+        self.assertEqual(completed.status_code, 303)
+        self.assertIn("msg=connected", completed.headers["location"])
+        self.assertIn("利用可能", self.client.get("/").text)
 
 
 class CollectionDriverTests(WebFixture):
@@ -411,8 +573,8 @@ class CollectionDriverTests(WebFixture):
             page = self.client.get("/collecting")
 
         self.assertEqual(page.status_code, 200)
-        self.assertIn('http-equiv="refresh"', page.text)
-        self.assertIn("url=/collecting", page.text)
+        self.assertIn('action="/collecting/step"', page.text)
+        self.assertIn('src="/assets/collecting.js"', page.text)
         self.assertIn("収集しています", page.text)
 
     def test_the_driver_finishes_the_work_and_says_so(self) -> None:
@@ -967,35 +1129,25 @@ class RequestSafetyTests(WebFixture):
 
         self.assertEqual(response.headers["cache-control"], "no-store")
 
-    def test_a_cross_site_fetch_of_the_collecting_page_collects_nothing(self) -> None:
-        """Loading a page must not be a way for another site to spend our quota.
-
-        `/collecting` works the queue as a side effect of being fetched, and any
-        page on the internet can cause a fetch with an `<img>` or a prefetch.
-        The browser says what it was doing, and only its own navigation counts.
-        """
+    def test_getting_the_collecting_page_never_spends_quota(self) -> None:
+        """The progress page is a safe read, with or without fetch metadata."""
 
         connection_id = self.prepare()
         self.post(f"/connections/{connection_id}/collect")
 
-        page = self.client.get(
-            "/collecting",
-            headers={"sec-fetch-site": "cross-site", "sec-fetch-dest": "image"},
-        )
+        page = self.client.get("/collecting")
 
         self.assertEqual(page.status_code, 200)
         self.assertEqual({run.status.value for run in self.runs()}, {"QUEUED"})
         self.assertEqual({run.pages_fetched for run in self.runs()}, {0})
 
-    def test_the_browser_opening_the_page_still_collects(self) -> None:
+    def test_only_the_csrf_protected_step_collects(self) -> None:
         connection_id = self.prepare()
         self.post(f"/connections/{connection_id}/collect")
 
-        self.client.get(
-            "/collecting",
-            headers={"sec-fetch-site": "same-origin", "sec-fetch-dest": "document"},
-        )
+        response = self.post("/collecting/step")
 
+        self.assertEqual(response.status_code, 303)
         self.assertNotEqual({run.pages_fetched for run in self.runs()}, {0})
 
     def test_one_visitor_hitting_the_limit_does_not_lock_out_another(self) -> None:
