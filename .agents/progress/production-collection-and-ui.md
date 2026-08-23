@@ -170,7 +170,8 @@ release, so rollback requires only a traffic change.
 ## Current state
 
 - Production traffic: 100% `yna-web-00021-mil`.
-- Deployed code is saved in GitHub at `896e2d6`.
+- Deployed application code is saved in GitHub at `896e2d6`.
+- The prior durable progress checkpoint is saved in GitHub at `704e765`.
 - No known blocker remains.
 
 ## Post-rollout authenticated analysis verification
@@ -199,3 +200,24 @@ release, so rollback requires only a traffic change.
   authenticated hosted UI as clearly labelled anonymized demo/research data.
 - Cloud Run now routes 100% to `yna-web-00021-mil`; the final revision has no
   ERROR-level or HTTP 5xx entries.
+
+## GitHub progress checkpoint
+
+Recorded: 2026-08-23 (Asia/Tokyo)
+
+- Repository: `TroroOrosi/youtube-network-analysis`.
+- Branch: `feature/multi-channel-analytics`.
+- Checkpoint baseline: `704e765` (`docs(progress): record audience report
+  production rollout`).
+- Before this checkpoint, the worktree was clean and the local branch matched
+  `origin/feature/multi-channel-analytics`; an explicit push returned
+  `Everything up-to-date`.
+- The production application remains revision `yna-web-00021-mil` with 100%
+  traffic at
+  `https://yna-web-893183842893.asia-northeast1.run.app`.
+- The completed scope, authenticated collection evidence, hosted analysis and
+  Excel verification, test totals, deployment state, and rollback targets are
+  recorded above. No credential, token, raw account identifier, or personal
+  email address is included in this record.
+- There is no known implementation, deployment, collection, analysis, Excel,
+  browser, Docker, or POSIX-verification task remaining from this workstream.
