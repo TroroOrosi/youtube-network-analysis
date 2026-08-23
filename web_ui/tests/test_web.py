@@ -9,6 +9,7 @@ import stat
 import tempfile
 import unittest
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest import mock
 from urllib.parse import parse_qs, urlsplit
@@ -20,6 +21,7 @@ from workspace_access.models import (
     AccessSecret,
     Permission,
     SessionEvidence,
+    VerifiedIdentity,
     WorkspaceSelection,
 )
 
@@ -700,6 +702,45 @@ class GuidedFlowTests(WebFixture):
         page = self.client.get(deleted.headers["location"]).text
         self.assertIn("保存条件を削除しました", page)
         self.assertNotIn("長期サイレント確認", page)
+
+    def test_workspace_members_can_be_listed_granted_changed_and_removed(self) -> None:
+        self.login()
+        self.create_workspace()
+        issued = self.services.access.establish_session(
+            VerifiedIdentity(
+                issuer="https://accounts.example",
+                subject="future-member",
+                authenticated_at=datetime.now(UTC),
+            )
+        )
+        target = self.services.access.authenticate_session(
+            SessionEvidence(issued.secret)
+        )
+
+        added = self.post(
+            "/members",
+            {"user_id": target.user_id, "role": "member"},
+        )
+
+        self.assertEqual(added.status_code, 303)
+        page = self.client.get(added.headers["location"]).text
+        self.assertIn("メンバーを追加しました", page)
+        self.assertIn(target.user_id, page)
+        membership_id = page.split(target.user_id)[1].split("/members/")[1].split("/role")[0]
+
+        changed = self.post(
+            f"/members/{membership_id}/role",
+            {"role": "owner"},
+        )
+        self.assertEqual(changed.status_code, 303)
+        page = self.client.get(changed.headers["location"]).text
+        self.assertIn("役割を変更しました", page)
+
+        removed = self.post(f"/members/{membership_id}/delete")
+        self.assertEqual(removed.status_code, 303)
+        page = self.client.get(removed.headers["location"]).text
+        self.assertIn("メンバーを削除しました", page)
+        self.assertNotIn(target.user_id, page)
 
 
 class CollectionDriverTests(WebFixture):

@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}メンバー | YouTube 分析{% endblock %}
+{% block content %}
+<h2 id="members-heading">ワークスペースのメンバー</h2>
+<p class="notice">あなたのユーザーID: <code>{{ current_user_id }}</code></p>
+<p class="limits">追加したい人には、先にこのアプリへログインしてもらい、その人のユーザーIDを共有してもらってください。</p>
+
+{% if can_manage %}
+<details>
+  <summary>メンバーを追加</summary>
+  <form method="post" action="/members" class="form-row">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div>
+      <label for="member_user_id">追加するユーザーID</label>
+      <input id="member_user_id" name="user_id" required maxlength="256" autocomplete="off">
+    </div>
+    <div>
+      <label for="member_role">役割</label>
+      <select id="member_role" name="role">
+        <option value="member">メンバー</option>
+        <option value="owner">管理者</option>
+      </select>
+    </div>
+    <button type="submit">追加する</button>
+  </form>
+</details>
+{% endif %}
+
+<div class="table-scroll" role="region" aria-labelledby="members-heading" tabindex="0">
+<table>
+  <thead>
+    <tr><th scope="col">ユーザーID</th><th scope="col">役割</th><th scope="col">追加日時</th>{% if can_manage %}<th scope="col">操作</th>{% endif %}</tr>
+  </thead>
+  <tbody>
+  {% for item in members %}
+    <tr>
+      <th scope="row"><code>{{ item.user_id }}</code>{% if item.user_id == current_user_id %}（あなた）{% endif %}</th>
+      <td>{{ item.role_label }}</td>
+      <td>{{ item.created_at }}</td>
+      {% if can_manage %}
+      <td><div class="actions">
+        <form method="post" action="/members/{{ item.membership_id }}/role" class="inline">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <label class="visually-hidden" for="role_{{ item.membership_id }}">{{ item.user_id }}の役割</label>
+          <select id="role_{{ item.membership_id }}" name="role">
+            <option value="member" {% if item.role == 'member' %}selected{% endif %}>メンバー</option>
+            <option value="owner" {% if item.role == 'owner' %}selected{% endif %}>管理者</option>
+          </select>
+          <button type="submit" class="secondary">変更</button>
+        </form>
+        {% if item.user_id != current_user_id %}
+        <form method="post" action="/members/{{ item.membership_id }}/delete" class="inline">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="secondary">削除</button>
+        </form>
+        {% endif %}
+      </div></td>
+      {% endif %}
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+
+{% if next_url %}<p><a href="{{ next_url }}">次のメンバー</a></p>{% endif %}
+<p><a href="/">ホームに戻る</a></p>
+{% endblock %}

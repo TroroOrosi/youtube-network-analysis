@@ -33,6 +33,8 @@ from .models import (
     DeleteWorkspace,
     ErrorCode,
     GrantMembership,
+    MembershipPage,
+    MembershipPageRequest,
     IssuedSession,
     JOB_PRINCIPAL_PREFIX,
     Membership,
@@ -606,6 +608,38 @@ class WorkspaceAccessService:
                 authorization_revision=workspace.authorization_revision,
                 resolved_at=self._now(),
             )
+
+    def list_memberships(
+        self,
+        context: WorkspaceContext,
+        page: MembershipPageRequest = MembershipPageRequest(),
+    ) -> MembershipPage:
+        with self._lock:
+            _, workspace, _ = self._authorize_context(
+                context,
+                Permission.MEMBERSHIP_LIST,
+            )
+            rows = [
+                membership
+                for membership in self._memberships_by_id.values()
+                if membership.workspace_id == workspace.workspace_id
+            ]
+            rows.sort(key=lambda item: (item.created_at, item.membership_id))
+            offset = 0
+            if page.cursor is not None:
+                for index, item in enumerate(rows):
+                    if item.membership_id == page.cursor:
+                        offset = index + 1
+                        break
+                else:
+                    raise_membership_not_found_or_forbidden()
+            items = tuple(rows[offset : offset + page.limit])
+            next_cursor = (
+                items[-1].membership_id
+                if items and offset + len(items) < len(rows)
+                else None
+            )
+            return MembershipPage(items=items, next_cursor=next_cursor)
 
     def grant_membership(
         self,

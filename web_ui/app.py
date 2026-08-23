@@ -56,8 +56,13 @@ from collection_jobs.models import (
 )
 from workspace_access.models import (
     AccessSecret,
+    ChangeMembershipRole,
     CreateWorkspace,
+    GrantMembership,
+    MembershipPageRequest,
     Permission,
+    RevokeMembership,
+    Role,
     SessionEvidence,
     VerifiedIdentity,
     WorkspaceContext,
@@ -113,6 +118,9 @@ MESSAGES = {
     "schedule_deleted": "定期収集を解除しました。",
     "view_saved": "条件を保存しました。",
     "view_deleted": "保存条件を削除しました。",
+    "member_added": "メンバーを追加しました。",
+    "member_role_changed": "役割を変更しました。",
+    "member_removed": "メンバーを削除しました。",
     "workspace_created": "ワークスペースを作成しました。",
     "authorization_cancelled": "認可を中止しました。",
 }
@@ -145,6 +153,18 @@ ERROR_TEXT = {
     "NO_ACCESSIBLE_WORKSPACE": (
         "利用できるワークスペースがありません。",
         "新しいワークスペースを作成してください。",
+    ),
+    "MEMBERSHIP_NOT_FOUND_OR_FORBIDDEN": (
+        "そのメンバーは見つかりません。",
+        "メンバー一覧を開き直してください。",
+    ),
+    "MEMBERSHIP_ALREADY_EXISTS": (
+        "その利用者はすでにメンバーです。",
+        "一覧から現在の役割を確認してください。",
+    ),
+    "LAST_OWNER_REQUIRED": (
+        "最後の管理者は変更・削除できません。",
+        "先に別のメンバーを管理者へ変更してください。",
     ),
     "CSRF": (
         "この操作を完了できませんでした。",
@@ -1321,3 +1341,98 @@ def _register_routes(app: FastAPI) -> None:
             f"/analysis?{urlencode({'channel_id': view.channel_id, 'msg': 'view_deleted'})}",
             status_code=303,
         )
+
+    @app.get("/members", response_class=HTMLResponse)
+    def members(request: Request, cursor: str | None = Query(None)) -> Response:
+        session = _require_session(request)
+        context = _context(request, session, Permission.MEMBERSHIP_LIST)
+        page = _services(request).access.list_memberships(
+            context,
+            MembershipPageRequest(cursor=cursor, limit=50),
+        )
+        return _render(
+            request,
+            "members.html",
+            {
+                "session": session,
+                "current_user_id": context.user_id,
+                "can_manage": Permission.MEMBERSHIP_MANAGE in context.permissions,
+                "members": [
+                    {
+                        "membership_id": item.membership_id,
+                        "user_id": item.user_id,
+                        "role": item.role.value.lower(),
+                        "role_label": "管理者" if item.role is Role.OWNER else "メンバー",
+                        "created_at": _display_datetime(item.created_at)[1],
+                    }
+                    for item in page.items
+                ],
+                "next_url": (
+                    None
+                    if page.next_cursor is None
+                    else f"/members?{urlencode({'cursor': page.next_cursor})}"
+                ),
+            },
+        )
+
+    @app.post("/members")
+    def add_member(
+        request: Request,
+        user_id: str = Form(...),
+        role: str = Form(...),
+        csrf_token: str = Form(""),
+    ) -> Response:
+        _check_csrf(request, csrf_token)
+        session = _require_session(request)
+        context = _context(request, session, Permission.MEMBERSHIP_MANAGE)
+        selected_role = {"owner": Role.OWNER, "member": Role.MEMBER}.get(role)
+        if selected_role is None:
+            raise AppError("INVALID_INPUT")
+        _services(request).access.grant_membership(
+            context,
+            GrantMembership(
+                user_id=user_id.strip(),
+                role=selected_role,
+                idempotency_key=secrets.token_urlsafe(16),
+            ),
+        )
+        return _redirect("/members", "member_added")
+
+    @app.post("/members/{membership_id}/role")
+    def change_member_role(
+        request: Request,
+        membership_id: str,
+        role: str = Form(...),
+        csrf_token: str = Form(""),
+    ) -> Response:
+        _check_csrf(request, csrf_token)
+        session = _require_session(request)
+        context = _context(request, session, Permission.MEMBERSHIP_MANAGE)
+        selected_role = {"owner": Role.OWNER, "member": Role.MEMBER}.get(role)
+        if selected_role is None:
+            raise AppError("INVALID_INPUT")
+        _services(request).access.change_membership_role(
+            context,
+            ChangeMembershipRole(
+                membership_id=membership_id,
+                role=selected_role,
+                idempotency_key=secrets.token_urlsafe(16),
+            ),
+        )
+        return _redirect("/members", "member_role_changed")
+
+    @app.post("/members/{membership_id}/delete")
+    def remove_member(
+        request: Request, membership_id: str, csrf_token: str = Form("")
+    ) -> Response:
+        _check_csrf(request, csrf_token)
+        session = _require_session(request)
+        context = _context(request, session, Permission.MEMBERSHIP_MANAGE)
+        _services(request).access.revoke_membership(
+            context,
+            RevokeMembership(
+                membership_id=membership_id,
+                idempotency_key=secrets.token_urlsafe(16),
+            ),
+        )
+        return _redirect("/members", "member_removed")

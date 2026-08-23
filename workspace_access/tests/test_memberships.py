@@ -10,6 +10,7 @@ from workspace_access.models import (
     CreateWorkspace,
     ErrorCode,
     GrantMembership,
+    MembershipPageRequest,
     Permission,
     RevokeMembership,
     Role,
@@ -19,7 +20,6 @@ from workspace_access.models import (
     WorkspaceSelection,
 )
 from workspace_access.service import WorkspaceAccessService
-
 
 NOW = datetime(2026, 8, 20, 12, 0, tzinfo=UTC)
 
@@ -279,6 +279,41 @@ class MembershipAdministrationTests(unittest.TestCase):
         self.assertEqual(results.count("removed"), 1)
         self.assertEqual(results.count(ErrorCode.LAST_OWNER_REQUIRED.value), 1)
         self.assertEqual(self.service._debug_owner_count(self.workspace.workspace_id), 1)  # noqa: SLF001
+
+
+    def test_membership_listing_is_workspace_scoped_and_paged(self) -> None:
+        first = self.login("first-member")
+        second = self.login("second-member")
+        for key, session in (("grant-first", first), ("grant-second", second)):
+            self.service.grant_membership(
+                self.owner_context(),
+                GrantMembership(
+                    user_id=session.user_id,
+                    role=Role.MEMBER,
+                    idempotency_key=key,
+                ),
+            )
+
+        context = self.service.resolve_workspace_context(
+            self.owner,
+            WorkspaceSelection(self.workspace.workspace_id),
+            Permission.MEMBERSHIP_LIST,
+        )
+        first_page = self.service.list_memberships(
+            context, MembershipPageRequest(limit=2)
+        )
+        second_page = self.service.list_memberships(
+            context,
+            MembershipPageRequest(cursor=first_page.next_cursor, limit=2),
+        )
+
+        listed = (*first_page.items, *second_page.items)
+        self.assertEqual(
+            {item.user_id for item in listed},
+            {self.owner.user_id, first.user_id, second.user_id},
+        )
+        self.assertIsNotNone(first_page.next_cursor)
+        self.assertIsNone(second_page.next_cursor)
 
 
 if __name__ == "__main__":

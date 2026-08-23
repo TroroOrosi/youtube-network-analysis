@@ -246,6 +246,36 @@ class Membership:
 
 
 @dataclass(frozen=True, slots=True)
+class MembershipPageRequest:
+    cursor: str | None = None
+    limit: int = 50
+
+    def __post_init__(self) -> None:
+        if self.cursor is not None and (
+            not isinstance(self.cursor, str)
+            or not self.cursor
+            or len(self.cursor) > 256
+        ):
+            raise WorkspaceAccessError(
+                ErrorCode.INVALID_INPUT,
+                message="Membership cursor is invalid",
+                field="cursor",
+            )
+        if isinstance(self.limit, bool) or not isinstance(self.limit, int) or not 1 <= self.limit <= 100:
+            raise WorkspaceAccessError(
+                ErrorCode.INVALID_INPUT,
+                message="Membership page limit must be from 1 to 100",
+                field="limit",
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class MembershipPage:
+    items: tuple[Membership, ...]
+    next_cursor: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class WorkspaceSelection:
     workspace_id: str
 

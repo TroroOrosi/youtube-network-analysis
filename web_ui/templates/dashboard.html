@@ -2,6 +2,7 @@
 {% block title %}ホーム | YouTube 分析{% endblock %}
 {% block content %}
 <h2 id="workspace-heading">ワークスペース</h2>
+<p><a href="/members">メンバーを管理する</a></p>
 <form method="post" action="/workspaces/select" class="form-row">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   <div>
