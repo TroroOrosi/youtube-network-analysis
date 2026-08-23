@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 
@@ -100,6 +101,77 @@ class AudienceReportTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "unexpected report fields"):
                 load_audience_report(path)
+
+    def test_empty_analysis_families_are_valid(self) -> None:
+        from web_ui.audience_report import load_audience_report
+
+        document = valid_document()
+        for name in (
+            "top_channels",
+            "viewer_breadth",
+            "categories",
+            "communities",
+            "network_relationships",
+            "affinity",
+            "popularity_affinity",
+        ):
+            document[name] = []
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "report.json"
+            path.write_text(json.dumps(document), encoding="utf-8")
+
+            report = load_audience_report(path)
+
+        self.assertEqual(report.top_channels, ())
+        self.assertEqual(report.viewer_breadth, ())
+        self.assertEqual(report.popularity_affinity, ())
+
+    def test_summary_counts_must_be_positive(self) -> None:
+        from web_ui.audience_report import load_audience_report
+
+        for name in valid_document()["summary"]:  # type: ignore[union-attr]
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                document = valid_document()
+                document["summary"][name] = 0  # type: ignore[index]
+                path = Path(directory) / "report.json"
+                path.write_text(json.dumps(document), encoding="utf-8")
+
+                with self.assertRaisesRegex(ValueError, "must be positive"):
+                    load_audience_report(path)
+
+    def test_missing_and_malformed_json_fail_closed(self) -> None:
+        from web_ui.audience_report import load_audience_report
+
+        with tempfile.TemporaryDirectory() as directory:
+            missing = Path(directory) / "missing.json"
+            with self.assertRaises(FileNotFoundError):
+                load_audience_report(missing)
+
+            malformed = Path(directory) / "malformed.json"
+            malformed.write_text("{not json", encoding="utf-8")
+            with self.assertRaises(json.JSONDecodeError):
+                load_audience_report(malformed)
+
+    def test_missing_and_malformed_workbook_fail_closed(self) -> None:
+        from web_ui.audience_report import validate_audience_report_workbook
+
+        with tempfile.TemporaryDirectory() as directory:
+            missing = Path(directory) / "missing.xlsx"
+            with self.assertRaises(FileNotFoundError):
+                validate_audience_report_workbook(missing)
+
+            malformed = Path(directory) / "malformed.xlsx"
+            malformed.write_bytes(b"not an xlsx")
+            with self.assertRaisesRegex(ValueError, "valid Excel workbook"):
+                validate_audience_report_workbook(malformed)
+
+            incomplete = Path(directory) / "incomplete.xlsx"
+            with zipfile.ZipFile(incomplete, "w") as workbook:
+                workbook.writestr("[Content_Types].xml", "<Types />")
+                workbook.writestr("_rels/.rels", "<Relationships />")
+                workbook.writestr("xl/workbook.xml", "<workbook />")
+            with self.assertRaisesRegex(ValueError, "valid Excel workbook"):
+                validate_audience_report_workbook(incomplete)
 
 if __name__ == "__main__":
     unittest.main()

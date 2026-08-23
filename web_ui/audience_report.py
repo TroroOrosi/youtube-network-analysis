@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import json
 import math
+import re
+import zipfile
 from pathlib import Path
 from typing import Any, NamedTuple
+from xml.etree import ElementTree
 
 PACKAGE_ROOT = Path(__file__).parent
 AUDIENCE_REPORT_JSON = PACKAGE_ROOT / "data" / "audience-network-analysis.json"
@@ -90,6 +93,15 @@ class AudienceReport(NamedTuple):
 
 
 TOP_LEVEL_FIELDS = frozenset(AudienceReport._fields) | {"schema_version"}
+ILLEGAL_XML_TEXT = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+REQUIRED_WORKBOOK_MEMBERS = frozenset(
+    {
+        "[Content_Types].xml",
+        "_rels/.rels",
+        "xl/workbook.xml",
+        "xl/_rels/workbook.xml.rels",
+    }
+)
 
 
 def _object(value: Any, name: str) -> dict[str, Any]:
@@ -106,7 +118,12 @@ def _fields(value: dict[str, Any], expected: tuple[str, ...], name: str) -> None
 
 
 def _text(value: Any, name: str, *, maximum: int = 500) -> str:
-    if not isinstance(value, str) or not value.strip() or len(value) > maximum:
+    if (
+        not isinstance(value, str)
+        or not value.strip()
+        or len(value) > maximum
+        or ILLEGAL_XML_TEXT.search(value)
+    ):
         raise ValueError(f"{name} must be bounded non-empty text")
     return value.strip()
 
@@ -129,15 +146,21 @@ def _number(value: Any, name: str, *, ratio: bool = False) -> float:
 
 def _rows(document: dict[str, Any], name: str) -> list[dict[str, Any]]:
     value = document[name]
-    if not isinstance(value, list) or not 1 <= len(value) <= 100:
-        raise ValueError(f"{name} must contain 1 to 100 rows")
+    if not isinstance(value, list) or len(value) > 100:
+        raise ValueError(f"{name} must contain 0 to 100 rows")
     return [_object(row, f"{name} row") for row in value]
 
 
 def load_audience_report(path: Path = AUDIENCE_REPORT_JSON) -> AudienceReport:
     """Load one allowlisted aggregate report and reject schema drift."""
 
-    document = _object(json.loads(path.read_text(encoding="utf-8")), "report")
+    return parse_audience_report(json.loads(path.read_text(encoding="utf-8")))
+
+
+def parse_audience_report(value: Any) -> AudienceReport:
+    """Validate an in-memory report before it reaches JSON, Excel, or HTML."""
+
+    document = _object(value, "report")
     if set(document) != TOP_LEVEL_FIELDS:
         raise ValueError("unexpected report fields at document root")
     if document["schema_version"] != 1:
@@ -145,9 +168,13 @@ def load_audience_report(path: Path = AUDIENCE_REPORT_JSON) -> AudienceReport:
 
     summary_doc = _object(document["summary"], "summary")
     _fields(summary_doc, ReportSummary._fields, "summary")
-    summary = ReportSummary(
-        *(_integer(summary_doc[name], f"summary.{name}") for name in ReportSummary._fields)
+    summary_values = tuple(
+        _integer(summary_doc[name], f"summary.{name}")
+        for name in ReportSummary._fields
     )
+    if min(summary_values) <= 0:
+        raise ValueError("summary counts must be positive")
+    summary = ReportSummary(*summary_values)
 
     top_channels = tuple(
         _channel_share(row, "top_channels") for row in _rows(document, "top_channels")
@@ -178,6 +205,45 @@ def load_audience_report(path: Path = AUDIENCE_REPORT_JSON) -> AudienceReport:
         affinity,
         popularity,
     )
+
+
+def validate_audience_report_workbook(
+    path: Path = AUDIENCE_REPORT_WORKBOOK,
+) -> None:
+    """Fail startup when the downloadable workbook is absent or unreadable."""
+
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    try:
+        with zipfile.ZipFile(path) as workbook:
+            if workbook.testzip() is not None:
+                raise ValueError("workbook contains a corrupt member")
+            members = workbook.namelist()
+            if not REQUIRED_WORKBOOK_MEMBERS.issubset(members):
+                raise ValueError("workbook structure is incomplete")
+            if not any(
+                member.startswith("xl/worksheets/sheet") and member.endswith(".xml")
+                for member in members
+            ):
+                raise ValueError("workbook contains no worksheets")
+            for member in members:
+                if member.endswith((".xml", ".rels")):
+                    ElementTree.fromstring(workbook.read(member))
+    except (zipfile.BadZipFile, ElementTree.ParseError, KeyError, OSError) as error:
+        raise ValueError("audience report must be a valid Excel workbook") from error
+    except ValueError as error:
+        raise ValueError("audience report must be a valid Excel workbook") from error
+
+
+def load_audience_report_artifacts(
+    report_path: Path = AUDIENCE_REPORT_JSON,
+    workbook_path: Path = AUDIENCE_REPORT_WORKBOOK,
+) -> AudienceReport:
+    """Validate the production JSON and matching workbook as one startup unit."""
+
+    report = load_audience_report(report_path)
+    validate_audience_report_workbook(workbook_path)
+    return report
 
 
 def _channel_share(row: dict[str, Any], name: str) -> ChannelShare:

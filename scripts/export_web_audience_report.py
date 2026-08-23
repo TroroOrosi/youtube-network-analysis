@@ -24,6 +24,8 @@ if str(SCRIPT_DIR) not in sys.path:
 
 import analysis_common as ac
 
+from web_ui.audience_report import parse_audience_report
+
 JSON_OUTPUT = REPO_ROOT / "web_ui" / "data" / "audience-network-analysis.json"
 XLSX_OUTPUT = REPO_ROOT / "web_ui" / "assets" / "audience-network-analysis.xlsx"
 BLUE = "0B5CAB"
@@ -185,6 +187,7 @@ def write_artifacts(
     json_path: Path = JSON_OUTPUT,
     workbook_path: Path = XLSX_OUTPUT,
 ) -> None:
+    parse_audience_report(document)
     json_path.parent.mkdir(parents=True, exist_ok=True)
     workbook_path.parent.mkdir(parents=True, exist_ok=True)
     json_path.write_text(
@@ -301,10 +304,10 @@ def _summary_sheet(workbook: Workbook, document: dict[str, Any]) -> None:
     sheet = workbook.create_sheet("Summary")
     _configure_print(sheet, fit_height=1)
     sheet.sheet_view.showGridLines = False
-    sheet["A1"] = document["title"]
+    sheet["A1"] = _excel_value(document["title"])
     sheet["A1"].font = Font(size=18, bold=True, color=BLUE)
-    sheet["A2"] = document["source_label"]
-    sheet["A3"] = document["coverage_period"]
+    sheet["A2"] = _excel_value(document["source_label"])
+    sheet["A3"] = _excel_value(document["coverage_period"])
     labels = (
         ("viewers", "視聴者数"),
         ("channels", "登録チャンネル数"),
@@ -317,10 +320,10 @@ def _summary_sheet(workbook: Workbook, document: dict[str, Any]) -> None:
     sheet.append([])
     sheet.append(["指標", "値"])
     for key, label in labels:
-        sheet.append([label, document["summary"][key]])
+        sheet.append([_excel_value(label), document["summary"][key]])
     _style_table(sheet, 5, 5 + len(labels), 2)
     sheet["A14"] = "重要"
-    sheet["A15"] = document["methodology"]
+    sheet["A15"] = _excel_value(document["methodology"])
     sheet["A15"].alignment = Alignment(wrap_text=True, vertical="top")
     sheet.merge_cells("A15:F17")
     sheet.column_dimensions["A"].width = 34
@@ -340,20 +343,21 @@ def _table_sheet(
     sheet = workbook.create_sheet(name)
     _configure_print(sheet, fit_height=0, repeat_header=True)
     sheet.sheet_view.showGridLines = False
-    sheet["A1"] = title
+    sheet["A1"] = _excel_value(title)
     sheet["A1"].font = Font(size=16, bold=True, color=BLUE)
     sheet.append([])
-    sheet.append([label for _, label in columns])
+    sheet.append([_excel_value(label) for _, label in columns])
     for row in rows:
-        sheet.append([row[key] for key, _ in columns])
+        sheet.append([_excel_value(row[key]) for key, _ in columns])
     last_row = 3 + len(rows)
     _style_table(sheet, 3, last_row, len(columns))
-    for column in percentage_columns:
-        for cell in sheet.iter_cols(
-            min_col=column, max_col=column, min_row=4, max_row=last_row
-        ):
-            for item in cell:
-                item.number_format = "0.0%"
+    if rows:
+        for column in percentage_columns:
+            for cell in sheet.iter_cols(
+                min_col=column, max_col=column, min_row=4, max_row=last_row
+            ):
+                for item in cell:
+                    item.number_format = "0.0%"
     for column, (key, _) in enumerate(columns, start=1):
         width = 44 if key in {"channel", "left", "right", "representatives"} else 18
         sheet.column_dimensions[get_column_letter(column)].width = width
@@ -378,8 +382,13 @@ def _style_table(sheet: Any, header_row: int, last_row: int, columns: int) -> No
         cell.fill = PatternFill("solid", fgColor=BLUE)
         cell.font = Font(bold=True, color=WHITE)
         cell.alignment = Alignment(vertical="center")
+    if last_row <= header_row:
+        return
     for row in sheet.iter_rows(
-        min_row=header_row + 1, max_row=last_row, min_col=1, max_col=columns
+        min_row=header_row + 1,
+        max_row=last_row,
+        min_col=1,
+        max_col=columns,
     ):
         for cell in row:
             cell.alignment = Alignment(vertical="top", wrap_text=True)
@@ -409,10 +418,18 @@ def _methodology_sheet(workbook: Workbook, document: dict[str, Any]) -> None:
     sheet.append([])
     sheet.append(["項目", "説明"])
     for row in rows:
-        sheet.append(list(row))
+        sheet.append([_excel_value(value) for value in row])
     _style_table(sheet, 3, 3 + len(rows), 2)
     sheet.column_dimensions["A"].width = 20
     sheet.column_dimensions["B"].width = 88
+
+
+def _excel_value(value: Any) -> Any:
+    """Keep external text inert when Excel opens the generated workbook."""
+
+    if isinstance(value, str) and value.lstrip().startswith(("=", "+", "-", "@")):
+        return "'" + value
+    return value
 
 
 def _configure_print(

@@ -371,8 +371,53 @@ class GuidedFlowTests(WebFixture):
             "人気度と親和度の差",
         ):
             self.assertIn(heading, report.text)
-        self.assertNotIn("viewer_", report.text)
-        self.assertNotIn("channel_id", report.text)
+        for forbidden in (
+            "viewer_",
+            "channel_id",
+            "channel_id_a",
+            "channel_id_b",
+            "c:\\users\\",
+            "/users/",
+            "demo-refresh-token",
+            "demo-access-token",
+            "cred_",
+            "pkce_",
+        ):
+            self.assertNotIn(forbidden, report.text.lower())
+        self.assertGreaterEqual(report.text.count('role="region"'), 6)
+        self.assertIn('aria-labelledby="breadth-heading"', report.text)
+
+    def test_audience_network_report_has_clear_empty_states(self) -> None:
+        from web_ui import app as web_app
+        from web_ui.audience_report import AudienceReport
+
+        self.login()
+        self.create_workspace()
+        empty_report = AudienceReport(
+            *web_app.AUDIENCE_REPORT[:5],
+            (),
+            (),
+            (),
+            (),
+            (),
+            (),
+            (),
+        )
+
+        with mock.patch("web_ui.app.AUDIENCE_REPORT", empty_report):
+            report = self.client.get("/audience-network")
+
+        self.assertEqual(report.status_code, 200)
+        self.assertEqual(report.text.count("該当する集計結果はありません。"), 7)
+
+    def test_audience_network_report_requires_an_accessible_workspace(self) -> None:
+        self.login()
+
+        page = self.client.get("/audience-network")
+        workbook = self.client.get("/audience-network/report.xlsx")
+
+        self.assertEqual(page.status_code, 400)
+        self.assertEqual(workbook.status_code, 400)
 
     def test_audience_network_report_and_workbook_require_a_session(self) -> None:
         page = self.client.get("/audience-network")

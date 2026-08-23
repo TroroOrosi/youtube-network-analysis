@@ -73,7 +73,7 @@ from workspace_access.models import (
 
 from .audience_report import (
     AUDIENCE_REPORT_WORKBOOK,
-    load_audience_report,
+    load_audience_report_artifacts,
 )
 from .container import Services, build_services
 from .google_login import STATE_TTL, GoogleLogin, LoginFailed
@@ -100,7 +100,7 @@ RUN_PAGE_CAP = 20
 RUN_PAGE_SIZE = 100
 RATE_WINDOW = timedelta(minutes=1)
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
-AUDIENCE_REPORT = load_audience_report()
+AUDIENCE_REPORT = load_audience_report_artifacts()
 FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
 <rect width="64" height="64" rx="14" fill="#0b5cab"/>
 <path d="M17 42 29 30l8 7 11-15" fill="none" stroke="#fff" stroke-width="6"
