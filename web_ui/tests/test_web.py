@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import csv
+import inspect
 import io
 import os
-import inspect
 import shutil
 import stat
 import tempfile
@@ -11,20 +11,13 @@ import unittest
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import ClassVar
 from unittest import mock
 from urllib.parse import parse_qs, urlsplit
 
 from fastapi.testclient import TestClient
 
 from channel_connections.models import ReportCredentialInvalidation
-from workspace_access.models import (
-    AccessSecret,
-    Permission,
-    SessionEvidence,
-    VerifiedIdentity,
-    WorkspaceSelection,
-)
-
 from web_ui.app import (
     COLLECT_LIMIT_PER_MINUTE,
     WRITE_LIMIT_PER_MINUTE,
@@ -40,7 +33,13 @@ from web_ui.container import (
 from web_ui.demo_provider import build_demo_dataset
 from web_ui.google_provider import GoogleOAuthConfig
 from web_ui.tests.test_google_provider import FakeTransport, default_replies
-
+from workspace_access.models import (
+    AccessSecret,
+    Permission,
+    SessionEvidence,
+    VerifiedIdentity,
+    WorkspaceSelection,
+)
 
 BASE_URL = "https://testserver"
 
@@ -350,6 +349,56 @@ class GuidedFlowTests(WebFixture):
         for label in ("新規サイレント", "長期サイレント", "休眠", "アクティブ"):
             self.assertIn(label, analysis.text)
         self.assertIn("登録を公開している人", analysis.text)
+
+    def test_audience_network_report_is_linked_and_source_labelled(self) -> None:
+        self.login()
+        self.create_workspace()
+
+        dashboard = self.client.get("/")
+        report = self.client.get("/audience-network")
+
+        self.assertIn('href="/audience-network"', dashboard.text)
+        self.assertEqual(report.status_code, 200)
+        self.assertIn("匿名化済み既存調査データ（デモ）", report.text)
+        self.assertIn("106,568", report.text)
+        for heading in (
+            "よく一緒に登録されているチャンネル",
+            "視聴者ごとの登録チャンネル数",
+            "興味カテゴリ",
+            "コミュニティ",
+            "強いネットワーク関係",
+            "親和度",
+            "人気度と親和度の差",
+        ):
+            self.assertIn(heading, report.text)
+        self.assertNotIn("viewer_", report.text)
+        self.assertNotIn("channel_id", report.text)
+
+    def test_audience_network_report_and_workbook_require_a_session(self) -> None:
+        page = self.client.get("/audience-network")
+        workbook = self.client.get("/audience-network/report.xlsx")
+
+        self.assertEqual(page.status_code, 303)
+        self.assertEqual(page.headers["location"], "/login")
+        self.assertEqual(workbook.status_code, 303)
+        self.assertEqual(workbook.headers["location"], "/login")
+
+    def test_audience_network_workbook_is_downloadable(self) -> None:
+        self.login()
+        self.create_workspace()
+
+        workbook = self.client.get("/audience-network/report.xlsx")
+
+        self.assertEqual(workbook.status_code, 200)
+        self.assertEqual(
+            workbook.headers["content-type"],
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        self.assertIn(
+            'filename="audience-network-analysis.xlsx"',
+            workbook.headers["content-disposition"],
+        )
+        self.assertTrue(workbook.content.startswith(b"PK"))
 
     def test_analysis_before_collection_explains_the_next_step(self) -> None:
         self.login()
@@ -1174,7 +1223,7 @@ class GoogleModeTests(GoogleFixture):
 
 
 class ProviderConfigurationTests(unittest.TestCase):
-    ENVIRONMENT = {
+    ENVIRONMENT: ClassVar[dict[str, str]] = {
         "YNA_GOOGLE_CLIENT_ID": "client-123.apps.googleusercontent.com",
         "YNA_GOOGLE_CLIENT_SECRET": "client-secret",
     }

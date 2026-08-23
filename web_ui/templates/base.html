@@ -55,11 +55,28 @@ input:not([type="checkbox"]), select { font: inherit; padding: 0.45rem;
 input[type="checkbox"] { margin-right: 0.4rem; }
 details { margin-top: var(--gap); }
 summary { cursor: pointer; color: #0b5cab; }
+.page-lead { max-width: 48rem; }
+.source-note { border-left: 0.3rem solid #0b5cab; padding: 0.75rem 1rem;
+               background: #eaf4ff; margin: 1rem 0; }
+.report-nav ul { display: flex; flex-wrap: wrap; gap: 0.5rem 1rem;
+                 list-style: none; padding: 0; }
+.report-section { scroll-margin-top: 1rem; }
+.report-section h3 { font-size: 1.05rem; margin-top: 2rem; }
+.number { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.bar-list { max-width: 44rem; }
+.bar-list .chart-row { grid-template-columns: minmax(8rem, 15rem) 1fr; }
+.bar-list .chart-row dd { grid-template-columns: minmax(8rem, 1fr) 7rem; }
+.download-panel { display: flex; flex-wrap: wrap; gap: 0.75rem;
+                  align-items: center; margin: 1rem 0; }
+.download-link { display: inline-block; padding: 0.55rem 0.9rem;
+                 border: 1px solid #0b5cab; border-radius: 0.4rem;
+                 text-decoration: none; font-weight: 600; }
 @media (max-width: 40rem) {
   header { align-items: center; }
   input:not([type="checkbox"]), select { box-sizing: border-box; width: 100%; min-width: 0; }
   form.form-row > * { flex: 1 1 100%; }
   .chart-row { grid-template-columns: 1fr; gap: 0.25rem; }
+  .bar-list .chart-row { grid-template-columns: 1fr; }
 }
 </style>
 {% block head %}{% endblock %}
