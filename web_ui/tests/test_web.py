@@ -667,6 +667,40 @@ class GuidedFlowTests(WebFixture):
         self.assertIn("コメントしたことがない人だけ", comparison.text)
         self.assertIn('href="/compare"', self.client.get("/").text)
 
+    def test_analysis_filters_can_be_saved_opened_and_deleted(self) -> None:
+        self.login()
+        self.create_workspace()
+        self.connect_channel()
+        dashboard = self.client.get("/").text
+        connection_id = dashboard.split("/connections/")[1].split("/collect")[0]
+        self.collect_now(connection_id)
+
+        saved = self.post(
+            "/views",
+            {
+                "name": "長期サイレント確認",
+                "channel_id": "UC_demo_channel",
+                "segment": "OLD_SILENT",
+                "never_commented": "true",
+                "subscribed_within_days": "3650",
+            },
+        )
+
+        self.assertEqual(saved.status_code, 303)
+        page = self.client.get(saved.headers["location"]).text
+        self.assertIn("条件を保存しました", page)
+        self.assertIn("長期サイレント確認", page)
+        self.assertIn("segment=OLD_SILENT", page)
+        self.assertIn("never_commented=true", page)
+
+        view_id = page.split("/views/")[1].split("/delete")[0]
+        deleted = self.post(f"/views/{view_id}/delete")
+
+        self.assertEqual(deleted.status_code, 303)
+        page = self.client.get(deleted.headers["location"]).text
+        self.assertIn("保存条件を削除しました", page)
+        self.assertNotIn("長期サイレント確認", page)
+
 
 class CollectionDriverTests(WebFixture):
     """The browser as the driver: many short calls, one collection."""

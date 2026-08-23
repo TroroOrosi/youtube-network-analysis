@@ -31,8 +31,10 @@ from analysis_api.models import (
     AnalysisFilterInput,
     AnalysisPageRequest,
     CompareChannels,
+    DeleteView,
     ExportAnalysis,
     RunAnalysis,
+    SaveView,
 )
 from channel_connections.errors import ChannelConnectionsError
 from channel_connections.models import (
@@ -109,6 +111,8 @@ MESSAGES = {
     "collect_stopped": "収集を中断しました。次に開いたときに続きから再開します。",
     "schedule_created": "定期収集を設定しました。",
     "schedule_deleted": "定期収集を解除しました。",
+    "view_saved": "条件を保存しました。",
+    "view_deleted": "保存条件を削除しました。",
     "workspace_created": "ワークスペースを作成しました。",
     "authorization_cancelled": "認可を中止しました。",
 }
@@ -199,6 +203,17 @@ JST = timezone(timedelta(hours=9), "JST")
 def _display_datetime(value: datetime) -> tuple[str, str]:
     local = value.astimezone(JST)
     return local.isoformat(), local.strftime("%Y/%m/%d %H:%M")
+
+
+def _analysis_url(channel_id: str, filters: AnalysisFilterInput) -> str:
+    pairs: list[tuple[str, str]] = [("channel_id", channel_id)]
+    if filters.subscribed_within_days is not None:
+        pairs.append(("subscribed_within_days", str(filters.subscribed_within_days)))
+    if filters.never_commented:
+        pairs.append(("never_commented", "true"))
+    if filters.segments:
+        pairs.append(("segment", filters.segments[0]))
+    return f"/analysis?{urlencode(pairs)}"
 
 
 class AppError(Exception):
@@ -1095,7 +1110,8 @@ def _register_routes(app: FastAPI) -> None:
             subscribed_within_days=subscribed_within_days,
             segment=segment,
         )
-        page = _services(request).analysis.run_analysis(
+        services = _services(request)
+        page = services.analysis.run_analysis(
             context,
             RunAnalysis(channel_id=channel_id, filters=filters.domain_input()),
             AnalysisPageRequest(cursor=cursor, limit=50),
@@ -1130,6 +1146,15 @@ def _register_routes(app: FastAPI) -> None:
                 "filters": filters,
                 "next_url": next_url,
                 "segment_options": list(SEGMENT_LABELS.items()),
+                "views": [
+                    {
+                        "view_id": view.view_id,
+                        "name": view.name,
+                        "href": _analysis_url(view.channel_id, view.filters),
+                        "updated_at": _display_datetime(view.updated_at)[1],
+                    }
+                    for view in services.analysis.list_views(context)
+                ],
             },
         )
 
@@ -1243,4 +1268,56 @@ def _register_routes(app: FastAPI) -> None:
                 "segment_options": list(SEGMENT_LABELS.items()),
                 "comparison": result,
             },
+        )
+
+    @app.post("/views")
+    def save_view(
+        request: Request,
+        name: str = Form(...),
+        channel_id: str = Form(...),
+        never_commented: bool = Form(False),
+        subscribed_within_days: Annotated[OptionalInt, Form()] = None,
+        segment: str | None = Form(None),
+        csrf_token: str = Form(""),
+    ) -> Response:
+        _check_csrf(request, csrf_token)
+        session = _require_session(request)
+        context = _context(request, session, Permission.ANALYSIS_READ)
+        filters = _AnalysisFilters(
+            never_commented=never_commented,
+            subscribed_within_days=subscribed_within_days,
+            segment=segment,
+        ).domain_input()
+        _services(request).analysis.save_view(
+            context,
+            SaveView(
+                name=name,
+                channel_id=channel_id,
+                filters=filters,
+                idempotency_key=secrets.token_urlsafe(16),
+            ),
+        )
+        return RedirectResponse(
+            f"{_analysis_url(channel_id, filters)}&msg=view_saved", status_code=303
+        )
+
+    @app.post("/views/{view_id}/delete")
+    def delete_view(
+        request: Request, view_id: str, csrf_token: str = Form("")
+    ) -> Response:
+        _check_csrf(request, csrf_token)
+        session = _require_session(request)
+        context = _context(request, session, Permission.ANALYSIS_READ)
+        service = _services(request).analysis
+        view = service.get_view(context, view_id)
+        service.delete_view(
+            context,
+            DeleteView(
+                view_id=view_id,
+                idempotency_key=secrets.token_urlsafe(16),
+            ),
+        )
+        return RedirectResponse(
+            f"/analysis?{urlencode({'channel_id': view.channel_id, 'msg': 'view_deleted'})}",
+            status_code=303,
         )

@@ -10,6 +10,48 @@
   <div class="card"><div>サイレント</div><div class="value">{{ summary.filtered_silent_count }}</div></div>
 </div>
 
+<h2 id="saved-views-heading">保存した条件</h2>
+<form method="post" action="/views" class="form-row">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <input type="hidden" name="channel_id" value="{{ channel_id }}">
+  <input type="hidden" name="never_commented" value="{{ 'true' if filters.never_commented else 'false' }}">
+  {% if filters.subscribed_within_days %}
+  <input type="hidden" name="subscribed_within_days" value="{{ filters.subscribed_within_days }}">
+  {% endif %}
+  {% if filters.segment %}
+  <input type="hidden" name="segment" value="{{ filters.segment }}">
+  {% endif %}
+  <div>
+    <label for="view_name">この条件の名前</label>
+    <input id="view_name" name="name" maxlength="120" required placeholder="例: 月次フォロー対象">
+  </div>
+  <button type="submit">現在の条件を保存</button>
+</form>
+
+{% if views %}
+<div class="table-scroll" role="region" aria-labelledby="saved-views-heading" tabindex="0">
+<table>
+  <thead><tr><th scope="col">名前</th><th scope="col">更新日時</th><th scope="col">操作</th></tr></thead>
+  <tbody>
+  {% for view in views %}
+    <tr>
+      <th scope="row"><a href="{{ view.href }}">{{ view.name }}</a></th>
+      <td>{{ view.updated_at }}</td>
+      <td>
+        <form method="post" action="/views/{{ view.view_id }}/delete" class="inline">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="secondary">削除する</button>
+        </form>
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<p>保存した条件はまだありません。</p>
+{% endif %}
+
 <figure class="segment-chart" aria-labelledby="segment-chart-title">
   <figcaption id="segment-chart-title">セグメント分布</figcaption>
   <dl>
