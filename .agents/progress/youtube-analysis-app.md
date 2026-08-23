@@ -1238,3 +1238,77 @@ Next steps:
 1. Commit this progress record as a narrow checkpoint.
 2. Push `feature/multi-channel-analytics` to its matching `origin` branch and
    verify local and remote HEAD equality.
+
+## Verified milestone: browser, container, and POSIX runtime verification
+
+Date: 2026-08-23
+
+Branch: `feature/multi-channel-analytics`
+
+Verified implementation HEAD: `e118f06f0f64d19419cbb90885fa8b0adc46e479`
+
+The verification limitations in the preceding milestone are now closed.
+
+Completed commits:
+
+- `08c5742` adds a self-hosted SVG favicon and regression coverage after a real
+  browser exposed the previous `/favicon.ico` 404.
+- `db23f41` changes the image command to JSON form while retaining `exec` and
+  `$PORT` expansion, and excludes `requirements-dev.txt` from the runtime image.
+- `e118f06` replaces deprecated test-only `httpx` with Starlette 1.6's preferred
+  `httpx2==2.12.0`; the runtime requirements and image remain unchanged.
+
+Real-browser evidence, using Chrome against a temporary trusted
+`https://127.0.0.1:443` deployment and only synthetic demo data:
+
+- sign-in, first-workspace creation, demo channel consent and connection,
+  browser-driven collection, analysis, filter submission, and CSV download all
+  completed;
+- analysis rendered 6 subscribers, 4 silent before filtering, then 3 matching
+  `OLD_SILENT` plus never-commented;
+- the CSV download event fired while preserving the active filter URL;
+- desktop login, workspace, consent, dashboard, and analysis screenshots were
+  visually inspected;
+- at a 390 px viewport the document width was 375 px inside a 390 px viewport;
+  the table alone scrolled from a 343 px client width to 608 px content width,
+  with `role="region"` and `tabindex="0"`;
+- the first Tab target was the `本文へ移動` skip link;
+- the new favicon was requested as `/assets/favicon.svg` and returned 200;
+- app-authored browser JavaScript produced no warning or error. The attached
+  Chrome profile's Adobe/control extensions emitted unrelated injected errors.
+
+Docker evidence:
+
+- Docker Desktop 4.87.0, Linux engine 29.7.2;
+- `docker build --check .`: passed with no warnings;
+- `docker build -t yna-web-review:final .`: passed;
+- the container ran as `nobody`, with Uvicorn as container PID 1 through the
+  JSON `CMD` plus `exec`;
+- `/login` and `/assets/favicon.svg` returned 200, the favicon content type was
+  `image/svg+xml`;
+- neither `/app/web_ui/requirements-dev.txt` nor the `httpx2` package existed in
+  the runtime image.
+
+POSIX and regression evidence:
+
+- Windows suites: workspace-access 54, channel-connections 155, channel-data
+  44, collection-jobs 108, analysis-api 19, web-ui 185, subscriber-analytics
+  29; total 594 passed, with only the expected POSIX enforcement test skipped;
+- Linux container web-ui suite: all 185 passed with zero skips;
+- the Linux run executed the POSIX enforcement assertion and observed the
+  state directory as `0700` and every state document as `0600`;
+- `python -m compileall -q web_ui`, Ruff, `git diff --check`, `pip check`, and
+  the development-requirements dry run passed;
+- Starlette TestClient emitted no deprecation warning after the `httpx2`
+  migration. Source: https://www.starlette.io/release-notes/
+
+Cleanup completed: the temporary Chrome tab, HTTPS server, exact localhost
+certificate and private-key directory, Docker container, and both review image
+tags were removed. No real Google account, credential, YouTube data, provider
+request, or quota was used.
+
+Next steps:
+
+1. Commit this progress record as a narrow checkpoint.
+2. Push `feature/multi-channel-analytics` and verify local, upstream, and remote
+   HEAD equality.
