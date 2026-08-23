@@ -12,6 +12,7 @@ __pycache__/
 *.csv
 *.ipynb
 *.xlsx
+!web_ui/assets/audience-network-analysis.xlsx
 
 # Local tool caches and scratch.
 .repowise/
