@@ -11,10 +11,10 @@ import csv
 import hashlib
 import io
 import json
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import datetime
 from threading import RLock
-from typing import Any
+from typing import Any, Protocol
 
 from channel_data.errors import ChannelDataError
 from subscriber_analytics.analytics_core import (
@@ -44,6 +44,13 @@ from .models import (
     SaveView,
     SavedView,
 )
+from .snapshot import dump_views, load_views
+
+
+class StateStore(Protocol):
+    def load(self) -> str | None: ...
+
+    def save(self, document: str) -> None: ...
 
 
 EXPORT_COLUMNS = (
@@ -130,12 +137,31 @@ class _State:
 class AnalysisApiService:
     """In-memory reference implementation of the analysis surface."""
 
-    def __init__(self, *, clock: Any, tokens: Any, channel_data: Any) -> None:
+    def __init__(
+        self,
+        *,
+        clock: Any,
+        tokens: Any,
+        channel_data: Any,
+        state_store: StateStore | None = None,
+    ) -> None:
         self._clock = clock
         self._tokens = tokens
         self._channel_data = channel_data
         self._lock = RLock()
         self._state = _State()
+        self._state_store = state_store
+        if state_store is not None:
+            document = state_store.load()
+            if document is not None:
+                self._state.views = {
+                    _key(view.workspace_id, view.view_id): view
+                    for view in load_views(document)
+                }
+
+    def _flush_views(self) -> None:
+        if self._state_store is not None:
+            self._state_store.save(dump_views(self._state.views.values()))
 
     # Analysis
 
@@ -293,7 +319,13 @@ class AnalysisApiService:
                 created_at=now,
                 updated_at=now,
             )
-            self._state.views[_key(context.workspace_id, view.view_id)] = view
+            view_key = _key(context.workspace_id, view.view_id)
+            self._state.views[view_key] = view
+            try:
+                self._flush_views()
+            except Exception:
+                del self._state.views[view_key]
+                raise
             self._remember(record_key, payload, view)
             return view
 
@@ -326,18 +358,30 @@ class AnalysisApiService:
             if self._replay(record_key, payload) is not None:
                 return None
             view = self._view(context.workspace_id, command.view_id)
-            del self._state.views[_key(context.workspace_id, view.view_id)]
+            view_key = _key(context.workspace_id, view.view_id)
+            del self._state.views[view_key]
+            try:
+                self._flush_views()
+            except Exception:
+                self._state.views[view_key] = view
+                raise
             self._remember(record_key, payload, view.view_id)
             return None
 
     def delete_workspace_views(self, context: WorkspaceContext) -> None:
         _require(context, Permission.WORKSPACE_DELETE)
         with self._lock:
+            previous_views = self._state.views
             self._state.views = {
                 key: view
                 for key, view in self._state.views.items()
                 if view.workspace_id != context.workspace_id
             }
+            try:
+                self._flush_views()
+            except Exception:
+                self._state.views = previous_views
+                raise
             self._state.cursors = {
                 token: record
                 for token, record in self._state.cursors.items()

@@ -20,6 +20,17 @@ from collection_jobs.tests.support import NOW, build_stack, context
 from workspace_access.models import Permission
 
 
+class MemoryDocument:
+    def __init__(self) -> None:
+        self.document: str | None = None
+
+    def load(self) -> str | None:
+        return self.document
+
+    def save(self, document: str) -> None:
+        self.document = document
+
+
 class AnalysisFixture(unittest.TestCase):
     def setUp(self) -> None:
         self.stack = build_stack()
@@ -230,6 +241,37 @@ class SavedViewTests(AnalysisFixture):
             [view.view_id],
         )
         self.assertEqual(self.analysis.list_views(context("workspace-2")), ())
+
+    def test_saved_views_survive_a_service_restart(self) -> None:
+        document = MemoryDocument()
+        first = AnalysisApiService(
+            clock=self.stack.clock,
+            tokens=SequenceTokens("first"),
+            channel_data=self.stack.channel_data,
+            state_store=document,
+        )
+        saved = first.save_view(
+            self.owner,
+            SaveView(
+                name="再起動後も使う条件",
+                channel_id="UC_channel_1",
+                filters=AnalysisFilterInput(
+                    subscribed_within_days=90,
+                    never_commented=True,
+                    segments=("OLD_SILENT",),
+                ),
+                idempotency_key="persistent-view",
+            ),
+        )
+
+        restarted = AnalysisApiService(
+            clock=self.stack.clock,
+            tokens=SequenceTokens("second"),
+            channel_data=self.stack.channel_data,
+            state_store=document,
+        )
+
+        self.assertEqual(restarted.list_views(self.owner), (saved,))
 
     def test_saving_is_idempotent_and_conflicts_on_reuse(self) -> None:
         first = self.save()

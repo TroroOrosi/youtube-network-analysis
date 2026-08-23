@@ -318,7 +318,10 @@ def build_services(
         state_store=_module_store(keep, "collection_jobs"),
     )
     analysis = AnalysisApiService(
-        clock=clock, tokens=RandomTokens("an_"), channel_data=channel_data
+        clock=clock,
+        tokens=RandomTokens("an_"),
+        channel_data=channel_data,
+        state_store=_module_store(keep, "analysis_api"),
     )
     return Services(
         access=access,
