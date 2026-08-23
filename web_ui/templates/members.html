@@ -48,12 +48,12 @@
           </select>
           <button type="submit" class="secondary">変更</button>
         </form>
-        {% if item.user_id != current_user_id %}
         <form method="post" action="/members/{{ item.membership_id }}/delete" class="inline">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          <button type="submit" class="secondary">削除</button>
+          <button type="submit" class="secondary">
+            {{ '退出する' if item.user_id == current_user_id else '削除' }}
+          </button>
         </form>
-        {% endif %}
       </div></td>
       {% endif %}
     </tr>

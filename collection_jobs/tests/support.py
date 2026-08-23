@@ -130,7 +130,7 @@ def build_stack(
         clock=jobs_clock or clock,
         tokens=SequenceTokens("job"),
         broker=connections,
-        connections=connections,
+        targets=connections,
         channel_data=channel_data,
         **jobs_kwargs,
     )

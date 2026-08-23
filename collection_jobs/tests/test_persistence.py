@@ -49,7 +49,7 @@ class RestartFixture(unittest.TestCase):
             clock=self.stack.clock,
             tokens=self.stack.jobs._tokens,
             broker=self.stack.connections,
-            connections=self.stack.connections,
+            targets=self.stack.connections,
             channel_data=self.stack.channel_data,
             daily_quota_units=self.quota_units or DEFAULT_DAILY_QUOTA_UNITS,
             page_size=2,

@@ -34,6 +34,7 @@ from channel_connections.models import (
     YOUTUBE_READONLY_SCOPE,
 )
 from channel_connections.ports import (
+    CollectionTargetResolver,
     ConnectionManager,
     ConnectionPrivacyAdministrator,
     ConnectionReader,
@@ -460,6 +461,7 @@ class PortContractTests(unittest.TestCase):
     def test_every_tenant_operation_takes_a_workspace_context(self) -> None:
         tenant_operations = (
             (ConnectionReader, ("get_connection", "list_connections")),
+            (CollectionTargetResolver, ("resolve_collection_target",)),
             (
                 ConnectionManager,
                 (
@@ -520,6 +522,7 @@ class PackageSurfaceTests(unittest.TestCase):
             set(channel_connections.__all__),
             {
                 "ChannelConnectionsError",
+                "CollectionTargetResolver",
                 "ConnectionExecutionBroker",
                 "ConnectionManager",
                 "ConnectionPrivacyAdministrator",

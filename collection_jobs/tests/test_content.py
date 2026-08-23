@@ -5,7 +5,6 @@ from datetime import UTC, datetime, timedelta
 
 from channel_connections.ports import ProviderUnavailable
 from channel_data.models import CollectionKind, CollectionStatus
-from collection_jobs.errors import CollectionJobsError
 from collection_jobs.models import EnqueueRun, ExecuteRun, RunFailureReason, RunKind, RunStatus
 from collection_jobs.service import MAX_STALLED_DAYS
 from collection_jobs.tests.support import NOW, TickingClock, build_stack, context

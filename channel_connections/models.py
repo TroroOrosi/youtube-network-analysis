@@ -210,6 +210,18 @@ class ChannelConnection:
 
 
 @dataclass(frozen=True, slots=True)
+class CollectionTarget:
+    """Minimal connection identity needed to create a collection run."""
+
+    connection_id: str
+    provider_channel_id: str
+
+    def __post_init__(self) -> None:
+        _identifier(self.connection_id, "connection_id")
+        _identifier(self.provider_channel_id, "provider_channel_id")
+
+
+@dataclass(frozen=True, slots=True)
 class AuthorizationStart:
     """The only authorization values an adapter may hand to a browser."""
 

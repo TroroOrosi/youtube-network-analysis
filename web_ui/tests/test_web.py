@@ -726,6 +726,7 @@ class GuidedFlowTests(WebFixture):
         page = self.client.get(added.headers["location"]).text
         self.assertIn("メンバーを追加しました", page)
         self.assertIn(target.user_id, page)
+        self.assertIn("退出する", page)
         membership_id = page.split(target.user_id)[1].split("/members/")[1].split("/role")[0]
 
         changed = self.post(
@@ -741,6 +742,86 @@ class GuidedFlowTests(WebFixture):
         page = self.client.get(removed.headers["location"]).text
         self.assertIn("メンバーを削除しました", page)
         self.assertNotIn(target.user_id, page)
+
+    def test_departing_the_current_workspace_clears_its_selection(self) -> None:
+        self.login()
+        self.create_workspace()
+        current_session = self.services.access.authenticate_session(
+            SessionEvidence(AccessSecret(self.client.cookies["yna_session"]))
+        )
+        current_context = self.services.access.resolve_workspace_context(
+            current_session,
+            WorkspaceSelection(self.client.cookies["yna_workspace"]),
+            Permission.MEMBERSHIP_MANAGE,
+        )
+        future_owner = self.services.access.establish_session(
+            VerifiedIdentity(
+                issuer="https://accounts.example",
+                subject="future-owner",
+                authenticated_at=datetime.now(UTC),
+            )
+        )
+        target = self.services.access.authenticate_session(
+            SessionEvidence(future_owner.secret)
+        )
+        added = self.post(
+            "/members",
+            {"user_id": target.user_id, "role": "owner"},
+        )
+        self.assertEqual(added.status_code, 303)
+
+        departed = self.post(
+            f"/members/{current_context.membership_id}/delete"
+        )
+
+        self.assertEqual(departed.status_code, 303)
+        self.assertEqual(departed.headers["location"], "/")
+        self.assertNotIn("yna_workspace", self.client.cookies)
+        home = self.client.get("/")
+        self.assertEqual(home.status_code, 200)
+        self.assertIn("最初のワークスペースを作成", home.text)
+
+    def test_departing_one_of_three_workspaces_shows_workspace_selection(self) -> None:
+        self.login()
+        self.create_workspace("退出対象")
+        departing_workspace_id = self.client.cookies["yna_workspace"]
+        self.create_workspace("残す運用A")
+        self.create_workspace("残す運用B")
+        selected = self.post(
+            "/workspaces/select", {"workspace_id": departing_workspace_id}
+        )
+        self.assertEqual(selected.status_code, 303)
+        current_session = self.services.access.authenticate_session(
+            SessionEvidence(AccessSecret(self.client.cookies["yna_session"]))
+        )
+        current_context = self.services.access.resolve_workspace_context(
+            current_session,
+            WorkspaceSelection(departing_workspace_id),
+            Permission.MEMBERSHIP_MANAGE,
+        )
+        future_owner = self.services.access.establish_session(
+            VerifiedIdentity(
+                issuer="https://accounts.example",
+                subject="remaining-owner",
+                authenticated_at=datetime.now(UTC),
+            )
+        )
+        target = self.services.access.authenticate_session(
+            SessionEvidence(future_owner.secret)
+        )
+        added = self.post(
+            "/members", {"user_id": target.user_id, "role": "owner"}
+        )
+        self.assertEqual(added.status_code, 303)
+
+        departed = self.post(f"/members/{current_context.membership_id}/delete")
+        home = self.client.get(departed.headers["location"])
+
+        self.assertEqual(home.status_code, 200)
+        self.assertIn('action="/workspaces/select"', home.text)
+        self.assertIn("残す運用A", home.text)
+        self.assertIn("残す運用B", home.text)
+        self.assertNotIn("退出対象", home.text)
 
 
 class CollectionDriverTests(WebFixture):
@@ -867,6 +948,34 @@ class ScheduledDrainTests(WebFixture):
 
         self.assertEqual(response.status_code, 200)
         self.assertGreaterEqual(response.json()["worked"], 1)
+
+    def test_the_scheduler_starts_a_due_recurring_collection(self) -> None:
+        """A saved schedule becomes a run without a browser starting it."""
+
+        self.login()
+        self.create_workspace()
+        self.connect_channel()
+        dashboard = self.client.get("/").text
+        connection_id = dashboard.split("/connections/")[1].split("/collect")[0]
+        created = self.post(
+            "/schedules",
+            {
+                "connection_id": connection_id,
+                "kind": "content",
+                "interval_hours": "24",
+            },
+        )
+        self.assertEqual(created.status_code, 303)
+
+        response = self.client.post(
+            "/internal/drain", headers={"Authorization": "Bearer scheduler-token"}
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertGreaterEqual(response.json()["worked"], 1)
+        dashboard = self.client.get("/").text
+        self.assertNotIn("未実行", dashboard)
+        self.assertIn("完了", dashboard)
 
     def test_the_answer_is_a_count_and_names_no_workspace(self) -> None:
         self.queue_work()

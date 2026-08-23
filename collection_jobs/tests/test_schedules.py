@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 from datetime import timedelta
 
+from channel_connections.models import DisconnectConnection
 from collection_jobs.errors import CollectionJobsError
 from collection_jobs.models import (
     CreateSchedule,
@@ -121,6 +122,36 @@ class ScheduleTests(ScheduleFixture):
             )
 
         self.assertEqual(raised.exception.code, "SCHEDULE_NOT_FOUND_OR_FORBIDDEN")
+
+    def test_a_disconnected_channel_schedule_does_not_block_other_due_work(self) -> None:
+        self.create()
+        other_connection = self.stack.connect(
+            self.owner,
+            provider_channel_id="UC_channel_2",
+            key="connect-2",
+        )
+        self.stack.jobs.create_schedule(
+            self.owner,
+            CreateSchedule(
+                connection_id=other_connection.connection_id,
+                kind=RunKind.SUBSCRIBERS,
+                interval=MINIMUM_SCHEDULE_INTERVAL,
+                idempotency_key="schedule-2",
+            ),
+        )
+        self.stack.connections.disconnect(
+            self.owner,
+            DisconnectConnection(
+                connection_id=self.connection.connection_id,
+                idempotency_key="disconnect-1",
+            ),
+        )
+
+        enqueued = self.stack.jobs.enqueue_due_runs(self.owner, NOW)
+
+        self.assertEqual(len(enqueued), 1)
+        self.assertEqual(enqueued[0].connection_id, other_connection.connection_id)
+        self.assertEqual(len(self.stack.jobs.list_schedules(self.owner).items), 1)
 
 
 class ReadTests(ScheduleFixture):

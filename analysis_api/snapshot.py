@@ -91,4 +91,3 @@ def _optional_date(value: object) -> date | None:
     if not isinstance(value, str):
         raise ValueError("saved-view date is not text")
     return date.fromisoformat(value)
-

@@ -22,6 +22,7 @@ nothing here imports or migrates it.
 ```python
 from channel_connections import (
     ChannelConnectionsError,
+    CollectionTargetResolver,
     ConnectionManager,
     ConnectionPrivacyAdministrator,
     ConnectionReader,
@@ -45,6 +46,7 @@ route parameter, provider token, or serialized permission set.
 | Operation | Permission |
 |---|---|
 | `get_connection`, `list_connections` | `channel.read` |
+| `resolve_collection_target` | `collection.run` |
 | `begin_authorization`, `complete_authorization` | `channel.manage_connection` |
 | `begin_reauthorization` | `channel.manage_connection` |
 | `disconnect`, `report_credential_invalidation` | `channel.manage_connection` |

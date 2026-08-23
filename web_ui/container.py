@@ -313,7 +313,7 @@ def build_services(
         clock=clock,
         tokens=RandomTokens("jb_"),
         broker=connections,
-        connections=connections,
+        targets=connections,
         channel_data=channel_data,
         state_store=_module_store(keep, "collection_jobs"),
     )

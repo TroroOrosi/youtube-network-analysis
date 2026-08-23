@@ -108,15 +108,17 @@ Two callers drive suspended work, and neither decides policy:
 - `execute_due_runs(context, reference_time, slice_seconds)` works every queued
   run of one workspace whose `next_attempt_at` has arrived, offering each at
   most one slice and stopping when the budget is spent.
-- `due_workspace_ids(reference_time)` answers which workspaces have work
-  waiting, and nothing else about them. It takes no context because a caller
-  with no session cannot have one; it is therefore the only operation here that
-  is not permission-checked, and it returns identifiers a caller must then be
-  separately authorized for.
+- `due_workspace_ids(reference_time)` answers which workspaces have a queued run
+  ready or an enabled schedule whose interval has arrived, and nothing else
+  about them. It takes no context because a caller with no session cannot have
+  one; it is therefore the only operation here that is not permission-checked,
+  and it returns identifiers a caller must then be separately authorized for.
 
 A driver with no session obtains authority from `workspace-access`, which
 issues a context bound to one workspace and carrying one permission. A browser
-session is never reused as job authority.
+session is never reused as job authority. For each due workspace the driver
+calls `enqueue_due_runs` before `execute_due_runs`, so a schedule becomes a run
+under the same least-privilege `collection.run` context that executes it.
 
 ### When a suspended run gives up
 
@@ -159,6 +161,9 @@ A schedule names one connection and run kind with an interval of at least one
 hour. `enqueue_due_runs(context, reference_time)` enqueues one run per due,
 enabled schedule that has no active run for the same connection and kind, and
 records the enqueue time. Enqueuing is idempotent within an interval window.
+If the named connection has since been disconnected, the due evaluation removes
+that stale schedule and continues evaluating the remaining schedules. One stale
+schedule therefore cannot stop valid work in its workspace or later workspaces.
 
 ## Permissions
 
@@ -195,7 +200,7 @@ internals of the provider, credentials, and stack traces are never public.
 |---|---|
 | Terminal runs | 90 days |
 | Quota ledger entries | 90 days |
-| Schedules | until deleted or workspace cascade |
+| Schedules | until deleted, their connection no longer exists, or workspace cascade |
 | Mutation idempotency records | 90 days |
 
 A retention period is a promise about what is no longer kept, and it only holds

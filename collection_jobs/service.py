@@ -24,6 +24,7 @@ from channel_connections.models import (
     ProviderOperation,
     ProviderOperationRequest,
 )
+from channel_connections.ports import CollectionTargetResolver, ConnectionExecutionBroker
 from channel_data.models import (
     CollectionKind,
     CollectionFailureCode,
@@ -225,8 +226,8 @@ class CollectionJobsService:
         *,
         clock: Any,
         tokens: Any,
-        broker: Any,
-        connections: Any,
+        broker: ConnectionExecutionBroker,
+        targets: CollectionTargetResolver,
         channel_data: Any,
         daily_quota_units: int = DEFAULT_DAILY_QUOTA_UNITS,
         page_size: int = 50,
@@ -235,7 +236,7 @@ class CollectionJobsService:
         self._clock = clock
         self._tokens = tokens
         self._broker = broker
-        self._connections = connections
+        self._targets = targets
         self._channel_data = channel_data
         self._daily_quota_units = daily_quota_units
         self._page_size = page_size
@@ -313,7 +314,9 @@ class CollectionJobsService:
             if replayed is not None:
                 return replayed
 
-            connection = self._connections.get_connection(context, command.connection_id)
+            connection = self._targets.resolve_collection_target(
+                context, command.connection_id
+            )
             if self._active_run(context.workspace_id, connection.connection_id, command.kind):
                 raise _safe_error(ErrorCode.RUN_ALREADY_ACTIVE, field="kind")
 
@@ -552,7 +555,9 @@ class CollectionJobsService:
             if replayed is not None:
                 return replayed
 
-            connection = self._connections.get_connection(context, command.connection_id)
+            connection = self._targets.resolve_collection_target(
+                context, command.connection_id
+            )
             schedule = CollectionSchedule(
                 schedule_id=f"schedule_{self._tokens.new_token()}",
                 workspace_id=context.workspace_id,
@@ -617,9 +622,16 @@ class CollectionJobsService:
                     context.workspace_id, schedule.connection_id, schedule.kind
                 ):
                     continue
-                connection = self._connections.get_connection(
-                    context, schedule.connection_id
-                )
+                try:
+                    connection = self._targets.resolve_collection_target(
+                        context, schedule.connection_id
+                    )
+                except ChannelConnectionsError as error:
+                    if error.code != "CONNECTION_NOT_FOUND_OR_FORBIDDEN":
+                        raise
+                    del self._state.schedules[schedule_key]
+                    self._bump_revision(context.workspace_id)
+                    continue
                 run = CollectionRun(
                     run_id=f"run_{self._tokens.new_token()}",
                     workspace_id=context.workspace_id,
@@ -729,19 +741,25 @@ class CollectionJobsService:
         ):
             raise _safe_error(ErrorCode.INVALID_INPUT, field="reference_time")
         with self._lock:
-            return tuple(
-                sorted(
-                    {
-                        run.workspace_id
-                        for run in self._state.runs.values()
-                        if run.status is RunStatus.QUEUED
-                        and (
-                            run.next_attempt_at is None
-                            or run.next_attempt_at <= reference_time
-                        )
-                    }
+            workspaces = {
+                run.workspace_id
+                for run in self._state.runs.values()
+                if run.status is RunStatus.QUEUED
+                and (
+                    run.next_attempt_at is None
+                    or run.next_attempt_at <= reference_time
+                )
+            }
+            workspaces.update(
+                schedule.workspace_id
+                for schedule in self._state.schedules.values()
+                if schedule.enabled
+                and (
+                    schedule.last_enqueued_at is None
+                    or schedule.last_enqueued_at + schedule.interval <= reference_time
                 )
             )
+            return tuple(sorted(workspaces))
 
     # Reads
 

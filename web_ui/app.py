@@ -705,7 +705,16 @@ def _register_routes(app: FastAPI) -> None:
         if not workspaces:
             return _render(request, "workspace_new.html", {"session": session})
 
-        context = _context(request, session, Permission.CHANNEL_READ)
+        try:
+            context = _context(request, session, Permission.CHANNEL_READ)
+        except WorkspaceAccessError as error:
+            if error.code != "WORKSPACE_SELECTION_REQUIRED":
+                raise
+            return _render(
+                request,
+                "workspace_select.html",
+                {"session": session, "workspaces": workspaces},
+            )
         connections = services.connections.list_connections(context)
         runs = services.jobs.list_runs(context)
         schedules = services.jobs.list_schedules(context)
@@ -1094,6 +1103,7 @@ def _register_routes(app: FastAPI) -> None:
                 context = services.access.issue_job_context(
                     workspace_id, Permission.COLLECTION_RUN
                 )
+                services.jobs.enqueue_due_runs(context, moment)
                 worked += len(
                     services.jobs.execute_due_runs(context, moment, remaining)
                 )
@@ -1435,4 +1445,8 @@ def _register_routes(app: FastAPI) -> None:
                 idempotency_key=secrets.token_urlsafe(16),
             ),
         )
+        if membership_id == context.membership_id:
+            response = _redirect("/")
+            response.delete_cookie(WORKSPACE_COOKIE, path="/")
+            return response
         return _redirect("/members", "member_removed")

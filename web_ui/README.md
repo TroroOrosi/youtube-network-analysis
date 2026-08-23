@@ -152,7 +152,7 @@ $env:YNA_CREDENTIAL_SECRET = "projects/<project>/secrets/yna-owner-credentials"
 ```
 
 - one document per module (`workspace_access.json`, `channel_connections.json`,
-  `channel_data.json`, `collection_jobs.json`), so the modules stay
+  `channel_data.json`, `collection_jobs.json`, `analysis_api.json`), so the modules stay
   independently extractable;
 - each write is a rename over the previous document, so a process killed
   mid-save leaves the old one intact;
@@ -175,9 +175,10 @@ Only the refresh token is written, so a restored connection comes back already
 expired and refreshes on its first call.
 
 On a host without a disk — Cloud Run — set `YNA_FIRESTORE_DATABASE` to
-`projects/<project>/databases/(default)` instead of a directory. The same four
+`projects/<project>/databases/(default)` instead of a directory. The same five
 documents then live in a `state` collection, each holding the module's text in
-one field.
+one field. Saved analysis conditions live in `analysis_api` and therefore return
+with the rest of the workspace after a restart.
 
 Firestore caps a document a little under 1 MiB, and `channel_data` is the one
 whose text grows with what was collected, so a module's text is split when it
@@ -444,10 +445,11 @@ debugging, which is why it is not the default here.
 away takes the process's memory with it, and at `--min-instances 0` that is
 routine — after an idle period, on every new revision, on maintenance.
 
-What survives is what was written: the four module documents in Firestore and
-the owners' refresh tokens in Secret Manager. A restored connection comes back
-with an expired access token and refreshes it on its first call, which is the
-path that runs hourly anyway, so an owner sees nothing.
+What survives is what was written: the five module documents in Firestore and
+the owners' refresh tokens in Secret Manager. This includes saved analysis
+conditions. A restored connection comes back with an expired access token and
+refreshes it on its first call, which is the path that runs hourly anyway, so an
+owner sees nothing.
 
 What does not survive is the rate-limit counters and any authorization in
 flight: a sign-in or a consent interrupted by the instance going away has to be

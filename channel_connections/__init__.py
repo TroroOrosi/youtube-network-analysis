@@ -7,6 +7,7 @@ accidental API surface.
 
 from .errors import ChannelConnectionsError, ErrorCode
 from .ports import (
+    CollectionTargetResolver,
     ConnectionExecutionBroker,
     ConnectionManager,
     ConnectionPrivacyAdministrator,
@@ -15,6 +16,7 @@ from .ports import (
 
 __all__ = (
     "ChannelConnectionsError",
+    "CollectionTargetResolver",
     "ConnectionExecutionBroker",
     "ConnectionManager",
     "ConnectionPrivacyAdministrator",

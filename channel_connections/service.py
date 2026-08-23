@@ -43,6 +43,7 @@ from .models import (
     CALLBACK_REPLAY_TTL,
     ChannelConnection,
     CompleteAuthorization,
+    CollectionTarget,
     ConnectionAuditAction,
     ConnectionPage,
     ConnectionPageRequest,
@@ -73,7 +74,6 @@ from .ports import (
     EphemeralSecretStore,
     ProviderAuthorizationExpired,
     ProviderRejected,
-    ProviderUnavailable,
     StateStore,
     TokenGenerator,
     YouTubeAuthorizationGateway,
@@ -730,6 +730,19 @@ class ChannelConnectionsService:
         _require(context, Permission.CHANNEL_READ)
         with self._lock:
             return self._connection(context.workspace_id, connection_id)
+
+    def resolve_collection_target(
+        self, context: WorkspaceContext, connection_id: str
+    ) -> CollectionTarget:
+        """Resolve a run target without exposing general connection metadata."""
+
+        _require(context, Permission.COLLECTION_RUN)
+        with self._lock:
+            connection = self._connection(context.workspace_id, connection_id)
+            return CollectionTarget(
+                connection_id=connection.connection_id,
+                provider_channel_id=connection.provider_channel_id,
+            )
 
     def list_connections(
         self,
