@@ -30,4 +30,4 @@ USER nobody
 # so the copy is not worth keeping. Errors and tracebacks still go to stdout;
 # only the per-request access line is dropped.
 ENV PORT=8080
-CMD exec python -m uvicorn web_ui.main:app --host 0.0.0.0 --port $PORT --proxy-headers --no-access-log
+CMD ["sh", "-c", "exec python -m uvicorn web_ui.main:app --host 0.0.0.0 --port \"${PORT}\" --proxy-headers --no-access-log"]

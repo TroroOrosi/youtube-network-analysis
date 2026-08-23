@@ -20,6 +20,7 @@
 
 # Runtime copies do not need tests or interpreter output.
 **/tests/
+web_ui/requirements-dev.txt
 **/__pycache__/
 **/*.py[cod]
 
