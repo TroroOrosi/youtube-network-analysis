@@ -666,6 +666,10 @@ class GuidedFlowTests(WebFixture):
         self.assertIn("デモチャンネル", comparison.text)
         self.assertIn("UC_not_ready", comparison.text)
         self.assertIn("未収集", comparison.text)
+        self.assertIn(
+            'href="/">ホームでチャンネルを接続・収集する</a>',
+            comparison.text,
+        )
         self.assertIn("コメントしたことがない人だけ", comparison.text)
         self.assertIn('href="/compare"', self.client.get("/").text)
 

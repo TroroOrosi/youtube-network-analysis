@@ -54,6 +54,7 @@
       <th scope="col">対象の登録者</th>
       <th scope="col">絞り込み後</th>
       <th scope="col">サイレント</th>
+      <th scope="col">次の操作</th>
     </tr>
   </thead>
   <tbody>
@@ -64,6 +65,13 @@
       <td>{{ item.scope_count if item.ready else '—' }}</td>
       <td>{{ item.filtered_count if item.ready else '—' }}</td>
       <td>{{ item.silent_count if item.ready else '—' }}</td>
+      <td>
+        {% if item.ready %}
+        —
+        {% else %}
+        <a href="/">ホームでチャンネルを接続・収集する</a>
+        {% endif %}
+      </td>
     </tr>
   {% endfor %}
   </tbody>
