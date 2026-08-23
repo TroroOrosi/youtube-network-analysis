@@ -45,6 +45,8 @@ from channel_data.errors import ChannelDataError
 from collection_jobs.errors import CollectionJobsError
 from collection_jobs.models import (
     CollectionRun,
+    CreateSchedule,
+    DeleteSchedule,
     EnqueueRun,
     JobsPageRequest,
     RunKind,
@@ -104,6 +106,8 @@ MESSAGES = {
         "続きは翌日以降に自動で再開します。このまま閉じて構いません。"
     ),
     "collect_stopped": "収集を中断しました。次に開いたときに続きから再開します。",
+    "schedule_created": "定期収集を設定しました。",
+    "schedule_deleted": "定期収集を解除しました。",
     "workspace_created": "ワークスペースを作成しました。",
     "authorization_cancelled": "認可を中止しました。",
 }
@@ -668,6 +672,7 @@ def _register_routes(app: FastAPI) -> None:
         context = _context(request, session, Permission.CHANNEL_READ)
         connections = services.connections.list_connections(context)
         runs = services.jobs.list_runs(context)
+        schedules = services.jobs.list_schedules(context)
         connection_titles = {
             item.connection_id: item.channel_title for item in connections.items
         }
@@ -710,8 +715,70 @@ def _register_routes(app: FastAPI) -> None:
                     for item in connections.items
                 ],
                 "runs": rendered_runs,
+                "schedules": [
+                    {
+                        "schedule_id": item.schedule_id,
+                        "channel": connection_titles.get(
+                            item.connection_id, item.connection_id
+                        ),
+                        "kind": RUN_KIND_LABELS.get(item.kind.value, item.kind.value),
+                        "interval_hours": int(item.interval.total_seconds() // 3600),
+                        "last_run": (
+                            "未実行"
+                            if item.last_enqueued_at is None
+                            else _display_datetime(item.last_enqueued_at)[1]
+                        ),
+                    }
+                    for item in schedules.items
+                ],
             },
         )
+
+    @app.post("/schedules")
+    def create_schedule(
+        request: Request,
+        connection_id: str = Form(...),
+        kind: str = Form(...),
+        interval_hours: int = Form(...),
+        csrf_token: str = Form(""),
+    ) -> Response:
+        _check_csrf(request, csrf_token)
+        if not 1 <= interval_hours <= 24 * 365:
+            raise AppError("INVALID_INPUT")
+        session = _require_session(request)
+        context = _context(request, session, Permission.COLLECTION_RUN)
+        run_kind = {
+            "subscribers": RunKind.SUBSCRIBERS,
+            "content": RunKind.OWNER_CONTENT,
+        }.get(kind)
+        if run_kind is None:
+            raise AppError("INVALID_INPUT")
+        _services(request).jobs.create_schedule(
+            context,
+            CreateSchedule(
+                connection_id=connection_id,
+                kind=run_kind,
+                interval=timedelta(hours=interval_hours),
+                idempotency_key=secrets.token_urlsafe(16),
+            ),
+        )
+        return _redirect("/", "schedule_created")
+
+    @app.post("/schedules/{schedule_id}/delete")
+    def delete_schedule(
+        request: Request, schedule_id: str, csrf_token: str = Form("")
+    ) -> Response:
+        _check_csrf(request, csrf_token)
+        session = _require_session(request)
+        context = _context(request, session, Permission.COLLECTION_RUN)
+        _services(request).jobs.delete_schedule(
+            context,
+            DeleteSchedule(
+                schedule_id=schedule_id,
+                idempotency_key=secrets.token_urlsafe(16),
+            ),
+        )
+        return _redirect("/", "schedule_deleted")
 
     @app.post("/workspaces")
     def create_workspace(

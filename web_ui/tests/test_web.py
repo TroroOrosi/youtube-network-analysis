@@ -616,6 +616,36 @@ class GuidedFlowTests(WebFixture):
         self.assertIn("詳細", dashboard)
         self.assertIn("再認可が必要", dashboard)
 
+    def test_a_collection_schedule_can_be_created_and_removed(self) -> None:
+        self.login()
+        self.create_workspace()
+        self.connect_channel()
+        dashboard = self.client.get("/").text
+        connection_id = dashboard.split("/connections/")[1].split("/collect")[0]
+
+        created = self.post(
+            "/schedules",
+            {
+                "connection_id": connection_id,
+                "kind": "content",
+                "interval_hours": "24",
+            },
+        )
+
+        self.assertEqual(created.status_code, 303)
+        dashboard = self.client.get(created.headers["location"]).text
+        self.assertIn("定期収集を設定しました", dashboard)
+        self.assertIn("24時間ごと", dashboard)
+        self.assertIn("動画とコメント", dashboard)
+
+        schedule_id = dashboard.split("/schedules/")[1].split("/delete")[0]
+        deleted = self.post(f"/schedules/{schedule_id}/delete")
+
+        self.assertEqual(deleted.status_code, 303)
+        dashboard = self.client.get(deleted.headers["location"]).text
+        self.assertIn("定期収集を解除しました", dashboard)
+        self.assertNotIn("24時間ごと", dashboard)
+
 
 class CollectionDriverTests(WebFixture):
     """The browser as the driver: many short calls, one collection."""

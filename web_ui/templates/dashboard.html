@@ -69,6 +69,66 @@
   <p><button type="submit">チャンネルを接続する</button></p>
 </form>
 
+<h2 id="schedules-heading">定期収集</h2>
+{% if connections %}
+<details {% if schedules %}open{% endif %}>
+  <summary>新しい定期収集を設定</summary>
+  <form method="post" action="/schedules" class="form-row">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div>
+      <label for="schedule_connection_id">チャンネル</label>
+      <select id="schedule_connection_id" name="connection_id" required>
+        {% for item in connections %}
+        <option value="{{ item.connection_id }}">{{ item.title }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div>
+      <label for="schedule_kind">収集するデータ</label>
+      <select id="schedule_kind" name="kind" required>
+        <option value="subscribers">登録者</option>
+        <option value="content">動画とコメント</option>
+      </select>
+    </div>
+    <div>
+      <label for="interval_hours">間隔（時間）</label>
+      <input id="interval_hours" name="interval_hours" type="number" min="1" max="8760" value="24" required>
+    </div>
+    <button type="submit">設定する</button>
+  </form>
+</details>
+{% else %}
+<p>定期収集を設定するには、先にチャンネルを接続してください。</p>
+{% endif %}
+
+{% if schedules %}
+<div class="table-scroll" role="region" aria-labelledby="schedules-heading" tabindex="0">
+<table>
+  <thead>
+    <tr><th scope="col">チャンネル</th><th scope="col">種類</th><th scope="col">間隔</th><th scope="col">前回の開始</th><th scope="col">操作</th></tr>
+  </thead>
+  <tbody>
+  {% for schedule in schedules %}
+    <tr>
+      <th scope="row">{{ schedule.channel }}</th>
+      <td>{{ schedule.kind }}</td>
+      <td>{{ schedule.interval_hours }}時間ごと</td>
+      <td>{{ schedule.last_run }}</td>
+      <td>
+        <form method="post" action="/schedules/{{ schedule.schedule_id }}/delete" class="inline">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="secondary">解除する</button>
+        </form>
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<p>定期収集はまだ設定されていません。</p>
+{% endif %}
+
 <h2 id="runs-heading">最近の収集</h2>
 {% if runs %}
 <div class="table-scroll" role="region" aria-labelledby="runs-heading" tabindex="0">
