@@ -10,6 +10,13 @@ from types import MappingProxyType
 from typing import Mapping
 
 
+# What a principal that is a job, not a person, is called. Real user
+# identifiers are minted as `user_<hex>`, so nothing a person is ever called can
+# collide with this: a record naming one of these was written by work running on
+# a workspace's behalf with no member behind it.
+JOB_PRINCIPAL_PREFIX = "job:"
+
+
 class Role(str, Enum):
     OWNER = "OWNER"
     MEMBER = "MEMBER"
@@ -236,6 +243,36 @@ class Membership:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "created_at", _utc(self.created_at, "created_at"))
+
+
+@dataclass(frozen=True, slots=True)
+class MembershipPageRequest:
+    cursor: str | None = None
+    limit: int = 50
+
+    def __post_init__(self) -> None:
+        if self.cursor is not None and (
+            not isinstance(self.cursor, str)
+            or not self.cursor
+            or len(self.cursor) > 256
+        ):
+            raise WorkspaceAccessError(
+                ErrorCode.INVALID_INPUT,
+                message="Membership cursor is invalid",
+                field="cursor",
+            )
+        if isinstance(self.limit, bool) or not isinstance(self.limit, int) or not 1 <= self.limit <= 100:
+            raise WorkspaceAccessError(
+                ErrorCode.INVALID_INPUT,
+                message="Membership page limit must be from 1 to 100",
+                field="limit",
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class MembershipPage:
+    items: tuple[Membership, ...]
+    next_cursor: str | None
 
 
 @dataclass(frozen=True, slots=True)

@@ -10,8 +10,9 @@ Specification: [`SPEC-collection-jobs.md`](../SPEC-collection-jobs.md)
 
 A deterministic standard-library reference. Execution is **synchronous and
 caller driven**: this module owns no thread, timer, queue, worker, or scheduler
-daemon. A future worker platform calls `enqueue_due_runs` and `execute_run`; the
-choice of that platform is an explicit later gate.
+daemon. A host driver calls `enqueue_due_runs` and `execute_due_runs`; the
+reference web application supplies a scheduler-authenticated drain for that
+purpose without moving scheduling policy into the web layer.
 
 No test or code path contacts a network, a real Google account, a database, or
 real channel data. The provider is reached only through the
@@ -52,9 +53,10 @@ previously accepted dataset readable and unchanged.
 | `purge_retention` | `collection.run` |
 | `delete_workspace_jobs` | `workspace.delete` |
 
-Enqueuing also resolves the connection through `channel-connections`, which
-checks `channel.read` itself. Each module checks its own permission on the same
-trusted context.
+Enqueuing resolves a `CollectionTarget` through the narrow
+`channel-connections` target resolver. The resolver requires only
+`collection.run` and returns exactly `connection_id` and `provider_channel_id`;
+it neither exposes general connection metadata nor requires `channel.read`.
 
 ## Quota
 
@@ -88,6 +90,7 @@ page was produced. Tampered, foreign, and cross-query tokens share
 | Terminal runs | 90 days after finishing |
 | Quota ledger entries | 90 days after first use |
 | Mutation idempotency records | 90 days |
+| Schedules whose connection was removed | Removed on the next due evaluation |
 | Unresolved (queued or running) runs | never purged automatically |
 
 `delete_workspace_jobs` removes runs, schedules, quota entries, cursors, and

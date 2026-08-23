@@ -248,6 +248,13 @@ def export_my_access_data(session: AuthenticatedSession) -> AccountAccessExport:
     ...
 
 
+def issue_job_context(
+    workspace_id: str,
+    required_permission: Permission,
+) -> WorkspaceContext:
+    """Authority for work with no session behind it, bound to one workspace."""
+
+
 def request_account_deletion(session: AuthenticatedSession) -> None:
     """Revoke sessions or fail atomically when sole-owner obligations remain."""
 ```
@@ -271,9 +278,19 @@ Every consumer operation follows this sequence:
 5. Scope the resource lookup by `context.workspace_id` in the same operation.
 
 A resource must never be fetched globally and then checked against the context.
-Future background jobs cannot reuse a browser cookie or stale serialized
-context; `collection-jobs` must specify separately issued, workspace-bound,
-least-privilege execution authority before such jobs are implemented.
+Background jobs cannot reuse a browser cookie or stale serialized context.
+`issue_job_context` is how they get authority instead: it takes no session,
+names one workspace, carries exactly the one permission asked for, and is not
+stored anywhere — it lasts for the call and the next call mints another. The
+principal and session identifiers it carries are prefixed `job:`, which no real
+user identifier can be, so a record naming one was written by work with nobody
+behind it.
+
+It is the only operation here that does not start from an authenticated
+session, and it therefore grants nothing by itself: a caller that can invoke it
+is already inside the deployment, and the endpoint that does so must
+authenticate its own caller first. A workspace that does not exist is refused
+with the same answer as one the caller may not see.
 
 ## Workspace selection and tenant invariants
 
@@ -571,6 +588,11 @@ workflow. Adding one is outside this specification and requires review.
 - Change retention periods, deletion/export semantics, or owner safeguards.
 - Introduce HTTP routes, invitation emails/tokens, service accounts, API keys,
   bearer tokens, or background-job authority.
+  *Asked and answered: on 2026-08-22 the owner approved background-job
+  authority for collections that outlive a session. `issue_job_context` is the
+  whole of it — one workspace, one permission, no session, nothing stored. The
+  caller that uses it authenticates a scheduler's own bearer token; that check
+  lives in the deployment layer, not here.*
 
 ### Never
 

@@ -32,6 +32,15 @@ class CollectionRunner(Protocol):
         self, context: WorkspaceContext, command: ExecuteRun
     ) -> CollectionRun: ...
 
+    def execute_due_runs(
+        self,
+        context: WorkspaceContext,
+        reference_time: datetime,
+        slice_seconds: int,
+    ) -> tuple[CollectionRun, ...]: ...
+
+    def due_workspace_ids(self, reference_time: datetime) -> tuple[str, ...]: ...
+
     def cancel_run(
         self, context: WorkspaceContext, command: CancelRun
     ) -> CollectionRun: ...

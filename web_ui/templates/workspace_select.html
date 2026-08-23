@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}ワークスペース選択 | YouTube 分析{% endblock %}
+{% block content %}
+<h2>ワークスペースを選択</h2>
+<p>表示するワークスペースを選んでください。</p>
+{% set workspace_select_required = true %}
+{% set workspace_select_button = "表示する" %}
+{% include "_workspace_controls.html" %}
+{% endblock %}

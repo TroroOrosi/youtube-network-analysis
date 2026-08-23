@@ -1,0 +1,21 @@
+# What `gcloud run deploy --source .` uploads to Cloud Build. Without this file
+# gcloud would send the whole directory, which is about 37 MB of analysis data
+# the image never opens — including `edges_anon.csv`, whose rows are one
+# viewer's subscription history each. The build does not need it, so it does not
+# get a copy. The Dockerfile's COPY lines are the real list; keep the two in step.
+
+.git/
+__pycache__/
+*.pyc
+
+# Analysis inputs and outputs.
+*.csv
+*.ipynb
+*.xlsx
+!web_ui/assets/audience-network-analysis.xlsx
+
+# Local tool caches and scratch.
+.repowise/
+.code-review-graph/
+.agents/
+.jp_fonts/

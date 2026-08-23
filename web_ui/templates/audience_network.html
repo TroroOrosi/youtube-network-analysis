@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+{% block title %}視聴者ネットワーク分析 | YouTube 分析{% endblock %}
+{% block content %}
+<h2>{{ report.title }}</h2>
+<p class="page-lead">公開購読情報から、視聴者が他に見ているチャンネル、興味のまとまり、コミュニティ、規模補正後の親和度を確認します。</p>
+
+<div class="source-note" role="note">
+  <strong>{{ report.source_label }}</strong><br>
+  {{ report.coverage_period }}。{{ report.methodology }}
+</div>
+
+<div class="download-panel">
+  <a class="download-link" href="/audience-network/report.xlsx">全分析をExcelでダウンロード</a>
+  <span class="limits">Web表示と同じ集計値を9シートに収録しています。</span>
+</div>
+
+<div class="cards" aria-label="データ概要">
+  <div class="card"><div>視聴者</div><div class="value number">{{ "{:,}".format(report.summary.viewers) }}</div></div>
+  <div class="card"><div>登録チャンネル</div><div class="value number">{{ "{:,}".format(report.summary.channels) }}</div></div>
+  <div class="card"><div>視聴者・チャンネル関係</div><div class="value number">{{ "{:,}".format(report.summary.viewer_channel_edges) }}</div></div>
+  <div class="card"><div>ネットワークノード</div><div class="value number">{{ "{:,}".format(report.summary.network_nodes) }}</div></div>
+  <div class="card"><div>ネットワークエッジ</div><div class="value number">{{ "{:,}".format(report.summary.network_edges) }}</div></div>
+  <div class="card"><div>コミュニティ</div><div class="value number">{{ "{:,}".format(report.summary.communities) }}</div></div>
+</div>
+
+<nav class="report-nav" aria-label="分析内メニュー">
+  <ul>
+    <li><a href="#top-channels">共通購読</a></li>
+    <li><a href="#breadth">登録数分布</a></li>
+    <li><a href="#categories">興味カテゴリ</a></li>
+    <li><a href="#communities">コミュニティ</a></li>
+    <li><a href="#relationships">ネットワーク関係</a></li>
+    <li><a href="#affinity">親和度</a></li>
+    <li><a href="#popularity-affinity">人気度との比較</a></li>
+  </ul>
+</nav>
+
+<section id="top-channels" class="report-section" aria-labelledby="top-channels-heading">
+<h3 id="top-channels-heading">よく一緒に登録されているチャンネル</h3>
+<p class="limits">観測した視聴者のうち、そのチャンネルを登録している人数と割合です。</p>
+{% if report.top_channels %}
+<div class="table-scroll" role="region" aria-labelledby="top-channels-heading" tabindex="0">
+<table>
+  <thead><tr><th scope="col">順位</th><th scope="col">チャンネル</th><th scope="col">視聴者数</th><th scope="col">割合</th></tr></thead>
+  <tbody>{% for row in report.top_channels %}<tr><td class="number">{{ loop.index }}</td><th scope="row">{{ row.channel }}</th><td class="number">{{ "{:,}".format(row.viewers) }}</td><td class="number">{{ "{:.1%}".format(row.panel_share) }}</td></tr>{% endfor %}</tbody>
+</table>
+</div>
+{% else %}<p class="empty-state" role="status">該当する集計結果はありません。</p>{% endif %}
+</section>
+
+<section id="breadth" class="report-section" aria-labelledby="breadth-heading">
+<h3 id="breadth-heading">視聴者ごとの登録チャンネル数</h3>
+<p>中央値は <strong class="number">{{ "{:,}".format(report.summary.median_breadth) }} チャンネル</strong>です。</p>
+{% if report.viewer_breadth %}
+<figure class="segment-chart bar-list" aria-labelledby="breadth-heading">
+<dl>{% for row in report.viewer_breadth %}<div class="chart-row"><dt>{{ row.label }}</dt><dd><meter min="0" max="1" value="{{ row.share }}">{{ row.share }}</meter><span class="number">{{ "{:,}".format(row.viewers) }}人（{{ "{:.1%}".format(row.share) }}）</span></dd></div>{% endfor %}</dl>
+</figure>
+{% else %}<p class="empty-state" role="status">該当する集計結果はありません。</p>{% endif %}
+</section>
+
+<section id="categories" class="report-section" aria-labelledby="categories-heading">
+<h3 id="categories-heading">興味カテゴリ</h3>
+<p class="limits">登録上位300チャンネルを名称キーワードで分類した、関心領域の参考値です。</p>
+{% if report.categories %}
+<div class="table-scroll" role="region" aria-labelledby="categories-heading" tabindex="0">
+<table>
+  <thead><tr><th scope="col">カテゴリ</th><th scope="col">チャンネル数</th><th scope="col">視聴者リンク数</th><th scope="col">構成比</th></tr></thead>
+  <tbody>{% for row in report.categories %}<tr><th scope="row">{{ row.category }}</th><td class="number">{{ "{:,}".format(row.channels) }}</td><td class="number">{{ "{:,}".format(row.viewer_links) }}</td><td class="number">{{ "{:.1%}".format(row.share) }}</td></tr>{% endfor %}</tbody>
+</table>
+</div>
+{% else %}<p class="empty-state" role="status">該当する集計結果はありません。</p>{% endif %}
+</section>
+
+<section id="communities" class="report-section" aria-labelledby="communities-heading">
+<h3 id="communities-heading">コミュニティ</h3>
+<p class="limits">共通購読ネットワークをLouvain法でまとめたグループです。</p>
+{% if report.communities %}
+<div class="table-scroll" role="region" aria-labelledby="communities-heading" tabindex="0">
+<table>
+  <thead><tr><th scope="col">順位</th><th scope="col">チャンネル数</th><th scope="col">内部エッジ</th><th scope="col">代表チャンネル</th></tr></thead>
+  <tbody>{% for row in report.communities %}<tr><td class="number">{{ row.rank }}</td><td class="number">{{ "{:,}".format(row.channels) }}</td><td class="number">{{ "{:,}".format(row.edges) }}</td><td>{{ row.representatives }}</td></tr>{% endfor %}</tbody>
+</table>
+</div>
+{% else %}<p class="empty-state" role="status">該当する集計結果はありません。</p>{% endif %}
+</section>
+
+<section id="relationships" class="report-section" aria-labelledby="relationships-heading">
+<h3 id="relationships-heading">強いネットワーク関係</h3>
+<p class="limits">同じ視聴者が登録している回数が多いチャンネルの組み合わせです。</p>
+{% if report.network_relationships %}
+<div class="table-scroll" role="region" aria-labelledby="relationships-heading" tabindex="0">
+<table>
+  <thead><tr><th scope="col">チャンネルA</th><th scope="col">チャンネルB</th><th scope="col">共通視聴者</th><th scope="col">類似度</th></tr></thead>
+  <tbody>{% for row in report.network_relationships %}<tr><th scope="row">{{ row.left }}</th><td>{{ row.right }}</td><td class="number">{{ "{:,}".format(row.shared_viewers) }}</td><td class="number">{{ "{:.1%}".format(row.weighted_cosine) }}</td></tr>{% endfor %}</tbody>
+</table>
+</div>
+{% else %}<p class="empty-state" role="status">該当する集計結果はありません。</p>{% endif %}
+</section>
+
+<section id="affinity" class="report-section" aria-labelledby="affinity-heading">
+<h3 id="affinity-heading">親和度</h3>
+<p class="limits">チャンネル全体の規模で補正したリフトです。1より大きいほど、この視聴者層に固有の関連が強いことを示します。</p>
+{% if report.affinity %}
+<div class="table-scroll" role="region" aria-labelledby="affinity-heading" tabindex="0">
+<table>
+  <thead><tr><th scope="col">順位</th><th scope="col">チャンネル</th><th scope="col">観測視聴者</th><th scope="col">パネル比率</th><th scope="col">リフト</th></tr></thead>
+  <tbody>{% for row in report.affinity %}<tr><td class="number">{{ loop.index }}</td><th scope="row">{{ row.channel }}</th><td class="number">{{ "{:,}".format(row.observed_viewers) }}</td><td class="number">{{ "{:.1%}".format(row.panel_share) }}</td><td class="number">{{ "{:.2f}".format(row.affinity_lift) }}</td></tr>{% endfor %}</tbody>
+</table>
+</div>
+{% else %}<p class="empty-state" role="status">該当する集計結果はありません。</p>{% endif %}
+</section>
+
+<section id="popularity-affinity" class="report-section" aria-labelledby="popularity-affinity-heading">
+<h3 id="popularity-affinity-heading">人気度と親和度の差</h3>
+<p class="limits">単純な登録割合では見えにくく、規模補正後に特徴が強くなるチャンネルです。</p>
+{% if report.popularity_affinity %}
+<div class="table-scroll" role="region" aria-labelledby="popularity-affinity-heading" tabindex="0">
+<table>
+  <thead><tr><th scope="col">チャンネル</th><th scope="col">人気順位</th><th scope="col">親和度順位</th><th scope="col">順位差</th><th scope="col">リフト</th></tr></thead>
+  <tbody>{% for row in report.popularity_affinity %}<tr><th scope="row">{{ row.channel }}</th><td class="number">{{ "{:,}".format(row.popularity_rank) }}</td><td class="number">{{ "{:,}".format(row.affinity_rank) }}</td><td class="number">{{ "{:,}".format(row.rank_gap) }}</td><td class="number">{{ "{:.2f}".format(row.affinity_lift) }}</td></tr>{% endfor %}</tbody>
+</table>
+</div>
+{% else %}<p class="empty-state" role="status">該当する集計結果はありません。</p>{% endif %}
+</section>
+
+<p><a href="/">ホームに戻る</a></p>
+{% endblock %}

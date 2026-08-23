@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 
 from workspace_access.models import (
     AccessSecret,
+    JOB_PRINCIPAL_PREFIX,
     CreateWorkspace,
     DeleteWorkspace,
     ErrorCode,
@@ -60,6 +61,43 @@ class WorkspaceAuthorizationTests(unittest.TestCase):
         return self.service.authenticate_session(
             SessionEvidence(AccessSecret(issued.secret.reveal()))
         )
+
+    def test_a_job_context_carries_one_permission_and_no_session(self) -> None:
+        """Least privilege, and nothing a member could be mistaken for."""
+
+        session = self.login("owner")
+        workspace = self.service.create_workspace(session, CreateWorkspace("Team"))
+
+        job = self.service.issue_job_context(
+            workspace.workspace_id, Permission.COLLECTION_RUN
+        )
+
+        self.assertEqual(job.workspace_id, workspace.workspace_id)
+        self.assertEqual(job.permissions, frozenset({Permission.COLLECTION_RUN}))
+        self.assertNotIn(Permission.WORKSPACE_DELETE, job.permissions)
+        self.assertTrue(job.user_id.startswith(JOB_PRINCIPAL_PREFIX))
+        self.assertNotEqual(job.user_id, session.user_id)
+        self.assertNotEqual(job.session_id, workspace.session_id)
+
+    def test_a_job_context_is_refused_for_a_workspace_that_is_not_there(self) -> None:
+        """A drain that guessed an identifier learns nothing from the answer."""
+
+        with self.assertRaises(WorkspaceAccessError) as missing:
+            self.service.issue_job_context("workspace-nobody-has", Permission.COLLECTION_RUN)
+
+        self.assertEqual(
+            missing.exception.code,
+            ErrorCode.WORKSPACE_NOT_FOUND_OR_FORBIDDEN.value,
+        )
+
+    def test_a_job_context_needs_a_real_permission(self) -> None:
+        session = self.login("owner")
+        workspace = self.service.create_workspace(session, CreateWorkspace("Team"))
+
+        with self.assertRaises(WorkspaceAccessError) as invalid:
+            self.service.issue_job_context(workspace.workspace_id, "collection.run")
+
+        self.assertEqual(invalid.exception.code, ErrorCode.INVALID_INPUT.value)
 
     def test_creation_atomically_returns_first_owner_context(self) -> None:
         session = self.login("owner")

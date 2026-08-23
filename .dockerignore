@@ -1,0 +1,30 @@
+# Send only files copied by Dockerfile. The repository also contains private
+# analysis inputs, reports, notebooks, and local review caches that must never
+# enter a remote builder's context.
+**
+!Dockerfile
+!web_ui/
+!web_ui/**
+!analysis_api/
+!analysis_api/**
+!channel_connections/
+!channel_connections/**
+!channel_data/
+!channel_data/**
+!collection_jobs/
+!collection_jobs/**
+!workspace_access/
+!workspace_access/**
+!subscriber_analytics/
+!subscriber_analytics/analytics_core.py
+
+# Runtime copies do not need tests or interpreter output.
+**/tests/
+web_ui/requirements-dev.txt
+**/__pycache__/
+**/*.py[cod]
+
+# Defense in depth if a future COPY becomes broader.
+**/.env
+**/.env.*
+**/client_secret_*.json

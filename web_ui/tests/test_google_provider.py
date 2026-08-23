@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 import unittest
 from datetime import UTC, datetime, timedelta
 from urllib.parse import parse_qs, urlsplit
@@ -24,10 +26,14 @@ from web_ui.google_provider import (
     GoogleCredentialStore,
     GoogleDataGateway,
     GoogleOAuthConfig,
+    _error_reasons,
+    _is_grant_failure,
 )
 
 
 NOW = datetime(2026, 6, 1, tzinfo=UTC)
+
+API_KEY = "test-api-key"
 
 CONFIG = GoogleOAuthConfig(
     client_id="client-123.apps.googleusercontent.com",
@@ -137,6 +143,210 @@ def default_replies() -> dict[str, tuple[int, bytes]]:
     }
 
 
+class FakeStateStore:
+    def __init__(self, document: str | None = None) -> None:
+        self.document = document
+        self.saves = 0
+
+    def load(self) -> str | None:
+        return self.document
+
+    def save(self, document: str) -> None:
+        self.document = document
+        self.saves += 1
+
+
+class SlowStateStore(FakeStateStore):
+    """A vault that takes long enough for a second thread to reach it."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.events: list[str] = []
+
+    def save(self, document: str) -> None:
+        self.events.append("enter")
+        time.sleep(0.02)
+        super().save(document)
+        self.events.append("leave")
+
+
+def credential(refresh: str | None = "rt-1", **overrides: object) -> ProviderCredential:
+    fields: dict[str, object] = {
+        "access_token": RedactedSecret("at-1"),
+        "refresh_token": None if refresh is None else RedactedSecret(refresh),
+        "expires_at": NOW + timedelta(hours=1),
+    }
+    fields.update(overrides)
+    return ProviderCredential(**fields)  # type: ignore[arg-type]
+
+
+class CredentialPersistenceTests(unittest.TestCase):
+    """The vault outlives the process, holding only what it must hold."""
+
+    def build(self, document: str | None = None):
+        state = FakeStateStore(document)
+        return GoogleCredentialStore(state_store=state, now=lambda: NOW), state
+
+    def test_only_the_refresh_material_is_written(self) -> None:
+        """The access token expires in an hour; keeping it buys nothing."""
+
+        store, state = self.build()
+        store.put("ws-1", "slot-1", credential("rt-secret"))
+        self.assertIn("rt-secret", state.document or "")
+        self.assertNotIn("at-1", state.document or "")
+
+    def test_a_restart_brings_the_slot_back(self) -> None:
+        store, state = self.build()
+        store.put("ws-1", "slot-1", credential("rt-secret"))
+
+        restored = GoogleCredentialStore(
+            state_store=FakeStateStore(state.document), now=lambda: NOW
+        )
+        self.assertEqual(restored.slot_ids("ws-1"), ("slot-1",))
+        back = restored._read("ws-1", "slot-1")
+        assert back is not None
+        self.assertEqual(back.refresh_token.reveal(), "rt-secret")
+
+    def test_the_restored_slot_is_expired_so_the_first_call_refreshes(self) -> None:
+        store, state = self.build()
+        store.put("ws-1", "slot-1", credential())
+        restored = GoogleCredentialStore(
+            state_store=FakeStateStore(state.document), now=lambda: NOW
+        )
+        back = restored._read("ws-1", "slot-1")
+        assert back is not None
+        self.assertLess(back.expires_at, NOW)
+
+    def test_an_unchanged_refresh_token_is_not_rewritten(self) -> None:
+        """A refresh happens hourly and usually returns the same token."""
+
+        store, state = self.build()
+        store.put("ws-1", "slot-1", credential("rt-same"))
+        after_first = state.saves
+        store.put(
+            "ws-1", "slot-1", credential("rt-same", expires_at=NOW + timedelta(hours=2))
+        )
+        self.assertEqual(state.saves, after_first)
+
+    def test_a_rotated_refresh_token_is_written(self) -> None:
+        store, state = self.build()
+        store.put("ws-1", "slot-1", credential("rt-old"))
+        before = state.saves
+        store.put("ws-1", "slot-1", credential("rt-new"))
+        self.assertEqual(state.saves, before + 1)
+
+    def test_deleting_a_slot_removes_it_from_the_document(self) -> None:
+        store, state = self.build()
+        store.put("ws-1", "slot-1", credential("rt-gone"))
+        store.delete("ws-1", "slot-1")
+        self.assertEqual(json.loads(state.document or ""), {})
+
+    def test_a_grant_without_offline_access_is_never_written(self) -> None:
+        store, state = self.build()
+        store.put("ws-1", "slot-1", credential(None))
+        self.assertEqual(state.saves, 0)
+
+    def test_a_document_it_cannot_read_stops_the_start(self) -> None:
+        with self.assertRaises(ValueError):
+            self.build("this is not the document")
+
+    def test_two_threads_do_not_interleave_a_save(self) -> None:
+        """Route handlers run in a thread pool, so two owners can finish at once.
+
+        Interleaved, both saves would add a version to the vault and destroy
+        the one the other added, and the document left readable could be the
+        earlier of the two: a connection silently missing from a store nobody
+        will be asked to authorize again.
+        """
+
+        state = SlowStateStore()
+        store = GoogleCredentialStore(state_store=state, now=lambda: NOW)
+        threads = [
+            threading.Thread(
+                target=store.put, args=("ws-1", f"slot-{index}", credential(f"rt-{index}"))
+            )
+            for index in (1, 2)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(state.events, ["enter", "leave", "enter", "leave"])
+        self.assertEqual(len(json.loads(state.document or "{}")), 2)
+
+    def test_without_a_store_it_keeps_the_slots_in_memory_only(self) -> None:
+        store = GoogleCredentialStore(now=lambda: NOW)
+        store.put("ws-1", "slot-1", credential("rt-secret"))
+        self.assertEqual(store.slot_ids("ws-1"), ("slot-1",))
+
+
+class GrantFailureTests(unittest.TestCase):
+    """Which refusals mean the grant is gone, and which only mean "not this".
+
+    Getting this wrong is not a cosmetic error: a grant judged gone has its
+    credential deleted, and the owner is asked to authorize again. When the
+    cause is a video with comments switched off, authorizing again meets the
+    same refusal and deletes the new credential too.
+    """
+
+    @staticmethod
+    def _body(*reasons: str) -> bytes:
+        return json.dumps(
+            {"error": {"errors": [{"reason": reason} for reason in reasons]}}
+        ).encode()
+
+    def test_401_is_always_the_grant(self) -> None:
+        self.assertTrue(_is_grant_failure(401, self._body("authError")))
+        self.assertTrue(_is_grant_failure(401, b""))
+
+    def test_403_about_authorization_is_the_grant(self) -> None:
+        for reason in ("authError", "insufficientPermissions"):
+            with self.subTest(reason=reason):
+                self.assertTrue(_is_grant_failure(403, self._body(reason)))
+
+    def test_403_about_the_resource_is_not_the_grant(self) -> None:
+        for reason in ("commentsDisabled", "quotaExceeded", "forbidden"):
+            with self.subTest(reason=reason):
+                self.assertFalse(_is_grant_failure(403, self._body(reason)))
+
+    def test_an_unreadable_403_is_not_the_grant(self) -> None:
+        self.assertFalse(_is_grant_failure(403, b"<html>gateway</html>"))
+
+    def test_other_statuses_are_never_the_grant(self) -> None:
+        for status in (200, 400, 404, 429, 500):
+            with self.subTest(status=status):
+                self.assertFalse(_is_grant_failure(status, self._body("authError")))
+
+
+class ErrorReasonTests(unittest.TestCase):
+    """What the operator log is allowed to keep from a refusal body."""
+
+    def test_it_keeps_googles_reason_keywords(self) -> None:
+        body = json.dumps(
+            {
+                "error": {
+                    "code": 403,
+                    "message": "The video identified by the <code>videoId</code>...",
+                    "errors": [
+                        {"reason": "commentsDisabled", "domain": "youtube.commentThread"}
+                    ],
+                }
+            }
+        ).encode()
+        self.assertEqual(_error_reasons(body), ("commentsDisabled",))
+
+    def test_it_keeps_nothing_else_from_the_body(self) -> None:
+        body = json.dumps(
+            {"error": {"errors": [{"reason": "quotaExceeded", "message": "secret"}]}}
+        ).encode()
+        self.assertNotIn("secret", str(_error_reasons(body)))
+
+    def test_an_unreadable_body_yields_nothing_instead_of_raising(self) -> None:
+        for body in (b"", b"not json", b"[]", json.dumps({"error": {}}).encode()):
+            with self.subTest(body=body):
+                self.assertEqual(_error_reasons(body), ())
+
+
 class AuthorizationUrlTests(unittest.TestCase):
     def build(self) -> GoogleAuthorizationGateway:
         return GoogleAuthorizationGateway(
@@ -173,6 +383,7 @@ class AuthorizationUrlTests(unittest.TestCase):
         self.assertEqual(query["scope"], [APPROVED_SCOPES[0]])
         self.assertEqual(query["client_id"], [CONFIG.client_id])
         self.assertEqual(query["redirect_uri"], ["https://app.example/oauth/callback"])
+        self.assertEqual(query["prompt"], ["consent select_account"])
 
     def test_an_unknown_redirect_uri_is_refused(self) -> None:
         with self.assertRaises(ProviderUnavailable):
@@ -361,8 +572,75 @@ class DataGatewayFixture(unittest.TestCase):
         store = GoogleCredentialStore()
         if credential is not None:
             store.put("ws-1", "slot-1", credential)
-        gateway = GoogleDataGateway(CONFIG, store, transport=transport, now=lambda: NOW)
+        gateway = GoogleDataGateway(
+            CONFIG, store, transport=transport, now=lambda: NOW, api_key=API_KEY
+        )
         return gateway, transport, store
+
+
+class PublicReadTests(DataGatewayFixture):
+    """Comments are read with a key, not with the owner's grant.
+
+    `commentThreads.list` refuses the read-only scope and wants
+    `youtube.force-ssl`, which can also delete comments and manage the account.
+    The owner is not asked for that to read what any visitor can read.
+    """
+
+    REPLY = (
+        200,
+        json.dumps(
+            {
+                "items": [
+                    {
+                        "snippet": {
+                            "topLevelComment": {
+                                "snippet": {
+                                    "publishedAt": "2026-03-01T00:00:00Z",
+                                    "authorChannelId": {"value": "UC_a"},
+                                }
+                            }
+                        }
+                    }
+                ]
+            }
+        ).encode(),
+    )
+
+    def _read(self, gateway: GoogleDataGateway):
+        return gateway.list_video_comment_authors(
+            "ws-1", "slot-1", video_id="vid-1", page_token=None, max_results=50
+        )
+
+    def test_the_request_carries_the_key_and_not_the_owners_token(self) -> None:
+        gateway, transport, _ = self.build({f"{API_ROOT}/commentThreads": self.REPLY})
+        self._read(gateway)
+        _, url, headers, _ = transport.requests[-1]
+        self.assertEqual(parse_qs(urlsplit(url).query)["key"], [API_KEY])
+        self.assertNotIn("Authorization", headers)
+
+    def test_it_needs_no_credential_in_the_vault(self) -> None:
+        gateway, _, store = self.build({f"{API_ROOT}/commentThreads": self.REPLY})
+        self.assertIsNone(store._read("ws-1", "slot-1"))
+        self.assertEqual(len(self._read(gateway).rows), 1)
+
+    def test_a_refusal_here_never_reads_as_an_expired_grant(self) -> None:
+        """A channel with comments off must not cost the owner the connection."""
+
+        body = json.dumps(
+            {"error": {"errors": [{"reason": "commentsDisabled"}]}}
+        ).encode()
+        gateway, _, _ = self.build({f"{API_ROOT}/commentThreads": (403, body)})
+        with self.assertRaises(ProviderRejected):
+            self._read(gateway)
+
+    def test_without_a_key_it_refuses_instead_of_using_the_grant(self) -> None:
+        transport = FakeTransport({f"{API_ROOT}/commentThreads": self.REPLY})
+        gateway = GoogleDataGateway(
+            CONFIG, GoogleCredentialStore(), transport=transport, now=lambda: NOW
+        )
+        with self.assertRaises(ProviderUnavailable):
+            self._read(gateway)
+        self.assertEqual(transport.requests, [])
 
 
 class SubscriberListingTests(DataGatewayFixture):

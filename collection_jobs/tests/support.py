@@ -8,7 +8,7 @@ here contacts a network or holds a real credential.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from channel_connections.memory import (
     InMemoryCredentialVault,
@@ -58,6 +58,27 @@ def context(
     )
 
 
+class TickingClock:
+    """A clock that moves a fixed step every time it is read.
+
+    A slice ends when wall clock passes a deadline, so a test for it needs
+    time to pass without a real wait. Reading the clock is what moves it,
+    which is deterministic and enough: the service reads it once per video.
+    """
+
+    def __init__(self, start: datetime = NOW, step: timedelta = timedelta(seconds=1)):
+        self._now = start
+        self._step = step
+
+    def now(self) -> datetime:
+        current = self._now
+        self._now += self._step
+        return current
+
+    def advance(self, delta: timedelta) -> None:
+        self._now += delta
+
+
 @dataclass
 class Stack:
     clock: FixedClock
@@ -83,9 +104,13 @@ class Stack:
 
 
 def build_stack(
-    *, daily_quota_units: int | None = None, page_size: int = 2
+    *,
+    daily_quota_units: int | None = None,
+    page_size: int = 2,
+    clock: object | None = None,
+    jobs_clock: object | None = None,
 ) -> Stack:
-    clock = FixedClock(NOW)
+    clock = clock or FixedClock(NOW)
     gateway = FakeYouTubeGateway()
     data_gateway = FakeYouTubeDataGateway()
     vault = InMemoryCredentialVault()
@@ -102,10 +127,10 @@ def build_stack(
     if daily_quota_units is not None:
         jobs_kwargs["daily_quota_units"] = daily_quota_units
     jobs = CollectionJobsService(
-        clock=clock,
+        clock=jobs_clock or clock,
         tokens=SequenceTokens("job"),
         broker=connections,
-        connections=connections,
+        targets=connections,
         channel_data=channel_data,
         **jobs_kwargs,
     )

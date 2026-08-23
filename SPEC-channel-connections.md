@@ -137,6 +137,7 @@ a fresh `WorkspaceContext` before calling this module.
 | Operation | Required permission |
 |---|---|
 | List/get safe connection metadata | `channel.read` |
+| Resolve the minimal identity needed to create a collection run | `collection.run` |
 | Start/complete a new connection | `channel.manage_connection` |
 | Start/complete reauthorization | `channel.manage_connection` |
 | Disconnect a connection | `channel.manage_connection` |
@@ -369,6 +370,14 @@ class ConnectionReader(Protocol):
         context: WorkspaceContext,
         page: ConnectionPageRequest = ConnectionPageRequest(),
     ) -> ConnectionPage: ...
+
+
+class CollectionTargetResolver(Protocol):
+    def resolve_collection_target(
+        self,
+        context: WorkspaceContext,
+        connection_id: str,
+    ) -> CollectionTarget: ...
 
 
 class ConnectionManager(Protocol):
@@ -854,6 +863,10 @@ Public fields: `authority_id`, `workspace_id`, `connection_id`,
 - `issue_execution_authority` requires `collection.run` and an `ACTIVE`
   connection in the current workspace. A `REAUTH_REQUIRED` connection fails
   closed.
+- `resolve_collection_target` requires `collection.run` and returns a
+  `CollectionTarget` containing exactly `connection_id` and
+  `provider_channel_id`. It exposes no credential or general connection
+  metadata and does not grant the driver general channel reads.
 - Authorities expire at exactly 60 minutes and are revocable.
 - Disconnect, credential invalidation, and workspace deletion revoke every
   authority for the affected connection immediately.

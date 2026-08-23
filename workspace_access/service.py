@@ -33,7 +33,10 @@ from .models import (
     DeleteWorkspace,
     ErrorCode,
     GrantMembership,
+    MembershipPage,
+    MembershipPageRequest,
     IssuedSession,
+    JOB_PRINCIPAL_PREFIX,
     Membership,
     Permission,
     RevokeMembership,
@@ -138,6 +141,11 @@ class WorkspaceAccessService:
         document = self._store.load()
         if document is None:
             return
+        self._adopt(document)
+
+    def _adopt(self, document: str) -> None:
+        """Make a written document the state this process is working from."""
+
         state = snapshot.load(document)
         self._document = document
         self._users_by_id = state.users
@@ -165,6 +173,13 @@ class WorkspaceAccessService:
 
         ponytail: the document is rewritten in full on every command; move to
         per-aggregate rows if a deployment ever holds more than one team.
+
+        A write that fails takes its change with it. Without that, memory holds
+        a membership the document has never heard of, the caller is told the
+        write failed, and the next restart quietly reinstates the older truth —
+        the one shape of data loss nobody goes looking for. Putting the state
+        back to what the store still holds keeps the two readings of the world
+        the same, and the error is raised so the caller knows nothing was kept.
         """
 
         if self._store is None:
@@ -182,8 +197,29 @@ class WorkspaceAccessService:
         )
         if document == self._document:
             return
-        self._store.save(document)
+        try:
+            self._store.save(document)
+        except Exception:
+            if self._document is not None:
+                self._adopt(self._document)
+            else:
+                self._forget_everything()
+            raise
         self._document = document
+
+    def _forget_everything(self) -> None:
+        """Back to the empty start, for a first write that never landed."""
+
+        self._users_by_id = {}
+        self._user_id_by_identity = {}
+        self._sessions_by_digest = {}
+        self._session_digest_by_id = {}
+        self._workspaces_by_id = {}
+        self._memberships_by_id = {}
+        self._membership_id_by_pair = {}
+        self._preferred_workspace_by_user = {}
+        self._idempotency_records = {}
+        self._audit_log = InMemoryAuditLog()
 
     def __repr__(self) -> str:
         return (
@@ -527,6 +563,83 @@ class WorkspaceAccessService:
                 membership=membership,
                 resolved_at=self._now(),
             )
+
+    def issue_job_context(
+        self, workspace_id: str, required_permission: Permission
+    ) -> WorkspaceContext:
+        """Authority for work nobody is watching, issued without a session.
+
+        A scheduled drain has no browser, no cookie, and no member behind it,
+        and the one thing it must never do is borrow one: a session is a
+        person's, it can be revoked by that person, and work that outlives
+        their evening would either die with it or, worse, keep acting as them.
+
+        So this issues a context instead of resolving one. It is bound to one
+        workspace, carries exactly the one permission asked for, and names a
+        principal that is not a user and a session id that is not a session, so
+        nothing it does can be mistaken in a record for something a member did.
+        Nothing stores it: it lasts as long as the call, and the next call makes
+        another.
+        """
+
+        if not isinstance(required_permission, Permission):
+            raise WorkspaceAccessError(
+                ErrorCode.INVALID_INPUT,
+                message="Required permission is invalid",
+                field="required_permission",
+            )
+        with self._lock:
+            if not self._valid_identifier(workspace_id):
+                raise_workspace_not_found_or_forbidden()
+            workspace = self._workspaces_by_id.get(workspace_id)
+            if workspace is None:
+                raise_workspace_not_found_or_forbidden()
+            principal = f"{JOB_PRINCIPAL_PREFIX}{workspace.workspace_id}"
+            return WorkspaceContext(
+                workspace_id=workspace.workspace_id,
+                user_id=principal,
+                membership_id=principal,
+                # The role is the lower of the two the MVP has, and it decides
+                # nothing here: the permissions are the single one asked for,
+                # not the set the role would carry.
+                role=Role.MEMBER,
+                permissions=frozenset({required_permission}),
+                session_id=principal,
+                authorization_revision=workspace.authorization_revision,
+                resolved_at=self._now(),
+            )
+
+    def list_memberships(
+        self,
+        context: WorkspaceContext,
+        page: MembershipPageRequest = MembershipPageRequest(),
+    ) -> MembershipPage:
+        with self._lock:
+            _, workspace, _ = self._authorize_context(
+                context,
+                Permission.MEMBERSHIP_LIST,
+            )
+            rows = [
+                membership
+                for membership in self._memberships_by_id.values()
+                if membership.workspace_id == workspace.workspace_id
+            ]
+            rows.sort(key=lambda item: (item.created_at, item.membership_id))
+            offset = 0
+            if page.cursor is not None:
+                for index, item in enumerate(rows):
+                    if item.membership_id == page.cursor:
+                        offset = index + 1
+                        break
+                else:
+                    raise_membership_not_found_or_forbidden()
+            items = tuple(rows[offset : offset + page.limit])
+            next_cursor = (
+                items[-1].membership_id
+                if items and offset + len(items) < len(rows)
+                else None
+            )
+            return MembershipPage(items=items, next_cursor=next_cursor)
 
     def grant_membership(
         self,

@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
 <title>{% block title %}YouTube 分析{% endblock %}</title>
 <style>
 :root { color-scheme: light; --gap: 1rem; }
@@ -14,14 +15,24 @@ header { display: flex; flex-wrap: wrap; gap: var(--gap); align-items: baseline;
 h1 { font-size: 1.5rem; margin: 0; }
 h2 { font-size: 1.2rem; margin-top: 2rem; }
 a { color: #0b5cab; }
+.skip-link { position: fixed; top: 0.5rem; left: 0.5rem; z-index: 10;
+             padding: 0.5rem 0.75rem; background: #fff; transform: translateY(-200%); }
+.skip-link:focus { transform: translateY(0); }
+.visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0;
+ margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap;
+ border: 0; }
 a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible
   { outline: 3px solid #0b5cab; outline-offset: 2px; }
 button { font: inherit; padding: 0.6rem 1rem; border-radius: 0.4rem;
          border: 1px solid #0b5cab; background: #0b5cab; color: #fff; cursor: pointer; }
 button.secondary { background: #fff; color: #0b5cab; }
 form.inline { display: inline; }
-table { width: 100%; border-collapse: collapse; margin-top: var(--gap); }
+form.form-row { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: end; }
+.table-scroll { overflow-x: auto; margin-top: var(--gap); }
+.table-scroll:focus-visible { outline: 3px solid #0b5cab; outline-offset: 2px; }
+table { width: 100%; min-width: 38rem; border-collapse: collapse; }
 th, td { text-align: left; padding: 0.5rem; border-bottom: 1px solid #e3e6ea; }
+.actions { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; }
 .notice { background: #eaf4ff; border: 1px solid #b6d5f5; padding: 0.75rem;
           border-radius: 0.4rem; }
 .cards { display: grid; gap: var(--gap);
@@ -29,14 +40,49 @@ th, td { text-align: left; padding: 0.5rem; border-bottom: 1px solid #e3e6ea; }
 .card { border: 1px solid #d5d8dc; border-radius: 0.5rem; padding: var(--gap);
         background: #fff; }
 .card .value { font-size: 1.8rem; font-weight: 700; }
+.segment-chart { margin: 2rem 0 0; }
+.segment-chart figcaption { font-size: 1.2rem; font-weight: 700; }
+.segment-chart dl { margin: 0.75rem 0 0; }
+.chart-row { display: grid; grid-template-columns: minmax(8rem, 12rem) 1fr;
+             gap: 0.75rem; align-items: center; margin-top: 0.5rem; }
+.chart-row dd { display: grid; grid-template-columns: minmax(8rem, 1fr) 4rem;
+                gap: 0.75rem; align-items: center; margin: 0; }
+.chart-row meter { width: 100%; }
 .limits { color: #4a5057; font-size: 0.9rem; }
 label { display: block; margin-top: 0.75rem; font-weight: 600; }
 input:not([type="checkbox"]), select { font: inherit; padding: 0.45rem;
                 border-radius: 0.3rem; border: 1px solid #a6acb3; min-width: 12rem; }
 input[type="checkbox"] { margin-right: 0.4rem; }
+details { margin-top: var(--gap); }
+summary { cursor: pointer; color: #0b5cab; }
+.page-lead { max-width: 48rem; }
+.source-note { border-left: 0.3rem solid #0b5cab; padding: 0.75rem 1rem;
+               background: #eaf4ff; margin: 1rem 0; }
+.report-nav ul { display: flex; flex-wrap: wrap; gap: 0.5rem 1rem;
+                 list-style: none; padding: 0; }
+.report-section { scroll-margin-top: 1rem; }
+.report-section h3 { font-size: 1.05rem; margin-top: 2rem; }
+.number { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.bar-list { max-width: 44rem; }
+.bar-list .chart-row { grid-template-columns: minmax(8rem, 15rem) 1fr; }
+.bar-list .chart-row dd { grid-template-columns: minmax(8rem, 1fr) 7rem; }
+.download-panel { display: flex; flex-wrap: wrap; gap: 0.75rem;
+                  align-items: center; margin: 1rem 0; }
+.download-link { display: inline-block; padding: 0.55rem 0.9rem;
+                 border: 1px solid #0b5cab; border-radius: 0.4rem;
+                 text-decoration: none; font-weight: 600; }
+@media (max-width: 40rem) {
+  header { align-items: center; }
+  input:not([type="checkbox"]), select { box-sizing: border-box; width: 100%; min-width: 0; }
+  form.form-row > * { flex: 1 1 100%; }
+  .chart-row { grid-template-columns: 1fr; gap: 0.25rem; }
+  .bar-list .chart-row { grid-template-columns: 1fr; }
+}
 </style>
+{% block head %}{% endblock %}
 </head>
 <body>
+<a class="skip-link" href="#main-content">本文へ移動</a>
 <header>
   <h1><a href="/">YouTube 分析</a></h1>
   {% if session %}
@@ -46,12 +92,12 @@ input[type="checkbox"] { margin-right: 0.4rem; }
   </form>
   {% endif %}
 </header>
-<main>
+<main id="main-content">
   {% if message %}<p class="notice" role="status">{{ message }}</p>{% endif %}
   {% block content %}{% endblock %}
 </main>
-<footer class="limits">
+{% if session %}<footer class="limits">
   <p>登録者は「登録を公開している人」だけが取得できます。非公開の登録者は表示されません。</p>
-</footer>
+</footer>{% endif %}
 </body>
 </html>

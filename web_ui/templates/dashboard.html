@@ -1,8 +1,20 @@
 {% extends "base.html" %}
 {% block title %}ホーム | YouTube 分析{% endblock %}
 {% block content %}
-<h2>接続中のチャンネル</h2>
+<h2 id="workspace-heading">ワークスペース</h2>
+<p><a href="/members">メンバーを管理する</a></p>
+{% include "_workspace_controls.html" %}
+
+<h2 id="analysis-heading">分析</h2>
+<p>
+  <a href="/audience-network">視聴者ネットワーク分析を見る</a>
+  <span class="limits">— 匿名化済みの既存調査データで、共通購読・興味・コミュニティ・親和度を確認できます。</span>
+</p>
+
+<h2 id="connections-heading">接続中のチャンネル</h2>
+<p><a href="/compare">複数チャンネルを比較する</a></p>
 {% if connections %}
+<div class="table-scroll" role="region" aria-labelledby="connections-heading" tabindex="0">
 <table>
   <caption class="limits">接続の状態と次にできる操作</caption>
   <thead>
@@ -13,21 +25,29 @@
     <tr>
       <th scope="row">{{ item.title }}</th>
       <td>{{ item.status_label }}</td>
-      <td>
+      <td><div class="actions">
+        {% if item.status == "ACTIVE" %}
         <form method="post" action="/connections/{{ item.connection_id }}/collect" class="inline">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <button type="submit">データを収集する</button>
         </form>
+        {% else %}
+        <form method="post" action="/connections/{{ item.connection_id }}/reauthorize" class="inline">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit">再認可する</button>
+        </form>
+        {% endif %}
         <a href="/analysis?channel_id={{ item.channel_id }}">分析を見る</a>
         <form method="post" action="/connections/{{ item.connection_id }}/disconnect" class="inline">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <button type="submit" class="secondary">接続を解除</button>
         </form>
-      </td>
+      </div></td>
     </tr>
   {% endfor %}
   </tbody>
 </table>
+</div>
 {% else %}
 <p>まだチャンネルを接続していません。次の手順は「チャンネルを接続する」です。</p>
 {% endif %}
@@ -37,18 +57,94 @@
   <p><button type="submit">チャンネルを接続する</button></p>
 </form>
 
-<h2>最近の収集</h2>
-{% if runs %}
+<h2 id="schedules-heading">定期収集</h2>
+{% if connections %}
+<details {% if schedules %}open{% endif %}>
+  <summary>新しい定期収集を設定</summary>
+  <form method="post" action="/schedules" class="form-row">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div>
+      <label for="schedule_connection_id">チャンネル</label>
+      <select id="schedule_connection_id" name="connection_id" required>
+        {% for item in connections %}
+        <option value="{{ item.connection_id }}">{{ item.title }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div>
+      <label for="schedule_kind">収集するデータ</label>
+      <select id="schedule_kind" name="kind" required>
+        <option value="subscribers">登録者</option>
+        <option value="content">動画とコメント</option>
+      </select>
+    </div>
+    <div>
+      <label for="interval_hours">間隔（時間）</label>
+      <input id="interval_hours" name="interval_hours" type="number" min="1" max="8760" value="24" required>
+    </div>
+    <button type="submit">設定する</button>
+  </form>
+</details>
+{% else %}
+<p>定期収集を設定するには、先にチャンネルを接続してください。</p>
+{% endif %}
+
+{% if schedules %}
+<div class="table-scroll" role="region" aria-labelledby="schedules-heading" tabindex="0">
 <table>
   <thead>
-    <tr><th scope="col">種類</th><th scope="col">結果</th><th scope="col">使用量</th></tr>
+    <tr><th scope="col">チャンネル</th><th scope="col">種類</th><th scope="col">間隔</th><th scope="col">前回の開始</th><th scope="col">操作</th></tr>
   </thead>
   <tbody>
-  {% for run in runs %}
-    <tr><td>{{ run.kind }}</td><td>{{ run.status }}</td><td>{{ run.quota_spent }}</td></tr>
+  {% for schedule in schedules %}
+    <tr>
+      <th scope="row">{{ schedule.channel }}</th>
+      <td>{{ schedule.kind }}</td>
+      <td>{{ schedule.interval_hours }}時間ごと</td>
+      <td>{{ schedule.last_run }}</td>
+      <td>
+        <form method="post" action="/schedules/{{ schedule.schedule_id }}/delete" class="inline">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="secondary">解除する</button>
+        </form>
+      </td>
+    </tr>
   {% endfor %}
   </tbody>
 </table>
+</div>
+{% else %}
+<p>定期収集はまだ設定されていません。</p>
+{% endif %}
+
+<h2 id="runs-heading">最近の収集</h2>
+{% if runs %}
+<div class="table-scroll" role="region" aria-labelledby="runs-heading" tabindex="0">
+<table>
+  <thead>
+    <tr>
+      <th scope="col">実行日時</th>
+      <th scope="col">チャンネル</th>
+      <th scope="col">種類</th>
+      <th scope="col">結果</th>
+      <th scope="col">詳細</th>
+      <th scope="col">使用量</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for run in runs %}
+    <tr>
+      <td><time datetime="{{ run.timestamp_iso }}">{{ run.timestamp_label }}</time></td>
+      <td>{{ run.channel }}</td>
+      <td>{{ run.kind }}</td>
+      <td>{{ run.status }}</td>
+      <td>{{ run.detail }}</td>
+      <td>{{ run.quota_spent }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
 {% else %}
 <p>収集の履歴はまだありません。</p>
 {% endif %}

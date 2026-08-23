@@ -1,0 +1,1714 @@
+{
+  "schema_version": 1,
+  "title": "視聴者ネットワーク分析",
+  "source_label": "匿名化済み既存調査データ（デモ）",
+  "coverage_period": "データ取得日: 2026-06-22",
+  "methodology": "公開されている購読関係を匿名集計した参考分析です。ログイン中のチャンネルから今回収集したデータではありません。非公開の購読はYouTube APIから取得できません。",
+  "summary": {
+    "viewers": 808,
+    "channels": 106568,
+    "viewer_channel_edges": 235024,
+    "network_nodes": 14694,
+    "network_edges": 226516,
+    "communities": 50,
+    "median_breadth": 162
+  },
+  "top_channels": [
+    {
+      "channel": "Paranoia_パラノイア【有益】",
+      "viewers": 265,
+      "panel_share": 0.327970297029703
+    },
+    {
+      "channel": "両学長 リベラルアーツ大学",
+      "viewers": 258,
+      "panel_share": 0.3193069306930693
+    },
+    {
+      "channel": "本要約チャンネル【毎日18時更新】",
+      "viewers": 246,
+      "panel_share": 0.30445544554455445
+    },
+    {
+      "channel": "NAKATA UNIVERSITY ",
+      "viewers": 246,
+      "panel_share": 0.30445544554455445
+    },
+    {
+      "channel": "ひすいこたろうの名言セラピー",
+      "viewers": 238,
+      "panel_share": 0.29455445544554454
+    },
+    {
+      "channel": "PIVOT 公式チャンネル",
+      "viewers": 204,
+      "panel_share": 0.2524752475247525
+    },
+    {
+      "channel": "学識サロン",
+      "viewers": 189,
+      "panel_share": 0.23391089108910892
+    },
+    {
+      "channel": "哲理学作家さとうみつろう『神さまとのおしゃべり』チャンネル",
+      "viewers": 188,
+      "panel_share": 0.23267326732673269
+    },
+    {
+      "channel": "Naokiman Show",
+      "viewers": 176,
+      "panel_share": 0.21782178217821782
+    },
+    {
+      "channel": "フェルミ漫画大学",
+      "viewers": 172,
+      "panel_share": 0.21287128712871287
+    },
+    {
+      "channel": "メンタリスト DaiGo",
+      "viewers": 169,
+      "panel_share": 0.20915841584158415
+    },
+    {
+      "channel": "パソコン博士TAIKI",
+      "viewers": 154,
+      "panel_share": 0.1905940594059406
+    },
+    {
+      "channel": "堀江貴文 ホリエモン",
+      "viewers": 143,
+      "panel_share": 0.17698019801980197
+    },
+    {
+      "channel": "NewsPicks /ニューズピックス",
+      "viewers": 143,
+      "panel_share": 0.17698019801980197
+    },
+    {
+      "channel": "TOLAND VLOG",
+      "viewers": 138,
+      "panel_share": 0.1707920792079208
+    },
+    {
+      "channel": "NMS STUDIO",
+      "viewers": 136,
+      "panel_share": 0.16831683168316833
+    },
+    {
+      "channel": "脱・税理士スガワラくん",
+      "viewers": 135,
+      "panel_share": 0.1670792079207921
+    },
+    {
+      "channel": "ミルクティー飲みたい",
+      "viewers": 132,
+      "panel_share": 0.16336633663366337
+    },
+    {
+      "channel": "ANNnewsCH",
+      "viewers": 128,
+      "panel_share": 0.15841584158415842
+    },
+    {
+      "channel": "マコなり社長",
+      "viewers": 127,
+      "panel_share": 0.15717821782178218
+    },
+    {
+      "channel": "サラタメさん",
+      "viewers": 120,
+      "panel_share": 0.1485148514851485
+    },
+    {
+      "channel": "ReHacQ−リハック−【公式】",
+      "viewers": 118,
+      "panel_share": 0.14603960396039603
+    },
+    {
+      "channel": "腰痛・肩こり駆け込み寺【山内義弘】",
+      "viewers": 118,
+      "panel_share": 0.14603960396039603
+    },
+    {
+      "channel": "THE FIRST TAKE",
+      "viewers": 117,
+      "panel_share": 0.1448019801980198
+    },
+    {
+      "channel": "Dr. Zion Kabasawa",
+      "viewers": 113,
+      "panel_share": 0.13985148514851486
+    },
+    {
+      "channel": "大人の学び直しTV",
+      "viewers": 112,
+      "panel_share": 0.13861386138613863
+    },
+    {
+      "channel": "TBS NEWS DIG Powered by JNN",
+      "viewers": 112,
+      "panel_share": 0.13861386138613863
+    },
+    {
+      "channel": "三崎優太 元青汁王子",
+      "viewers": 112,
+      "panel_share": 0.13861386138613863
+    },
+    {
+      "channel": "Captain AT Channel",
+      "viewers": 111,
+      "panel_share": 0.1373762376237624
+    },
+    {
+      "channel": "料理研究家リュウジのバズレシピ",
+      "viewers": 110,
+      "panel_share": 0.13613861386138615
+    },
+    {
+      "channel": "ABEMA Prime #アベプラ【公式】",
+      "viewers": 110,
+      "panel_share": 0.13613861386138615
+    },
+    {
+      "channel": "コヤッキースタジオ",
+      "viewers": 109,
+      "panel_share": 0.1349009900990099
+    },
+    {
+      "channel": "Ken Honda 本田健",
+      "viewers": 107,
+      "panel_share": 0.13242574257425743
+    },
+    {
+      "channel": "潜在意識ラボ / 純",
+      "viewers": 107,
+      "panel_share": 0.13242574257425743
+    },
+    {
+      "channel": "楽待 RAKUMACHI",
+      "viewers": 105,
+      "panel_share": 0.12995049504950495
+    },
+    {
+      "channel": "Life Changing School",
+      "viewers": 105,
+      "panel_share": 0.12995049504950495
+    },
+    {
+      "channel": "テレ東BIZ ダイジェスト",
+      "viewers": 104,
+      "panel_share": 0.12871287128712872
+    },
+    {
+      "channel": "ハッピー研究所",
+      "viewers": 103,
+      "panel_share": 0.12747524752475248
+    },
+    {
+      "channel": "街録ch〜あなたの人生、教えて下さい〜",
+      "viewers": 103,
+      "panel_share": 0.12747524752475248
+    },
+    {
+      "channel": "エガちゃんねる EGA-CHANNEL",
+      "viewers": 103,
+      "panel_share": 0.12747524752475248
+    },
+    {
+      "channel": "MEDITERRACE",
+      "viewers": 102,
+      "panel_share": 0.12623762376237624
+    },
+    {
+      "channel": "ブライトサイド | Bright Side Japan",
+      "viewers": 101,
+      "panel_share": 0.125
+    },
+    {
+      "channel": "ゆう先生の美容整体塾【京都の整体院悠】",
+      "viewers": 100,
+      "panel_share": 0.12376237623762376
+    },
+    {
+      "channel": "アバタロー",
+      "viewers": 98,
+      "panel_share": 0.12128712871287128
+    },
+    {
+      "channel": "Bappa Shota",
+      "viewers": 98,
+      "panel_share": 0.12128712871287128
+    },
+    {
+      "channel": "HIROSHI IKI",
+      "viewers": 96,
+      "panel_share": 0.1188118811881188
+    },
+    {
+      "channel": "VAIENCE バイエンス",
+      "viewers": 95,
+      "panel_share": 0.11757425742574257
+    },
+    {
+      "channel": "KUROMARU. Mystery",
+      "viewers": 94,
+      "panel_share": 0.11633663366336634
+    },
+    {
+      "channel": "Honami",
+      "viewers": 93,
+      "panel_share": 0.1150990099009901
+    },
+    {
+      "channel": "大愚和尚の一問一答/Osho Taigu’s Heart of Buddha",
+      "viewers": 93,
+      "panel_share": 0.1150990099009901
+    }
+  ],
+  "viewer_breadth": [
+    {
+      "label": "1〜49",
+      "viewers": 157,
+      "share": 0.1943069306930693
+    },
+    {
+      "label": "50〜99",
+      "viewers": 122,
+      "share": 0.15099009900990099
+    },
+    {
+      "label": "100〜249",
+      "viewers": 219,
+      "share": 0.27103960396039606
+    },
+    {
+      "label": "250〜499",
+      "viewers": 140,
+      "share": 0.17326732673267325
+    },
+    {
+      "label": "500〜749",
+      "viewers": 66,
+      "share": 0.08168316831683169
+    },
+    {
+      "label": "750〜1,000",
+      "viewers": 104,
+      "share": 0.12871287128712872
+    }
+  ],
+  "categories": [
+    {
+      "category": "その他・未分類",
+      "channels": 187,
+      "viewer_links": 11410,
+      "share": 0.548267743020518
+    },
+    {
+      "category": "自己啓発・学び",
+      "channels": 16,
+      "viewer_links": 1743,
+      "share": 0.08375378405650857
+    },
+    {
+      "category": "ビジネス・投資・お金",
+      "channels": 17,
+      "viewer_links": 1564,
+      "share": 0.0751525635481236
+    },
+    {
+      "category": "ニュース・社会",
+      "channels": 22,
+      "viewer_links": 1517,
+      "share": 0.07289414252078227
+    },
+    {
+      "category": "読書・要約・教養",
+      "channels": 16,
+      "viewer_links": 1193,
+      "share": 0.05732545288549325
+    },
+    {
+      "category": "雑学・ミステリー・都市伝説",
+      "channels": 8,
+      "viewer_links": 1040,
+      "share": 0.04997357166882899
+    },
+    {
+      "category": "美容・健康・生活",
+      "channels": 14,
+      "viewer_links": 997,
+      "share": 0.04790735668636779
+    },
+    {
+      "category": "科学・数学・テクノロジー",
+      "channels": 14,
+      "viewer_links": 967,
+      "share": 0.04646581134976695
+    },
+    {
+      "category": "エンタメ・音楽・芸能",
+      "channels": 6,
+      "viewer_links": 380,
+      "share": 0.01825957426361059
+    }
+  ],
+  "communities": [
+    {
+      "rank": 1,
+      "channels": 3015,
+      "edges": 20809,
+      "internal_weight": 4476.9936,
+      "representatives": "メンタリスト DaiGo / 令和の虎CHANNEL / レインボーコントチャンネル / 手越祐也チャンネル / ひなちゃんねる / Hinata Kato / THE FIRST TAKE / THE ROLAND SHOW【公式】 / 狩野英孝【公式チャンネル】EIKO!GO!!"
+    },
+    {
+      "rank": 2,
+      "channels": 3010,
+      "edges": 23027,
+      "internal_weight": 4460.3324,
+      "representatives": "mikimiki web スクール / 楽待 RAKUMACHI / 大人の学び直しTV / 堀江貴文 ホリエモン / ウェブ職TV@AIセキュリティ専門 / KEITO【AI&WEB ch】 / PIVOT 公式チャンネル / マコなり社長"
+    },
+    {
+      "rank": 3,
+      "channels": 2741,
+      "edges": 41886,
+      "internal_weight": 8085.6274,
+      "representatives": "幸運アファメーション / スピな暮らし【ゆっくり解説】 / YOKO の宇宙研究CH / 吉岡純子  JUNKO YOSHIOKA / KIKO channel / 心理カウンセラーmasa / akikoSpiritual / ハッピー研究所"
+    },
+    {
+      "rank": 4,
+      "channels": 2482,
+      "edges": 14905,
+      "internal_weight": 3681.6321,
+      "representatives": "魔理沙のズボラ飯 / Gyoza Quest / ブライトサイド | Bright Side Japan / Marine Ch. 宝鐘マリン / ド文系でも楽しい【ゆっくり数学の雑学】 / ゆっくりお金アカデミー / VAIENCE バイエンス / ショーツレンジャー"
+    },
+    {
+      "rank": 5,
+      "channels": 2414,
+      "edges": 25556,
+      "internal_weight": 5088.9355,
+      "representatives": "我那覇真子チャンネル / カピバラチャンネル capybarachannel / 深田萌絵TV / おみそちゃんねる【世界どん深闇ニュース】 / 百田尚樹チャンネル / むすび大学チャンネル / 言論テレビ / 大紀元 エポックタイムズ・ジャパン"
+    },
+    {
+      "rank": 6,
+      "channels": 279,
+      "edges": 2203,
+      "internal_weight": 606.9071,
+      "representatives": "【FX初心者ch】 by ユーちぇる監督 / 【FX攻略】トレーダーワタル / FXサロン-波乗り道場- / FXism 及川圭哉 / ましろ【FXトレーダー】 / おバカな妹にFX教えてみた / FXゴールドナビ / 海沼みつしろ GREAT INVESTOR"
+    },
+    {
+      "rank": 7,
+      "channels": 174,
+      "edges": 463,
+      "internal_weight": 172.0457,
+      "representatives": "東本ボイストレーニング / Nama Guitar Channel / Rickey / Toshiki Soejima / Guitar Lesson for Beginner / 作曲家・和田貴史の庭 / Seiji Igusa / Kazuki's Guitar Channel"
+    },
+    {
+      "rank": 8,
+      "channels": 169,
+      "edges": 436,
+      "internal_weight": 160.665,
+      "representatives": "Kyokushin World-Champ kouketsu YouTube-Dojo / 狂武蔵たくちゃんねる / ansony jack / イス軸法®︎Channel / YASU Road / Togo Ishii 1inch channel /  BAB JAPAN / Nationale Opera & Ballet"
+    },
+    {
+      "rank": 9,
+      "channels": 84,
+      "edges": 278,
+      "internal_weight": 101.0772,
+      "representatives": "【公式】落合博満のオレ流チャンネル / Satozaki Channel / 上原浩治の雑談魂 / スポーツナビ 野球チャンネル / 松坂大輔 official YouTube  / [ラミレス公式]ラミちゃんねる / 熱スギヤch【杉谷拳士 公式】 / よしひこチャンネル"
+    },
+    {
+      "rank": 10,
+      "channels": 78,
+      "edges": 165,
+      "internal_weight": 67.0989,
+      "representatives": "Chorakuji Temple in Nasu / もんたの日常 /  Injured former stray cat \"Sasami\" / かご猫 Ｂｌｏｇ / ポムさんとしまちゃん / ねこべや。 / のりたま ちゃんねる / ウルンとリコリンファミリー / まつもとたける"
+    },
+    {
+      "rank": 11,
+      "channels": 57,
+      "edges": 206,
+      "internal_weight": 96.0851,
+      "representatives": "わくわくクイズひろば / たこちゃんねる / あしざるFC / ファンランド / 小麦アレルギー / 光ショーツ / にっこりレモン🍋 / らゆまPRINCE👑🍌"
+    },
+    {
+      "rank": 12,
+      "channels": 48,
+      "edges": 180,
+      "internal_weight": 96.1625,
+      "representatives": "どれ / NATSU  TAROT / ルアナママンのカードリーディング / MyButterfly / satori×bona blanc / 立花れいこl愛活 channel / houseタロット / milky Card therapy"
+    },
+    {
+      "rank": 13,
+      "channels": 18,
+      "edges": 32,
+      "internal_weight": 16.6376,
+      "representatives": "村田親子 / 田中英義 Hideyoshi Tanaka / Sasurai Surf TV / 大原洋人Channel / プロサーファー河村カイサ / Yugo Kawabata / NANBAN / SaltwaterTV"
+    },
+    {
+      "rank": 14,
+      "channels": 11,
+      "edges": 28,
+      "internal_weight": 26.6593,
+      "representatives": "スペーレンスキーTV / すまはちサロン / SnowHub / Filip Chwistek (ski-world) / Zero1channel / TJMスキーちゃんねる / Courage, Hope, and Challenge for the Middle-Aged / Takehiro SKI Channel"
+    },
+    {
+      "rank": 15,
+      "channels": 10,
+      "edges": 12,
+      "internal_weight": 5.6005,
+      "representatives": "コンコック / ドロピザ 【Drop the Pizza】 / Another Blue 【3代目ワンピース知識王】 / スーパーカミキカンデ【ONE PIECEが大好きな神木】 / もっちー / コーキ タコヤキ 大阪 / ドロヌマ【Drop the 沼】 / 近藤豪 / 職人として生きる"
+    },
+    {
+      "rank": 16,
+      "channels": 9,
+      "edges": 10,
+      "internal_weight": 5.5558,
+      "representatives": "Jacob Koller / The Mad Arranger (Jacob Koller) / SHUMPEI PIANO CHANNEL / Dietmar Steinhauer / Yomii Piano よみぃ / Haruna Pianist / Mr.Forte / pianist MAI MORIMOTO / ピアノフォルテ / pf channel"
+    },
+    {
+      "rank": 17,
+      "channels": 8,
+      "edges": 13,
+      "internal_weight": 7.4977,
+      "representatives": "しゅんぽーかー / ヨコサワポーカーチャンネル / Jaysol / Masato \"World Wide\" Yokosawa - Poker - / ポーカーの沼 / 普段のヨコサワ / VAMOS POKER【バモスポーカー】 / カジノちゃんねる"
+    },
+    {
+      "rank": 18,
+      "channels": 7,
+      "edges": 8,
+      "internal_weight": 5.8051,
+      "representatives": "オヌルド韓国語[오늘도 한국어] / トリリンガルのトミ【韓国語講座】 / ナチュラル韓国語 Natural Korean / Joo [korean Learning channel] / でき韓 韓国語講座_パク先生 박센세 / おしゃべり韓国語 / いんぎんのハングル広場"
+    },
+    {
+      "rank": 19,
+      "channels": 5,
+      "edges": 6,
+      "internal_weight": 5.0369,
+      "representatives": "You can learn by fishing. / K's fishing channel / RAD FISHING/高橋優介 / TSURIHACK TV / 悪食プリンセス グラトニーヌ "
+    },
+    {
+      "rank": 20,
+      "channels": 5,
+      "edges": 4,
+      "internal_weight": 2.4623,
+      "representatives": "KEIJU / STUTS / AOTL Official / AKAZUCHI / KID FRESINO"
+    },
+    {
+      "rank": 21,
+      "channels": 4,
+      "edges": 6,
+      "internal_weight": 6.0,
+      "representatives": "鼻血どばどばスキーチャンネル　MrTatsyoda / shenbob / Deb Armstrong / MURAKIN SKIING"
+    },
+    {
+      "rank": 22,
+      "channels": 4,
+      "edges": 3,
+      "internal_weight": 1.0238,
+      "representatives": "引き寄せ科学者 / とー / 世界のドコかでひきこもり / あたるぞう / FOG's Tutorial Channel for DaVinci Resolve"
+    },
+    {
+      "rank": 23,
+      "channels": 3,
+      "edges": 3,
+      "internal_weight": 2.7775,
+      "representatives": "NOVITEC  / Remove Before Race / AutoTopNL"
+    },
+    {
+      "rank": 24,
+      "channels": 3,
+      "edges": 3,
+      "internal_weight": 2.6768,
+      "representatives": "subaru B-faction / SUBARU On-Tube / Best Car Channel"
+    },
+    {
+      "rank": 25,
+      "channels": 3,
+      "edges": 2,
+      "internal_weight": 1.5916,
+      "representatives": "Pitbull / Pitbull / Flo Rida"
+    },
+    {
+      "rank": 26,
+      "channels": 3,
+      "edges": 2,
+      "internal_weight": 1.2459,
+      "representatives": "紅しょうがのバンザイちゃんねる / マユリカのプンカプンカ!【マユリカ公式チャンネル】 / 見取り図ディスカバリーチャンネル"
+    },
+    {
+      "rank": 27,
+      "channels": 3,
+      "edges": 2,
+      "internal_weight": 1.0073,
+      "representatives": "BODY DISCOVERY STUDIO / 梅ボーイズ / 異世界都市伝説"
+    },
+    {
+      "rank": 28,
+      "channels": 3,
+      "edges": 2,
+      "internal_weight": 0.8507,
+      "representatives": "Animal Planet Japan / こゆきchannel / えみこのおうち"
+    },
+    {
+      "rank": 29,
+      "channels": 2,
+      "edges": 1,
+      "internal_weight": 1.0,
+      "representatives": "茅野愛衣が日本酒を飲みながら食べるだけ「かやのみ」 kayano mi ch. / マミルトン"
+    },
+    {
+      "rank": 30,
+      "channels": 2,
+      "edges": 1,
+      "internal_weight": 1.0,
+      "representatives": "Chloe Ting / emi wong"
+    },
+    {
+      "rank": 31,
+      "channels": 2,
+      "edges": 1,
+      "internal_weight": 1.0,
+      "representatives": "DJ Snake / DJ Snake"
+    },
+    {
+      "rank": 32,
+      "channels": 2,
+      "edges": 1,
+      "internal_weight": 1.0,
+      "representatives": "物語の才能チャンネル / むつきシナリオライターちゃんねる"
+    },
+    {
+      "rank": 33,
+      "channels": 2,
+      "edges": 1,
+      "internal_weight": 1.0,
+      "representatives": "Hero Spirit / ヒトの本性診断【占い】"
+    },
+    {
+      "rank": 34,
+      "channels": 2,
+      "edges": 1,
+      "internal_weight": 1.0,
+      "representatives": "予言 / 予言と都市伝説"
+    },
+    {
+      "rank": 35,
+      "channels": 2,
+      "edges": 1,
+      "internal_weight": 1.0,
+      "representatives": "Jay Shetty Podcast / Alexis Ren"
+    },
+    {
+      "rank": 36,
+      "channels": 2,
+      "edges": 1,
+      "internal_weight": 1.0,
+      "representatives": "黒炭酸 / わらぶい"
+    },
+    {
+      "rank": 37,
+      "channels": 2,
+      "edges": 1,
+      "internal_weight": 1.0,
+      "representatives": "やみちゃんねる。 / びびろっく〜coming soon〜"
+    },
+    {
+      "rank": 38,
+      "channels": 2,
+      "edges": 1,
+      "internal_weight": 0.9857,
+      "representatives": "アンジェンテ【BLボイスコミックチャンネル】 / CIELフルールチャンネル【全話無料BLボイスコミック更新中】"
+    },
+    {
+      "rank": 39,
+      "channels": 2,
+      "edges": 1,
+      "internal_weight": 0.9639,
+      "representatives": "ProjectRin 投資FIREチャンネル / 仮想通貨王ウシジマ"
+    },
+    {
+      "rank": 40,
+      "channels": 2,
+      "edges": 1,
+      "internal_weight": 0.9447,
+      "representatives": "EVISBEATS / Chilly Source"
+    },
+    {
+      "rank": 41,
+      "channels": 2,
+      "edges": 1,
+      "internal_weight": 0.9412,
+      "representatives": "Bertram - Craft and Wilderness / 野あすわ"
+    },
+    {
+      "rank": 42,
+      "channels": 2,
+      "edges": 1,
+      "internal_weight": 0.9361,
+      "representatives": "2PM / 2PM Japan Official YouTube Channel"
+    },
+    {
+      "rank": 43,
+      "channels": 2,
+      "edges": 1,
+      "internal_weight": 0.9177,
+      "representatives": "Yuki Matsui / TEDtokyojapan"
+    },
+    {
+      "rank": 44,
+      "channels": 2,
+      "edges": 1,
+      "internal_weight": 0.8595,
+      "representatives": "at_every_age - former VALET / 【NISAお悩み研究所】いちばんやさしいNISA入門"
+    },
+    {
+      "rank": 45,
+      "channels": 2,
+      "edges": 1,
+      "internal_weight": 0.8124,
+      "representatives": "Loving president / 【住宅購入エージェント】水智崚〜Tokyo Residential Academy〜"
+    },
+    {
+      "rank": 46,
+      "channels": 2,
+      "edges": 1,
+      "internal_weight": 0.7687,
+      "representatives": "Shakira / Shakira"
+    },
+    {
+      "rank": 47,
+      "channels": 2,
+      "edges": 1,
+      "internal_weight": 0.6707,
+      "representatives": "EminemMusic / EminemMusic"
+    },
+    {
+      "rank": 48,
+      "channels": 2,
+      "edges": 1,
+      "internal_weight": 0.539,
+      "representatives": "姫神 Himekami / 姫神 Himekami"
+    },
+    {
+      "rank": 49,
+      "channels": 2,
+      "edges": 1,
+      "internal_weight": 0.472,
+      "representatives": "レモンチャンネル / 本音でレモン"
+    },
+    {
+      "rank": 50,
+      "channels": 2,
+      "edges": 1,
+      "internal_weight": 0.2609,
+      "representatives": "アムウェイ公式チャンネル / Uehara's Nutrition OFFICIAL CHANNEL"
+    }
+  ],
+  "network_relationships": [
+    {
+      "left": "両学長 リベラルアーツ大学",
+      "right": "NAKATA UNIVERSITY ",
+      "shared_viewers": 133,
+      "weighted_cosine": 0.3173573315143585
+    },
+    {
+      "left": "Paranoia_パラノイア【有益】",
+      "right": "本要約チャンネル【毎日18時更新】",
+      "shared_viewers": 125,
+      "weighted_cosine": 0.273344337940216
+    },
+    {
+      "left": "本要約チャンネル【毎日18時更新】",
+      "right": "NAKATA UNIVERSITY ",
+      "shared_viewers": 120,
+      "weighted_cosine": 0.2705325782299042
+    },
+    {
+      "left": "学識サロン",
+      "right": "本要約チャンネル【毎日18時更新】",
+      "shared_viewers": 119,
+      "weighted_cosine": 0.3954924643039703
+    },
+    {
+      "left": "Paranoia_パラノイア【有益】",
+      "right": "両学長 リベラルアーツ大学",
+      "shared_viewers": 119,
+      "weighted_cosine": 0.2889626920223236
+    },
+    {
+      "left": "Paranoia_パラノイア【有益】",
+      "right": "NAKATA UNIVERSITY ",
+      "shared_viewers": 118,
+      "weighted_cosine": 0.2451272457838058
+    },
+    {
+      "left": "両学長 リベラルアーツ大学",
+      "right": "本要約チャンネル【毎日18時更新】",
+      "shared_viewers": 108,
+      "weighted_cosine": 0.2518242001533508
+    },
+    {
+      "left": "Paranoia_パラノイア【有益】",
+      "right": "PIVOT 公式チャンネル",
+      "shared_viewers": 107,
+      "weighted_cosine": 0.317609429359436
+    },
+    {
+      "left": "PIVOT 公式チャンネル",
+      "right": "本要約チャンネル【毎日18時更新】",
+      "shared_viewers": 107,
+      "weighted_cosine": 0.2748205363750458
+    },
+    {
+      "left": "本要約チャンネル【毎日18時更新】",
+      "right": "ひすいこたろうの名言セラピー",
+      "shared_viewers": 107,
+      "weighted_cosine": 0.2433951646089553
+    },
+    {
+      "left": "両学長 リベラルアーツ大学",
+      "right": "PIVOT 公式チャンネル",
+      "shared_viewers": 106,
+      "weighted_cosine": 0.2566304802894592
+    },
+    {
+      "left": "NAKATA UNIVERSITY ",
+      "right": "ひすいこたろうの名言セラピー",
+      "shared_viewers": 106,
+      "weighted_cosine": 0.2159812599420547
+    },
+    {
+      "left": "PIVOT 公式チャンネル",
+      "right": "NAKATA UNIVERSITY ",
+      "shared_viewers": 105,
+      "weighted_cosine": 0.2361191213130951
+    },
+    {
+      "left": "メンタリスト DaiGo",
+      "right": "NAKATA UNIVERSITY ",
+      "shared_viewers": 104,
+      "weighted_cosine": 0.3047227561473846
+    },
+    {
+      "left": "Paranoia_パラノイア【有益】",
+      "right": "学識サロン",
+      "shared_viewers": 103,
+      "weighted_cosine": 0.2379537522792816
+    },
+    {
+      "left": "哲理学作家さとうみつろう『神さまとのおしゃべり』チャンネル",
+      "right": "ひすいこたろうの名言セラピー",
+      "shared_viewers": 101,
+      "weighted_cosine": 0.354001522064209
+    },
+    {
+      "left": "学識サロン",
+      "right": "NAKATA UNIVERSITY ",
+      "shared_viewers": 101,
+      "weighted_cosine": 0.2689487040042877
+    },
+    {
+      "left": "Naokiman Show",
+      "right": "NMS STUDIO",
+      "shared_viewers": 100,
+      "weighted_cosine": 0.6845064759254456
+    },
+    {
+      "left": "Paranoia_パラノイア【有益】",
+      "right": "ひすいこたろうの名言セラピー",
+      "shared_viewers": 100,
+      "weighted_cosine": 0.2324541807174682
+    },
+    {
+      "left": "両学長 リベラルアーツ大学",
+      "right": "学識サロン",
+      "shared_viewers": 98,
+      "weighted_cosine": 0.3119844496250152
+    },
+    {
+      "left": "両学長 リベラルアーツ大学",
+      "right": "メンタリスト DaiGo",
+      "shared_viewers": 97,
+      "weighted_cosine": 0.2830290496349334
+    },
+    {
+      "left": "両学長 リベラルアーツ大学",
+      "right": "ひすいこたろうの名言セラピー",
+      "shared_viewers": 97,
+      "weighted_cosine": 0.2473779618740081
+    },
+    {
+      "left": "フェルミ漫画大学",
+      "right": "本要約チャンネル【毎日18時更新】",
+      "shared_viewers": 95,
+      "weighted_cosine": 0.2709121108055115
+    },
+    {
+      "left": "本要約チャンネル【毎日18時更新】",
+      "right": "メンタリスト DaiGo",
+      "shared_viewers": 93,
+      "weighted_cosine": 0.2995978891849518
+    },
+    {
+      "left": "フェルミ漫画大学",
+      "right": "学識サロン",
+      "shared_viewers": 92,
+      "weighted_cosine": 0.3635381162166595
+    },
+    {
+      "left": "哲理学作家さとうみつろう『神さまとのおしゃべり』チャンネル",
+      "right": "Paranoia_パラノイア【有益】",
+      "shared_viewers": 91,
+      "weighted_cosine": 0.2439147382974624
+    },
+    {
+      "left": "Paranoia_パラノイア【有益】",
+      "right": "フェルミ漫画大学",
+      "shared_viewers": 90,
+      "weighted_cosine": 0.2002842277288437
+    },
+    {
+      "left": "NAKATA UNIVERSITY ",
+      "right": "堀江貴文 ホリエモン",
+      "shared_viewers": 89,
+      "weighted_cosine": 0.3268156051635742
+    },
+    {
+      "left": "Paranoia_パラノイア【有益】",
+      "right": "メンタリスト DaiGo",
+      "shared_viewers": 89,
+      "weighted_cosine": 0.2642960846424103
+    },
+    {
+      "left": "哲理学作家さとうみつろう『神さまとのおしゃべり』チャンネル",
+      "right": "本要約チャンネル【毎日18時更新】",
+      "shared_viewers": 89,
+      "weighted_cosine": 0.2452125996351242
+    },
+    {
+      "left": "フェルミ漫画大学",
+      "right": "NAKATA UNIVERSITY ",
+      "shared_viewers": 87,
+      "weighted_cosine": 0.2272623777389526
+    },
+    {
+      "left": "哲理学作家さとうみつろう『神さまとのおしゃべり』チャンネル",
+      "right": "NAKATA UNIVERSITY ",
+      "shared_viewers": 87,
+      "weighted_cosine": 0.1996440440416336
+    },
+    {
+      "left": "PIVOT 公式チャンネル",
+      "right": "NewsPicks /ニューズピックス",
+      "shared_viewers": 86,
+      "weighted_cosine": 0.3900647461414337
+    },
+    {
+      "left": "哲理学作家さとうみつろう『神さまとのおしゃべり』チャンネル",
+      "right": "Naokiman Show",
+      "shared_viewers": 85,
+      "weighted_cosine": 0.3200227618217468
+    },
+    {
+      "left": "Naokiman Show",
+      "right": "両学長 リベラルアーツ大学",
+      "shared_viewers": 85,
+      "weighted_cosine": 0.2324688136577606
+    },
+    {
+      "left": "両学長 リベラルアーツ大学",
+      "right": "フェルミ漫画大学",
+      "shared_viewers": 84,
+      "weighted_cosine": 0.2386848330497741
+    },
+    {
+      "left": "PIVOT 公式チャンネル",
+      "right": "ReHacQ−リハック−【公式】",
+      "shared_viewers": 83,
+      "weighted_cosine": 0.3182159066200256
+    },
+    {
+      "left": "Paranoia_パラノイア【有益】",
+      "right": "Naokiman Show",
+      "shared_viewers": 83,
+      "weighted_cosine": 0.2130245268344879
+    },
+    {
+      "left": "学識サロン",
+      "right": "ひすいこたろうの名言セラピー",
+      "shared_viewers": 83,
+      "weighted_cosine": 0.19025419652462
+    },
+    {
+      "left": "哲理学作家さとうみつろう『神さまとのおしゃべり』チャンネル",
+      "right": "両学長 リベラルアーツ大学",
+      "shared_viewers": 82,
+      "weighted_cosine": 0.2233694791793823
+    },
+    {
+      "left": "Naokiman Show",
+      "right": "本要約チャンネル【毎日18時更新】",
+      "shared_viewers": 82,
+      "weighted_cosine": 0.214806318283081
+    },
+    {
+      "left": "NAKATA UNIVERSITY ",
+      "right": "NewsPicks /ニューズピックス",
+      "shared_viewers": 81,
+      "weighted_cosine": 0.2783828377723694
+    },
+    {
+      "left": "PIVOT 公式チャンネル",
+      "right": "学識サロン",
+      "shared_viewers": 81,
+      "weighted_cosine": 0.2484349012374878
+    },
+    {
+      "left": "哲理学作家さとうみつろう『神さまとのおしゃべり』チャンネル",
+      "right": "TOLAND VLOG",
+      "shared_viewers": 80,
+      "weighted_cosine": 0.4185523092746734
+    },
+    {
+      "left": "本要約チャンネル【毎日18時更新】",
+      "right": "Life Changing School",
+      "shared_viewers": 80,
+      "weighted_cosine": 0.3875185847282409
+    },
+    {
+      "left": "両学長 リベラルアーツ大学",
+      "right": "NewsPicks /ニューズピックス",
+      "shared_viewers": 80,
+      "weighted_cosine": 0.2708137035369873
+    },
+    {
+      "left": "マコなり社長",
+      "right": "本要約チャンネル【毎日18時更新】",
+      "shared_viewers": 80,
+      "weighted_cosine": 0.2472598552703857
+    },
+    {
+      "left": "PIVOT 公式チャンネル",
+      "right": "メンタリスト DaiGo",
+      "shared_viewers": 79,
+      "weighted_cosine": 0.2491617947816848
+    },
+    {
+      "left": "本要約チャンネル【毎日18時更新】",
+      "right": "堀江貴文 ホリエモン",
+      "shared_viewers": 79,
+      "weighted_cosine": 0.2489261031150818
+    },
+    {
+      "left": "Naokiman Show",
+      "right": "NAKATA UNIVERSITY ",
+      "shared_viewers": 78,
+      "weighted_cosine": 0.1749709993600845
+    }
+  ],
+  "affinity": [
+    {
+      "channel": "世界のドコかでひきこもり",
+      "observed_viewers": 17,
+      "panel_share": 0.021039603960396,
+      "affinity_lift": 180.9629521799257
+    },
+    {
+      "channel": "イヌヤマのジブン研究所",
+      "observed_viewers": 13,
+      "panel_share": 0.016089108910891,
+      "affinity_lift": 62.13133772323981
+    },
+    {
+      "channel": "箱舟Noa",
+      "observed_viewers": 13,
+      "panel_share": 0.016089108910891,
+      "affinity_lift": 50.04551586474658
+    },
+    {
+      "channel": "VISIONARY.思考は現実を変える。",
+      "observed_viewers": 18,
+      "panel_share": 0.0222772277227722,
+      "affinity_lift": 42.79565784607381
+    },
+    {
+      "channel": "超意識スピリチュアル byメタ意識願望実現マスターCocco",
+      "observed_viewers": 18,
+      "panel_share": 0.0222772277227722,
+      "affinity_lift": 38.43804526904199
+    },
+    {
+      "channel": "エム",
+      "observed_viewers": 11,
+      "panel_share": 0.0136138613861386,
+      "affinity_lift": 36.62645756415559
+    },
+    {
+      "channel": "Manifestation Channel: Live the Life You Desire",
+      "observed_viewers": 20,
+      "panel_share": 0.0247524752475247,
+      "affinity_lift": 36.16793048338284
+    },
+    {
+      "channel": "本要約カフェ",
+      "observed_viewers": 11,
+      "panel_share": 0.0136138613861386,
+      "affinity_lift": 36.11300255157397
+    },
+    {
+      "channel": "タフティ【TUFTI】巫女のイシス神殿",
+      "observed_viewers": 10,
+      "panel_share": 0.0123762376237623,
+      "affinity_lift": 35.66304820506151
+    },
+    {
+      "channel": "潜在意識コンサルタント・いっちー",
+      "observed_viewers": 14,
+      "panel_share": 0.0173267326732673,
+      "affinity_lift": 35.5085512453284
+    },
+    {
+      "channel": "もちづき | 引き寄せを実現するノート学",
+      "observed_viewers": 24,
+      "panel_share": 0.0297029702970297,
+      "affinity_lift": 35.05507108389414
+    },
+    {
+      "channel": "オーロラガーデン",
+      "observed_viewers": 12,
+      "panel_share": 0.0148514851485148,
+      "affinity_lift": 34.69442220443022
+    },
+    {
+      "channel": "トランサーフィン研究所",
+      "observed_viewers": 10,
+      "panel_share": 0.0123762376237623,
+      "affinity_lift": 34.4393161588094
+    },
+    {
+      "channel": "有馬樹里 脳科学研究家",
+      "observed_viewers": 31,
+      "panel_share": 0.0383663366336633,
+      "affinity_lift": 34.03034927942353
+    },
+    {
+      "channel": "苫米地英人博士の教え",
+      "observed_viewers": 17,
+      "panel_share": 0.021039603960396,
+      "affinity_lift": 33.643816461620005
+    },
+    {
+      "channel": "強者の道【モチベーションアップ】",
+      "observed_viewers": 16,
+      "panel_share": 0.0198019801980198,
+      "affinity_lift": 31.84417222163
+    },
+    {
+      "channel": "きたの先生 | 日本一ロジカルな潜在意識の活用法🌏",
+      "observed_viewers": 42,
+      "panel_share": 0.0519801980198019,
+      "affinity_lift": 30.73708967173739
+    },
+    {
+      "channel": "2ch不思議の森",
+      "observed_viewers": 11,
+      "panel_share": 0.0136138613861386,
+      "affinity_lift": 30.60666354866071
+    },
+    {
+      "channel": "リアトラQNA",
+      "observed_viewers": 11,
+      "panel_share": 0.0136138613861386,
+      "affinity_lift": 30.54617607129181
+    },
+    {
+      "channel": "ザ・ルール 【人生の攻略法】",
+      "observed_viewers": 53,
+      "panel_share": 0.0655940594059406,
+      "affinity_lift": 30.52113822205305
+    },
+    {
+      "channel": "みほチャンネル【幸せになれる女の思考】",
+      "observed_viewers": 15,
+      "panel_share": 0.0185643564356435,
+      "affinity_lift": 29.273418734987995
+    },
+    {
+      "channel": "潜在意識の本質 らいが",
+      "observed_viewers": 40,
+      "panel_share": 0.0495049504950495,
+      "affinity_lift": 28.9716309129778
+    },
+    {
+      "channel": "【ゆっくり引き寄せ解説】億らす",
+      "observed_viewers": 36,
+      "panel_share": 0.0445544554455445,
+      "affinity_lift": 28.57879523958149
+    },
+    {
+      "channel": "西田文郎公式チャンネル",
+      "observed_viewers": 47,
+      "panel_share": 0.0581683168316831,
+      "affinity_lift": 28.102481985588465
+    },
+    {
+      "channel": "夢実現チャンネル-Y.K",
+      "observed_viewers": 10,
+      "panel_share": 0.0123762376237623,
+      "affinity_lift": 27.824239589691555
+    },
+    {
+      "channel": "しろ先生🌙潜在意識の専門家",
+      "observed_viewers": 20,
+      "panel_share": 0.0247524752475247,
+      "affinity_lift": 26.764268557703303
+    },
+    {
+      "channel": "次元越境 × Zero Point - Shunpeter Z",
+      "observed_viewers": 25,
+      "panel_share": 0.0309405940594059,
+      "affinity_lift": 26.215001852228053
+    },
+    {
+      "channel": "苫米地英人の一言コーチング",
+      "observed_viewers": 25,
+      "panel_share": 0.0309405940594059,
+      "affinity_lift": 26.02081665332266
+    },
+    {
+      "channel": "クロノ【コンテンツ販売研究所】",
+      "observed_viewers": 10,
+      "panel_share": 0.0123762376237623,
+      "affinity_lift": 25.78209356476006
+    },
+    {
+      "channel": "潜在意識の調律師 チューン ",
+      "observed_viewers": 25,
+      "panel_share": 0.0309405940594059,
+      "affinity_lift": 25.091501772846847
+    },
+    {
+      "channel": "あおいの幸せ引き寄せ波動ラボ",
+      "observed_viewers": 47,
+      "panel_share": 0.0581683168316831,
+      "affinity_lift": 25.01546691898973
+    },
+    {
+      "channel": "脳力開発コーチ　KEIKO先生",
+      "observed_viewers": 15,
+      "panel_share": 0.0185643564356435,
+      "affinity_lift": 24.97258470283336
+    },
+    {
+      "channel": " The Joy Attraction Channel",
+      "observed_viewers": 28,
+      "panel_share": 0.0346534653465346,
+      "affinity_lift": 24.90093340495181
+    },
+    {
+      "channel": "潜在意識の本音-ソウルフルカウンセラーKEN",
+      "observed_viewers": 19,
+      "panel_share": 0.0235148514851485,
+      "affinity_lift": 24.71977582065653
+    },
+    {
+      "channel": "今・ここ・すべて",
+      "observed_viewers": 14,
+      "panel_share": 0.0173267326732673,
+      "affinity_lift": 24.28609554310115
+    },
+    {
+      "channel": "THINK.【願望・理想を、創造する。】",
+      "observed_viewers": 74,
+      "panel_share": 0.0915841584158415,
+      "affinity_lift": 24.013668209394304
+    },
+    {
+      "channel": "MERRY | 幸せに働く人のマインドコーチ",
+      "observed_viewers": 22,
+      "panel_share": 0.0272277227722772,
+      "affinity_lift": 23.779023218574856
+    },
+    {
+      "channel": "瞑想仮面ラーバリアン",
+      "observed_viewers": 11,
+      "panel_share": 0.0136138613861386,
+      "affinity_lift": 23.63358576769673
+    },
+    {
+      "channel": "宇宙よりの思考",
+      "observed_viewers": 23,
+      "panel_share": 0.0284653465346534,
+      "affinity_lift": 22.920464030799103
+    },
+    {
+      "channel": "Miebee★ミービー",
+      "observed_viewers": 11,
+      "panel_share": 0.0136138613861386,
+      "affinity_lift": 22.46564693615357
+    },
+    {
+      "channel": "ヒロのコーチング講座 - 受講生対談チャンネル",
+      "observed_viewers": 13,
+      "panel_share": 0.016089108910891,
+      "affinity_lift": 22.303557131419417
+    },
+    {
+      "channel": "Hiroko's materialize  laboratories",
+      "observed_viewers": 11,
+      "panel_share": 0.0136138613861386,
+      "affinity_lift": 22.303557131419417
+    },
+    {
+      "channel": "Ryu_心とお金の引き寄せ術",
+      "observed_viewers": 19,
+      "panel_share": 0.0235148514851485,
+      "affinity_lift": 22.06393213744549
+    },
+    {
+      "channel": "限りなき繁栄",
+      "observed_viewers": 13,
+      "panel_share": 0.016089108910891,
+      "affinity_lift": 21.720110928219388
+    },
+    {
+      "channel": "潜在意識ラボ純のサブチャンネル",
+      "observed_viewers": 35,
+      "panel_share": 0.0433168316831683,
+      "affinity_lift": 21.475695840515208
+    },
+    {
+      "channel": "Awake Academy アウェイクアカデミーのぞみ",
+      "observed_viewers": 10,
+      "panel_share": 0.0123762376237623,
+      "affinity_lift": 21.25755066988538
+    },
+    {
+      "channel": "潜在意識ちゃんねる【公式】",
+      "observed_viewers": 11,
+      "panel_share": 0.0136138613861386,
+      "affinity_lift": 21.08644623748112
+    },
+    {
+      "channel": "上原みすず",
+      "observed_viewers": 18,
+      "panel_share": 0.0222772277227722,
+      "affinity_lift": 20.73133916969641
+    },
+    {
+      "channel": "山田どうそん【オンラインビジネスで自由に生きる】",
+      "observed_viewers": 10,
+      "panel_share": 0.0123762376237623,
+      "affinity_lift": 20.66358969528564
+    },
+    {
+      "channel": "量子力学的引き寄せ理論",
+      "observed_viewers": 30,
+      "panel_share": 0.0371287128712871,
+      "affinity_lift": 20.462972319603256
+    }
+  ],
+  "popularity_affinity": [
+    {
+      "channel": "タフティ【TUFTI】巫女のイシス神殿",
+      "popularity_rank": 3049,
+      "affinity_rank": 9,
+      "rank_gap": 3040,
+      "panel_share": 0.0123762376237623,
+      "affinity_lift": 35.66304820506151
+    },
+    {
+      "channel": "トランサーフィン研究所",
+      "popularity_rank": 3049,
+      "affinity_rank": 13,
+      "rank_gap": 3036,
+      "panel_share": 0.0123762376237623,
+      "affinity_lift": 34.4393161588094
+    },
+    {
+      "channel": "夢実現チャンネル-Y.K",
+      "popularity_rank": 3049,
+      "affinity_rank": 25,
+      "rank_gap": 3024,
+      "panel_share": 0.0123762376237623,
+      "affinity_lift": 27.824239589691555
+    },
+    {
+      "channel": "クロノ【コンテンツ販売研究所】",
+      "popularity_rank": 3049,
+      "affinity_rank": 29,
+      "rank_gap": 3020,
+      "panel_share": 0.0123762376237623,
+      "affinity_lift": 25.78209356476006
+    },
+    {
+      "channel": "Awake Academy アウェイクアカデミーのぞみ",
+      "popularity_rank": 3049,
+      "affinity_rank": 46,
+      "rank_gap": 3003,
+      "panel_share": 0.0123762376237623,
+      "affinity_lift": 21.25755066988538
+    },
+    {
+      "channel": "山田どうそん【オンラインビジネスで自由に生きる】",
+      "popularity_rank": 3049,
+      "affinity_rank": 49,
+      "rank_gap": 3000,
+      "panel_share": 0.0123762376237623,
+      "affinity_lift": 20.66358969528564
+    },
+    {
+      "channel": "TSURU_HAPPY",
+      "popularity_rank": 3049,
+      "affinity_rank": 51,
+      "rank_gap": 2998,
+      "panel_share": 0.0123762376237623,
+      "affinity_lift": 20.27596102856311
+    },
+    {
+      "channel": "【左脳系スピリチュアルチャンネル】",
+      "popularity_rank": 3049,
+      "affinity_rank": 69,
+      "rank_gap": 2980,
+      "panel_share": 0.0123762376237623,
+      "affinity_lift": 18.586297609516183
+    },
+    {
+      "channel": "幸福の学問",
+      "popularity_rank": 3049,
+      "affinity_rank": 75,
+      "rank_gap": 2974,
+      "panel_share": 0.0123762376237623,
+      "affinity_lift": 17.325821199499675
+    },
+    {
+      "channel": "宇宙創造ユニバーシティ",
+      "popularity_rank": 3049,
+      "affinity_rank": 78,
+      "rank_gap": 2971,
+      "panel_share": 0.0123762376237623,
+      "affinity_lift": 16.929206015414742
+    },
+    {
+      "channel": "When love fades, money stops flowing.",
+      "popularity_rank": 3049,
+      "affinity_rank": 96,
+      "rank_gap": 2953,
+      "panel_share": 0.0123762376237623,
+      "affinity_lift": 15.423974745108929
+    },
+    {
+      "channel": "知識の館",
+      "popularity_rank": 3049,
+      "affinity_rank": 101,
+      "rank_gap": 2948,
+      "panel_share": 0.0123762376237623,
+      "affinity_lift": 14.396763312289176
+    },
+    {
+      "channel": "人生大逆転シンママの引き寄せ術💎みーこ",
+      "popularity_rank": 3049,
+      "affinity_rank": 103,
+      "rank_gap": 2946,
+      "panel_share": 0.0123762376237623,
+      "affinity_lift": 14.367322078521712
+    },
+    {
+      "channel": "PODCAST:多教養大學",
+      "popularity_rank": 3049,
+      "affinity_rank": 103,
+      "rank_gap": 2946,
+      "panel_share": 0.0123762376237623,
+      "affinity_lift": 14.367322078521712
+    },
+    {
+      "channel": "The Breakthrough Mindset / Shinsuke Omyo",
+      "popularity_rank": 3049,
+      "affinity_rank": 107,
+      "rank_gap": 2942,
+      "panel_share": 0.0123762376237623,
+      "affinity_lift": 14.051240992794236
+    },
+    {
+      "channel": "たつみん│コンテンツ販売×AI自動化",
+      "popularity_rank": 3049,
+      "affinity_rank": 116,
+      "rank_gap": 2933,
+      "panel_share": 0.0123762376237623,
+      "affinity_lift": 13.382134278851652
+    },
+    {
+      "channel": "和平竹田",
+      "popularity_rank": 3049,
+      "affinity_rank": 120,
+      "rank_gap": 2929,
+      "panel_share": 0.0123762376237623,
+      "affinity_lift": 12.89104678238003
+    },
+    {
+      "channel": "らくらくAI自動集客",
+      "popularity_rank": 3049,
+      "affinity_rank": 123,
+      "rank_gap": 2926,
+      "panel_share": 0.0123762376237623,
+      "affinity_lift": 12.658775669183994
+    },
+    {
+      "channel": "宮崎_FXで1000万溶かした男",
+      "popularity_rank": 3049,
+      "affinity_rank": 131,
+      "rank_gap": 2918,
+      "panel_share": 0.0123762376237623,
+      "affinity_lift": 12.325649993679152
+    },
+    {
+      "channel": "【翻訳】エイブラハムの教え",
+      "popularity_rank": 3049,
+      "affinity_rank": 155,
+      "rank_gap": 2894,
+      "panel_share": 0.0123762376237623,
+      "affinity_lift": 11.331645961930834
+    },
+    {
+      "channel": "さくらバター",
+      "popularity_rank": 3049,
+      "affinity_rank": 158,
+      "rank_gap": 2891,
+      "panel_share": 0.0123762376237623,
+      "affinity_lift": 11.15177856570971
+    },
+    {
+      "channel": "偉人の救い",
+      "popularity_rank": 3049,
+      "affinity_rank": 158,
+      "rank_gap": 2891,
+      "panel_share": 0.0123762376237623,
+      "affinity_lift": 11.15177856570971
+    },
+    {
+      "channel": "スミレアキコ的正解のない世界",
+      "popularity_rank": 3049,
+      "affinity_rank": 178,
+      "rank_gap": 2871,
+      "panel_share": 0.0123762376237623,
+      "affinity_lift": 10.33179484764282
+    },
+    {
+      "channel": "うたう応援家 にっくん",
+      "popularity_rank": 3049,
+      "affinity_rank": 180,
+      "rank_gap": 2869,
+      "panel_share": 0.0123762376237623,
+      "affinity_lift": 10.25638028671112
+    },
+    {
+      "channel": "【公式】中村天風財団・公財 天風会",
+      "popularity_rank": 3049,
+      "affinity_rank": 186,
+      "rank_gap": 2863,
+      "panel_share": 0.0123762376237623,
+      "affinity_lift": 9.9654191438257
+    },
+    {
+      "channel": "108ザ・チケット",
+      "popularity_rank": 3049,
+      "affinity_rank": 194,
+      "rank_gap": 2855,
+      "panel_share": 0.0123762376237623,
+      "affinity_lift": 9.757806244995995
+    },
+    {
+      "channel": "宇宙の力を使おう",
+      "popularity_rank": 3049,
+      "affinity_rank": 194,
+      "rank_gap": 2855,
+      "panel_share": 0.0123762376237623,
+      "affinity_lift": 9.757806244995995
+    },
+    {
+      "channel": "金運の女神ナユタ〜宇宙の黄金法則〜",
+      "popularity_rank": 3049,
+      "affinity_rank": 205,
+      "rank_gap": 2844,
+      "panel_share": 0.0123762376237623,
+      "affinity_lift": 9.558667342036896
+    },
+    {
+      "channel": "ビジネステック経済地図",
+      "popularity_rank": 3049,
+      "affinity_rank": 215,
+      "rank_gap": 2834,
+      "panel_share": 0.0123762376237623,
+      "affinity_lift": 9.305457611122009
+    },
+    {
+      "channel": "FX筋トレーダーの規格外なチャート戦略",
+      "popularity_rank": 3049,
+      "affinity_rank": 218,
+      "rank_gap": 2831,
+      "panel_share": 0.0123762376237623,
+      "affinity_lift": 9.1241824628534
+    },
+    {
+      "channel": "川原卓巳のビジネス戦略ch【自分らしいプロデュースメソッド】",
+      "popularity_rank": 3049,
+      "affinity_rank": 221,
+      "rank_gap": 2828,
+      "panel_share": 0.0123762376237623,
+      "affinity_lift": 9.007205764611689
+    },
+    {
+      "channel": "苫米地博士の頭脳【切り抜き】",
+      "popularity_rank": 3049,
+      "affinity_rank": 226,
+      "rank_gap": 2823,
+      "panel_share": 0.0123762376237623,
+      "affinity_lift": 8.83725848603411
+    },
+    {
+      "channel": "山口孝志 / Jin　資産100億円のFX投資家",
+      "popularity_rank": 3049,
+      "affinity_rank": 228,
+      "rank_gap": 2821,
+      "panel_share": 0.0123762376237623,
+      "affinity_lift": 8.782025620496396
+    },
+    {
+      "channel": "FXトレーダーぽんた",
+      "popularity_rank": 3049,
+      "affinity_rank": 237,
+      "rank_gap": 2812,
+      "panel_share": 0.0123762376237623,
+      "affinity_lift": 8.56782987365502
+    },
+    {
+      "channel": "先人の叡智",
+      "popularity_rank": 3049,
+      "affinity_rank": 267,
+      "rank_gap": 2782,
+      "panel_share": 0.0123762376237623,
+      "affinity_lift": 7.983659654996725
+    },
+    {
+      "channel": "ゆきのAIで稼ぐナビ",
+      "popularity_rank": 3049,
+      "affinity_rank": 269,
+      "rank_gap": 2780,
+      "panel_share": 0.0123762376237623,
+      "affinity_lift": 7.938554233217081
+    },
+    {
+      "channel": "MARIA AI Creator",
+      "popularity_rank": 3049,
+      "affinity_rank": 297,
+      "rank_gap": 2752,
+      "panel_share": 0.0123762376237623,
+      "affinity_lift": 7.24290772824445
+    },
+    {
+      "channel": "えーあい制作団",
+      "popularity_rank": 3049,
+      "affinity_rank": 311,
+      "rank_gap": 2738,
+      "panel_share": 0.0123762376237623,
+      "affinity_lift": 7.025620496397118
+    },
+    {
+      "channel": "MIKURA TAROT - 八百万の神々と龍神様とともに光に包まれながら -",
+      "popularity_rank": 3049,
+      "affinity_rank": 328,
+      "rank_gap": 2721,
+      "panel_share": 0.0123762376237623,
+      "affinity_lift": 6.659355920755562
+    },
+    {
+      "channel": "人生を整える ブッダの教え",
+      "popularity_rank": 3049,
+      "affinity_rank": 337,
+      "rank_gap": 2712,
+      "panel_share": 0.0123762376237623,
+      "affinity_lift": 6.505204163330664
+    },
+    {
+      "channel": "ユニバーサル弥榮",
+      "popularity_rank": 3049,
+      "affinity_rank": 358,
+      "rank_gap": 2691,
+      "panel_share": 0.0123762376237623,
+      "affinity_lift": 6.272875443211712
+    },
+    {
+      "channel": "Listening wave good luck JAPAN",
+      "popularity_rank": 3049,
+      "affinity_rank": 361,
+      "rank_gap": 2688,
+      "panel_share": 0.0123762376237623,
+      "affinity_lift": 6.13591309729006
+    },
+    {
+      "channel": "一阿の言の葉(イチアノコトノハ)",
+      "popularity_rank": 3049,
+      "affinity_rank": 368,
+      "rank_gap": 2681,
+      "panel_share": 0.0123762376237623,
+      "affinity_lift": 6.05656939344579
+    },
+    {
+      "channel": "エム",
+      "popularity_rank": 2674,
+      "affinity_rank": 6,
+      "rank_gap": 2668,
+      "panel_share": 0.0136138613861386,
+      "affinity_lift": 36.62645756415559
+    },
+    {
+      "channel": "本要約カフェ",
+      "popularity_rank": 2674,
+      "affinity_rank": 8,
+      "rank_gap": 2666,
+      "panel_share": 0.0136138613861386,
+      "affinity_lift": 36.11300255157397
+    },
+    {
+      "channel": "2ch不思議の森",
+      "popularity_rank": 2674,
+      "affinity_rank": 18,
+      "rank_gap": 2656,
+      "panel_share": 0.0136138613861386,
+      "affinity_lift": 30.60666354866071
+    },
+    {
+      "channel": "リアトラQNA",
+      "popularity_rank": 2674,
+      "affinity_rank": 19,
+      "rank_gap": 2655,
+      "panel_share": 0.0136138613861386,
+      "affinity_lift": 30.54617607129181
+    },
+    {
+      "channel": "かぐや礼の整え道チャンネル",
+      "popularity_rank": 3049,
+      "affinity_rank": 398,
+      "rank_gap": 2651,
+      "panel_share": 0.0123762376237623,
+      "affinity_lift": 5.75870532491567
+    },
+    {
+      "channel": "【はまろん社長】のAI活用チャンネル",
+      "popularity_rank": 3049,
+      "affinity_rank": 402,
+      "rank_gap": 2647,
+      "panel_share": 0.0123762376237623,
+      "affinity_lift": 5.735200405222137
+    },
+    {
+      "channel": "瞑想仮面ラーバリアン",
+      "popularity_rank": 2674,
+      "affinity_rank": 38,
+      "rank_gap": 2636,
+      "panel_share": 0.0136138613861386,
+      "affinity_lift": 23.63358576769673
+    }
+  ]
+}

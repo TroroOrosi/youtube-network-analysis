@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}チャンネル比較 | YouTube 分析{% endblock %}
+{% block content %}
+<h2>チャンネル比較</h2>
+<p class="limits">2～5件の接続済みチャンネルへ同じ条件を適用し、規模とサイレント登録者数を並べます。</p>
+
+{% if connections|length < 2 %}
+<p class="notice" role="status">比較するには、2件以上のチャンネルを接続して収集してください。</p>
+{% endif %}
+
+<form method="get" action="/compare">
+  <fieldset>
+    <legend>比較するチャンネル（2～5件）</legend>
+    {% for item in connections %}
+    <label>
+      <input type="checkbox" name="channel_id" value="{{ item.channel_id }}"
+             {% if item.channel_id in selected %}checked{% endif %}>
+      {{ item.title }}
+    </label>
+    {% else %}
+    <p>接続済みチャンネルはありません。</p>
+    {% endfor %}
+  </fieldset>
+
+  <label for="compare_segment">セグメント</label>
+  <select id="compare_segment" name="segment">
+    <option value="">すべて</option>
+    {% for value, label in segment_options %}
+    <option value="{{ value }}" {% if filters.segment == value %}selected{% endif %}>{{ label }}</option>
+    {% endfor %}
+  </select>
+
+  <label for="compare_subscribed_within_days">登録からの日数（以内）</label>
+  <input id="compare_subscribed_within_days" name="subscribed_within_days" type="number"
+         min="1" max="3650" value="{{ filters.subscribed_within_days or '' }}">
+
+  <label for="compare_never_commented">
+    <input id="compare_never_commented" name="never_commented" type="checkbox" value="true"
+           {% if filters.never_commented %}checked{% endif %}>
+    コメントしたことがない人だけ
+  </label>
+  <p><button type="submit" {% if connections|length < 2 %}disabled{% endif %}>比較する</button></p>
+</form>
+
+{% if comparison %}
+<h2 id="comparison-results">比較結果</h2>
+<p class="limits">集計日時: {{ comparison.reference_time }}</p>
+<div class="table-scroll" role="region" aria-labelledby="comparison-results" tabindex="0">
+<table>
+  <thead>
+    <tr>
+      <th scope="col">チャンネル</th>
+      <th scope="col">状態</th>
+      <th scope="col">対象の登録者</th>
+      <th scope="col">絞り込み後</th>
+      <th scope="col">サイレント</th>
+      <th scope="col">次の操作</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for item in comparison.entries %}
+    <tr>
+      <th scope="row">{{ item.channel }}</th>
+      <td>{{ item.status }}</td>
+      <td>{{ item.scope_count if item.ready else '—' }}</td>
+      <td>{{ item.filtered_count if item.ready else '—' }}</td>
+      <td>{{ item.silent_count if item.ready else '—' }}</td>
+      <td>
+        {% if item.ready %}
+        —
+        {% else %}
+        <a href="/">ホームでチャンネルを接続・収集する</a>
+        {% endif %}
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+
+<p><a href="/">ホームに戻る</a></p>
+{% endblock %}

@@ -129,6 +129,26 @@ class ConnectionPublicationTests(ConnectionFixture):
             self.service.begin_authorization(member, BeginAuthorization(idempotency_key="k"))
         self.assertEqual(raised.exception.code, "PERMISSION_DENIED")
 
+    def test_collection_target_exposes_only_run_identity_under_run_permission(self) -> None:
+        connection = self.connect()
+        runner = context("workspace-1", Permission.COLLECTION_RUN)
+
+        target = self.service.resolve_collection_target(
+            runner, connection.connection_id
+        )
+
+        self.assertEqual(
+            set(target.__slots__), {"connection_id", "provider_channel_id"}
+        )
+        self.assertEqual(target.connection_id, connection.connection_id)
+        self.assertEqual(target.provider_channel_id, connection.provider_channel_id)
+        with self.assertRaises(ChannelConnectionsError) as raised:
+            self.service.resolve_collection_target(
+                context("workspace-1", Permission.CHANNEL_READ),
+                connection.connection_id,
+            )
+        self.assertEqual(raised.exception.code, "PERMISSION_DENIED")
+
     def test_the_same_channel_cannot_be_connected_twice_in_one_workspace(self) -> None:
         self.connect()
 

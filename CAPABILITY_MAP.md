@@ -76,6 +76,8 @@ no production credentials and does not contact YouTube.
 - Channel selection and comparison.
 - Subscription period, subscriber status, comment activity, and segment filters.
 - Segment KPIs, result table, basic charts, CSV/Excel export.
+- An authenticated, aggregate-only audience-network research report with a
+  matching nine-sheet Excel download, visibly separated from live account data.
 - Collection freshness, coverage, quota, progress, and error visibility.
 - Tenant authorization, audit events, retention/deletion, and token revocation.
 

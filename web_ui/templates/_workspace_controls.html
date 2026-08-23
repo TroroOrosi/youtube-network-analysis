@@ -1,0 +1,25 @@
+<form method="post" action="/workspaces/select" class="form-row">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <div>
+    <label for="workspace_id">表示するワークスペース</label>
+    <select id="workspace_id" name="workspace_id"
+            {% if workspace_select_required | default(false) %}required{% endif %}>
+      {% for workspace in workspaces %}
+      <option value="{{ workspace.workspace_id }}"
+              {% if current_workspace_id is defined and workspace.workspace_id == current_workspace_id %}selected{% endif %}>
+        {{ workspace.name }}
+      </option>
+      {% endfor %}
+    </select>
+  </div>
+  <button type="submit">{{ workspace_select_button | default("切り替える") }}</button>
+</form>
+<details>
+  <summary>新しいワークスペースを作成</summary>
+  <form method="post" action="/workspaces">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="new_workspace_name">ワークスペース名</label>
+    <input id="new_workspace_name" name="name" required maxlength="80">
+    <p><button type="submit">作成する</button></p>
+  </form>
+</details>

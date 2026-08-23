@@ -8,14 +8,22 @@ resolves a workspace context, renders safe values, and never sees a credential.
 from __future__ import annotations
 
 import secrets
-from datetime import UTC, datetime, timedelta
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from threading import Lock
 from typing import Annotated, Any
+from urllib.parse import urlencode
 
 from fastapi import FastAPI, Form, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+)
 from fastapi.templating import Jinja2Templates
 from pydantic import BeforeValidator
 
@@ -23,41 +31,83 @@ from analysis_api.errors import AnalysisApiError
 from analysis_api.models import (
     AnalysisFilterInput,
     AnalysisPageRequest,
+    CompareChannels,
+    DeleteView,
     ExportAnalysis,
     RunAnalysis,
+    SaveView,
 )
 from channel_connections.errors import ChannelConnectionsError
 from channel_connections.models import (
     BeginAuthorization,
+    BeginReauthorization,
     CompleteAuthorization,
     DisconnectConnection,
     RedactedSecret,
 )
 from channel_data.errors import ChannelDataError
 from collection_jobs.errors import CollectionJobsError
-from collection_jobs.models import EnqueueRun, ExecuteRun, RunKind
-from workspace_access.models import (
-    AccessSecret,
-    CreateWorkspace,
-    Permission,
-    SessionEvidence,
-    VerifiedIdentity,
-    WorkspaceSelection,
+from collection_jobs.models import (
+    CollectionRun,
+    CreateSchedule,
+    DeleteSchedule,
+    EnqueueRun,
+    JobsPageRequest,
+    RunKind,
 )
 from workspace_access.errors import WorkspaceAccessError
+from workspace_access.models import (
+    AccessSecret,
+    ChangeMembershipRole,
+    CreateWorkspace,
+    GrantMembership,
+    MembershipPageRequest,
+    Permission,
+    RevokeMembership,
+    Role,
+    SessionEvidence,
+    VerifiedIdentity,
+    WorkspaceContext,
+    WorkspaceSelection,
+)
 
+from .audience_report import (
+    AUDIENCE_REPORT_WORKBOOK,
+    load_audience_report_artifacts,
+)
 from .container import Services, build_services
-from .google_login import GoogleLogin, LoginFailed
+from .google_login import STATE_TTL, GoogleLogin, LoginFailed
 
 SESSION_COOKIE = "yna_session"
 WORKSPACE_COOKIE = "yna_workspace"
 CSRF_COOKIE = "yna_csrf"
+LOGIN_COOKIE = "yna_login"
 
 CONSENT_ORIGIN = "https://accounts.google.com"
 WRITE_LIMIT_PER_MINUTE = 30
 COLLECT_LIMIT_PER_MINUTE = 3
+COLLECTION_WRITE_PATHS = frozenset({"/collecting/step"})
+# How long one call may spend collecting. The browser's slice is short
+# because a person is watching a page that is not answering yet; the
+# scheduler's is long because nobody is, and the only cost of a longer one
+# is request time we are already paying for.
+BROWSER_SLICE_SECONDS = 20
+DRAIN_SLICE_SECONDS = 120
+# How many pages of runs one view will read before it stops asking. Fifty
+# thousand runs is far more history than any page needs, and the cap is what
+# keeps one request from walking a whole workspace's past.
+RUN_PAGE_CAP = 20
+RUN_PAGE_SIZE = 100
 RATE_WINDOW = timedelta(minutes=1)
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+AUDIENCE_REPORT = load_audience_report_artifacts()
+FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+<rect width="64" height="64" rx="14" fill="#0b5cab"/>
+<path d="M17 42 29 30l8 7 11-15" fill="none" stroke="#fff" stroke-width="6"
+ stroke-linecap="round" stroke-linejoin="round"/>
+<circle cx="17" cy="42" r="4" fill="#fff"/><circle cx="29" cy="30" r="4" fill="#fff"/>
+<circle cx="37" cy="37" r="4" fill="#fff"/><circle cx="48" cy="22" r="4" fill="#fff"/>
+</svg>"""
 
 MESSAGES = {
     "connected": "チャンネルを接続しました。",
@@ -65,6 +115,18 @@ MESSAGES = {
     "collected": "データ収集が完了しました。",
     "collect_partial": "本日の取得上限に達したため、途中まで収集しました。明日以降に再実行してください。",
     "collect_failed": "収集できませんでした。接続の再認可が必要な可能性があります。",
+    "collect_suspended": (
+        "本日の取得上限に達しました。"
+        "続きは翌日以降に自動で再開します。このまま閉じて構いません。"
+    ),
+    "collect_stopped": "収集を中断しました。次に開いたときに続きから再開します。",
+    "schedule_created": "定期収集を設定しました。",
+    "schedule_deleted": "定期収集を解除しました。",
+    "view_saved": "条件を保存しました。",
+    "view_deleted": "保存条件を削除しました。",
+    "member_added": "メンバーを追加しました。",
+    "member_role_changed": "役割を変更しました。",
+    "member_removed": "メンバーを削除しました。",
     "workspace_created": "ワークスペースを作成しました。",
     "authorization_cancelled": "認可を中止しました。",
 }
@@ -97,6 +159,18 @@ ERROR_TEXT = {
     "NO_ACCESSIBLE_WORKSPACE": (
         "利用できるワークスペースがありません。",
         "新しいワークスペースを作成してください。",
+    ),
+    "MEMBERSHIP_NOT_FOUND_OR_FORBIDDEN": (
+        "そのメンバーは見つかりません。",
+        "メンバー一覧を開き直してください。",
+    ),
+    "MEMBERSHIP_ALREADY_EXISTS": (
+        "その利用者はすでにメンバーです。",
+        "一覧から現在の役割を確認してください。",
+    ),
+    "LAST_OWNER_REQUIRED": (
+        "最後の管理者は変更・削除できません。",
+        "先に別のメンバーを管理者へ変更してください。",
     ),
     "CSRF": (
         "この操作を完了できませんでした。",
@@ -141,6 +215,32 @@ RUN_STATUS_LABELS = {
     "CANCELLED": "中止",
 }
 
+RUN_FAILURE_LABELS = {
+    "QUOTA_EXHAUSTED": "本日の取得上限",
+    "PROVIDER_UNAVAILABLE": "YouTubeの一時的なエラー",
+    "REAUTH_REQUIRED": "再認可が必要",
+    "CANCELLED": "利用者が中断",
+    "UNEXPECTED_FAILURE": "予期しないエラー",
+}
+
+JST = timezone(timedelta(hours=9), "JST")
+
+
+def _display_datetime(value: datetime) -> tuple[str, str]:
+    local = value.astimezone(JST)
+    return local.isoformat(), local.strftime("%Y/%m/%d %H:%M")
+
+
+def _analysis_url(channel_id: str, filters: AnalysisFilterInput) -> str:
+    pairs: list[tuple[str, str]] = [("channel_id", channel_id)]
+    if filters.subscribed_within_days is not None:
+        pairs.append(("subscribed_within_days", str(filters.subscribed_within_days)))
+    if filters.never_commented:
+        pairs.append(("never_commented", "true"))
+    if filters.segments:
+        pairs.append(("segment", filters.segments[0]))
+    return f"/analysis?{urlencode(pairs)}"
+
 
 class AppError(Exception):
     def __init__(self, code: str, status_code: int = 400) -> None:
@@ -173,6 +273,90 @@ class _RateLimiter:
             return True
 
 
+def _is_collection_write(path: str) -> bool:
+    return path in COLLECTION_WRITE_PATHS or (
+        path.startswith("/connections/") and path.endswith("/collect")
+    )
+
+
+def _client_key(request: Request) -> str:
+    """Who to count a request against, behind Cloud Run's front end.
+
+    Every request arrives from the same proxy, so `request.client.host` is one
+    address for the whole internet: one visitor hitting the limit would lock
+    out everybody. The front end appends the address it accepted the connection
+    from to `X-Forwarded-For`, after anything the caller sent, so the last
+    element is the one entry a caller cannot choose for itself. Earlier
+    elements are caller-supplied and are ignored on purpose.
+    """
+
+    forwarded = request.headers.get("x-forwarded-for", "")
+    hops = [hop.strip() for hop in forwarded.split(",") if hop.strip()]
+    if hops:
+        return hops[-1]
+    return request.client.host if request.client else "unknown"
+
+
+def _purge_aged_out(services: Services, context: WorkspaceContext) -> None:
+    """Drop what the retention rules already say is over.
+
+    `channel-data` keeps subscriber snapshots for a year and collection records
+    for ninety days, and `channel-connections` keeps a consent intent only
+    until it expires. Those cutoffs are enforced inside `purge_retention`, and
+    nothing was calling it. Each module keeps all of its state in one stored
+    document with a hard size limit, so what is never dropped is what
+    eventually stops every write. A collection that has just finished is the
+    moment to ask, because it is the moment the workspace grew.
+
+    Only an owner may sweep; for a member it waits for an owner's visit rather
+    than failing the page they were looking at.
+    """
+
+    if Permission.CHANNEL_MANAGE_CONNECTION not in context.permissions:
+        return
+    moment = datetime.now(UTC)
+    services.channel_data.purge_retention(context, moment)
+    services.connections.purge_retention(context, moment)
+
+
+def _every_run(services: Services, context: WorkspaceContext) -> tuple[CollectionRun, ...]:
+    """Every run of a workspace, not the first page of them.
+
+    Whether the collecting page keeps refreshing is decided by whether anything
+    is still queued. A workspace that has collected for a while has more runs
+    than one page holds, and reading only the first page would call the work
+    finished while a queued run sat on the second. Paging stops at
+    `RUN_PAGE_CAP` so a long history cannot turn one page view into an
+    unbounded read.
+    """
+
+    runs: list[CollectionRun] = []
+    cursor: str | None = None
+    for _ in range(RUN_PAGE_CAP):
+        page = services.jobs.list_runs(
+            context, page=JobsPageRequest(cursor=cursor, limit=RUN_PAGE_SIZE)
+        )
+        runs.extend(page.items)
+        cursor = page.next_cursor
+        if cursor is None:
+            break
+    return tuple(runs)
+
+
+def _collection_progress(
+    services: Services, context: WorkspaceContext, moment: datetime
+) -> tuple[tuple[CollectionRun, ...], tuple[CollectionRun, ...], bool]:
+    runs = _every_run(services, context)
+    waiting = tuple(
+        run for run in runs if run.status.value in {"QUEUED", "RUNNING"}
+    )
+    suspended = bool(waiting) and all(
+        run.next_attempt_at is not None and run.next_attempt_at > moment
+        for run in waiting
+    )
+    return runs, waiting, suspended
+
+
 def create_app(services: Services | None = None, *, base_url: str = "https://localhost") -> FastAPI:
     app = FastAPI(title="YouTube 分析", docs_url=None, redoc_url=None)
     app.state.services = services or build_services(base_url)
@@ -186,10 +370,10 @@ def create_app(services: Services | None = None, *, base_url: str = "https://loc
         if request.method != "GET":
             limit = (
                 COLLECT_LIMIT_PER_MINUTE
-                if request.url.path.endswith("/collect")
+                if _is_collection_write(request.url.path)
                 else WRITE_LIMIT_PER_MINUTE
             )
-            client = request.client.host if request.client else "unknown"
+            client = _client_key(request)
             if not limiter.allow(f"{client}|{limit}", limit):
                 return _error_response(request, "TOO_MANY_REQUESTS", 429)
         return await call_next(request)
@@ -198,12 +382,28 @@ def create_app(services: Services | None = None, *, base_url: str = "https://loc
     async def security_headers(request: Request, call_next: Any) -> Response:
         response = await call_next(request)
         response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; style-src 'self' 'unsafe-inline';"
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';"
             f" form-action 'self' {CONSENT_ORIGIN}; frame-ancestors 'none'"
         )
         response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-XSS-Protection"] = "0"
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Permissions-Policy"] = (
+            "camera=(), microphone=(), geolocation=()"
+        )
+        # Every page is served over TLS by Cloud Run, but the first request
+        # of a session can still be a plain http one that carries the
+        # cookies before the redirect. A year of HSTS removes that request.
+        response.headers["Strict-Transport-Security"] = (
+            "max-age=31536000; includeSubDomains"
+        )
+        # Every page here is a signed-in view of one workspace, or a redirect
+        # that depends on one. Stored in a shared cache or replayed by the back
+        # button after a sign-out, any of them shows one person's channels to
+        # whoever uses the browser next.
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
         return response
 
     _register_routes(app)
@@ -255,6 +455,32 @@ OptionalInt = Annotated[
 ]
 
 
+@dataclass(frozen=True, slots=True)
+class _AnalysisFilters:
+    never_commented: bool = False
+    subscribed_within_days: int | None = None
+    segment: str | None = None
+
+    def domain_input(self) -> AnalysisFilterInput:
+        return AnalysisFilterInput(
+            never_commented=self.never_commented,
+            subscribed_within_days=self.subscribed_within_days,
+            segments=(self.segment,) if self.segment else (),
+        )
+
+    def query_pairs(self) -> list[tuple[str, str]]:
+        pairs: list[tuple[str, str]] = []
+        if self.segment:
+            pairs.append(("segment", self.segment))
+        if self.subscribed_within_days is not None:
+            pairs.append(
+                ("subscribed_within_days", str(self.subscribed_within_days))
+            )
+        if self.never_commented:
+            pairs.append(("never_commented", "true"))
+        return pairs
+
+
 def _login_provider(request: Request) -> GoogleLogin:
     login = _services(request).login
     if login is None:
@@ -293,7 +519,7 @@ def _render(
     }
     response = TEMPLATES.TemplateResponse(request, template, payload, status_code=status_code)
     response.set_cookie(
-        CSRF_COOKIE, csrf, httponly=False, secure=True, samesite="strict", path="/"
+        CSRF_COOKIE, csrf, httponly=True, secure=True, samesite="strict", path="/"
     )
     return response
 
@@ -308,6 +534,21 @@ def _error_response(request: Request, code: str, status_code: int) -> HTMLRespon
         {"error_title": title, "error_action": action, "error_code": code},
         status_code=status_code,
     )
+
+
+def _collect_outcome(runs: tuple[CollectionRun, ...]) -> str:
+    """Name what the browser should be told about a collection that ended.
+
+    The worst status wins, because a person reading one line wants to know
+    whether to act, and a run that failed is the one that needs them.
+    """
+
+    statuses = {run.status.value for run in runs}
+    if statuses & {"FAILED", "CANCELLED"}:
+        return "collect_failed"
+    if "PARTIAL" in statuses:
+        return "collect_partial"
+    return "collected"
 
 
 def _domain_error(error: Exception) -> AppError:
@@ -351,14 +592,25 @@ def _register_routes(app: FastAPI) -> None:
         mapped = _domain_error(error)
         return _error_response(request, mapped.code, mapped.status_code)
 
+    # The routes below are deliberately not `async def`. Every one of them ends
+    # up in a blocking call: the state stores are Firestore over HTTP, the
+    # provider adapters are the YouTube Data API, and none of that is written
+    # against an event loop. Declared `async`, each of those waits held the one
+    # loop this process has, so a slow Google call stalled every other request
+    # in flight, including the ones that touch nothing. Declared as ordinary
+    # functions, Starlette runs them in its thread pool and the waits overlap.
+    #
+    # The price is that handlers now run concurrently in threads, which is why
+    # every service this reaches guards its own state with a lock — including
+    # `GoogleCredentialStore`, whose vault would otherwise interleave two saves.
     @app.get("/login", response_class=HTMLResponse)
-    async def login_form(request: Request) -> Response:
+    def login_form(request: Request) -> Response:
         return _render(
             request, "login.html", {"google_login": _services(request).login is not None}
         )
 
     @app.post("/login")
-    async def login(
+    def login(
         request: Request, display_name: str = Form(...), csrf_token: str = Form("")
     ) -> Response:
         """Open a session from a typed name, only where no real provider exists.
@@ -378,37 +630,60 @@ def _register_routes(app: FastAPI) -> None:
             VerifiedIdentity(
                 issuer="urn:demo:local",
                 subject=subject,
-                authenticated_at=_services(request).access._now(),
+                authenticated_at=datetime.now(UTC),
                 display_name=subject,
             ),
         )
 
     @app.post("/login/google")
-    async def login_with_google(
+    def login_with_google(
         request: Request, csrf_token: str = Form("")
     ) -> Response:
         _check_csrf(request, csrf_token)
-        return _redirect(_login_provider(request).start()[0])
+        url, state = _login_provider(request).start()
+        response = _redirect(url)
+        response.set_cookie(
+            LOGIN_COOKIE,
+            state,
+            httponly=True,
+            secure=True,
+            samesite="lax",
+            max_age=int(STATE_TTL.total_seconds()),
+            path="/",
+        )
+        return response
 
     @app.get("/login/callback")
-    async def login_return(
+    def login_return(
         request: Request,
         state: str = Query(...),
         code: str | None = Query(None),
         error: str | None = Query(None),
     ) -> Response:
-        """Google's redirect back. `state` is the only proof this is ours."""
+        """Google's redirect back. The state must match this browser too.
 
+        The provider proves who signed in, not whose browser asked. A state
+        kept only in this process would let somebody finish their own
+        sign-in inside your browser and leave you working in their
+        workspace, so `start` also wrote the state as a cookie and it has
+        to come back with it.
+        """
+
+        started = request.cookies.get(LOGIN_COOKIE) or ""
+        if not secrets.compare_digest(started, state):
+            raise AppError("LOGIN_FAILED")
         try:
             identity = _login_provider(request).complete(
                 state=state, code=code, error=error
             )
         except LoginFailed as failure:
             raise AppError("LOGIN_FAILED") from failure
-        return _session_response(request, identity)
+        response = _session_response(request, identity)
+        response.delete_cookie(LOGIN_COOKIE, path="/")
+        return response
 
     @app.post("/logout")
-    async def logout(request: Request, csrf_token: str = Form("")) -> Response:
+    def logout(request: Request, csrf_token: str = Form("")) -> Response:
         _check_csrf(request, csrf_token)
         raw = request.cookies.get(SESSION_COOKIE)
         if raw:
@@ -424,7 +699,7 @@ def _register_routes(app: FastAPI) -> None:
         return response
 
     @app.get("/", response_class=HTMLResponse)
-    async def dashboard(request: Request) -> Response:
+    def dashboard(request: Request) -> Response:
         session = _require_session(request)
         services = _services(request)
         try:
@@ -436,9 +711,42 @@ def _register_routes(app: FastAPI) -> None:
         if not workspaces:
             return _render(request, "workspace_new.html", {"session": session})
 
-        context = _context(request, session, Permission.CHANNEL_READ)
+        try:
+            context = _context(request, session, Permission.CHANNEL_READ)
+        except WorkspaceAccessError as error:
+            if error.code != "WORKSPACE_SELECTION_REQUIRED":
+                raise
+            return _render(
+                request,
+                "workspace_select.html",
+                {"session": session, "workspaces": workspaces},
+            )
         connections = services.connections.list_connections(context)
         runs = services.jobs.list_runs(context)
+        schedules = services.jobs.list_schedules(context)
+        connection_titles = {
+            item.connection_id: item.channel_title for item in connections.items
+        }
+        rendered_runs = []
+        for item in runs.items[:5]:
+            timestamp = item.finished_at or item.started_at or item.enqueued_at
+            timestamp_iso, timestamp_label = _display_datetime(timestamp)
+            failure = item.failure_reason.value if item.failure_reason else None
+            rendered_runs.append(
+                {
+                    "channel": connection_titles.get(
+                        item.connection_id, item.provider_channel_id
+                    ),
+                    "kind": RUN_KIND_LABELS.get(item.kind.value, item.kind.value),
+                    "status": RUN_STATUS_LABELS.get(
+                        item.status.value, item.status.value
+                    ),
+                    "timestamp_iso": timestamp_iso,
+                    "timestamp_label": timestamp_label,
+                    "detail": RUN_FAILURE_LABELS.get(failure, "") if failure else "—",
+                    "quota_spent": item.quota_spent,
+                }
+            )
         return _render(
             request,
             "dashboard.html",
@@ -457,22 +765,74 @@ def _register_routes(app: FastAPI) -> None:
                     }
                     for item in connections.items
                 ],
-                "runs": [
+                "runs": rendered_runs,
+                "schedules": [
                     {
-                        "kind": RUN_KIND_LABELS.get(item.kind.value, item.kind.value),
-                        "status": RUN_STATUS_LABELS.get(
-                            item.status.value, item.status.value
+                        "schedule_id": item.schedule_id,
+                        "channel": connection_titles.get(
+                            item.connection_id, item.connection_id
                         ),
-                        "finished_at": item.finished_at,
-                        "quota_spent": item.quota_spent,
+                        "kind": RUN_KIND_LABELS.get(item.kind.value, item.kind.value),
+                        "interval_hours": int(item.interval.total_seconds() // 3600),
+                        "last_run": (
+                            "未実行"
+                            if item.last_enqueued_at is None
+                            else _display_datetime(item.last_enqueued_at)[1]
+                        ),
                     }
-                    for item in runs.items[:5]
+                    for item in schedules.items
                 ],
             },
         )
 
+    @app.post("/schedules")
+    def create_schedule(
+        request: Request,
+        connection_id: str = Form(...),
+        kind: str = Form(...),
+        interval_hours: int = Form(...),
+        csrf_token: str = Form(""),
+    ) -> Response:
+        _check_csrf(request, csrf_token)
+        if not 1 <= interval_hours <= 24 * 365:
+            raise AppError("INVALID_INPUT")
+        session = _require_session(request)
+        context = _context(request, session, Permission.COLLECTION_RUN)
+        run_kind = {
+            "subscribers": RunKind.SUBSCRIBERS,
+            "content": RunKind.OWNER_CONTENT,
+        }.get(kind)
+        if run_kind is None:
+            raise AppError("INVALID_INPUT")
+        _services(request).jobs.create_schedule(
+            context,
+            CreateSchedule(
+                connection_id=connection_id,
+                kind=run_kind,
+                interval=timedelta(hours=interval_hours),
+                idempotency_key=secrets.token_urlsafe(16),
+            ),
+        )
+        return _redirect("/", "schedule_created")
+
+    @app.post("/schedules/{schedule_id}/delete")
+    def delete_schedule(
+        request: Request, schedule_id: str, csrf_token: str = Form("")
+    ) -> Response:
+        _check_csrf(request, csrf_token)
+        session = _require_session(request)
+        context = _context(request, session, Permission.COLLECTION_RUN)
+        _services(request).jobs.delete_schedule(
+            context,
+            DeleteSchedule(
+                schedule_id=schedule_id,
+                idempotency_key=secrets.token_urlsafe(16),
+            ),
+        )
+        return _redirect("/", "schedule_deleted")
+
     @app.post("/workspaces")
-    async def create_workspace(
+    def create_workspace(
         request: Request, name: str = Form(...), csrf_token: str = Form("")
     ) -> Response:
         _check_csrf(request, csrf_token)
@@ -492,7 +852,7 @@ def _register_routes(app: FastAPI) -> None:
         return response
 
     @app.post("/workspaces/select")
-    async def select_workspace(
+    def select_workspace(
         request: Request, workspace_id: str = Form(...), csrf_token: str = Form("")
     ) -> Response:
         _check_csrf(request, csrf_token)
@@ -514,7 +874,7 @@ def _register_routes(app: FastAPI) -> None:
         return response
 
     @app.post("/connections/start")
-    async def start_connection(request: Request, csrf_token: str = Form("")) -> Response:
+    def start_connection(request: Request, csrf_token: str = Form("")) -> Response:
         _check_csrf(request, csrf_token)
         session = _require_session(request)
         context = _context(request, session, Permission.CHANNEL_MANAGE_CONNECTION)
@@ -523,12 +883,28 @@ def _register_routes(app: FastAPI) -> None:
         )
         return RedirectResponse(start.authorization_url, status_code=303)
 
+    @app.post("/connections/{connection_id}/reauthorize")
+    def reauthorize_connection(
+        request: Request, connection_id: str, csrf_token: str = Form("")
+    ) -> Response:
+        _check_csrf(request, csrf_token)
+        session = _require_session(request)
+        context = _context(request, session, Permission.CHANNEL_MANAGE_CONNECTION)
+        start = _services(request).connections.begin_reauthorization(
+            context,
+            BeginReauthorization(
+                connection_id=connection_id,
+                idempotency_key=secrets.token_urlsafe(16),
+            ),
+        )
+        return RedirectResponse(start.authorization_url, status_code=303)
+
     @app.get("/demo/consent", response_class=HTMLResponse)
-    async def demo_consent(request: Request, state: str = Query(...)) -> Response:
+    def demo_consent(request: Request, state: str = Query(...)) -> Response:
         return _render(request, "consent.html", {"state": state})
 
     @app.get("/oauth/callback")
-    async def oauth_return(
+    def oauth_return(
         request: Request,
         state: str = Query(...),
         code: str | None = Query(None),
@@ -550,7 +926,7 @@ def _register_routes(app: FastAPI) -> None:
         return _redirect("/", "connected")
 
     @app.post("/oauth/callback")
-    async def oauth_callback(
+    def oauth_callback(
         request: Request,
         state: str = Form(...),
         decision: str = Form("approve"),
@@ -579,7 +955,7 @@ def _register_routes(app: FastAPI) -> None:
         return _redirect("/", "connected")
 
     @app.post("/connections/{connection_id}/disconnect")
-    async def disconnect(
+    def disconnect(
         request: Request, connection_id: str, csrf_token: str = Form("")
     ) -> Response:
         _check_csrf(request, csrf_token)
@@ -594,16 +970,24 @@ def _register_routes(app: FastAPI) -> None:
         return _redirect("/", "disconnected")
 
     @app.post("/connections/{connection_id}/collect")
-    async def collect(
+    def collect(
         request: Request, connection_id: str, csrf_token: str = Form("")
     ) -> Response:
+        """Queue the work, then hand the browser the page that does it.
+
+        Nothing is collected here on purpose. A channel's comments can take
+        longer than a request may stay open, and past the daily quota they take
+        longer than a day, so a route that collected until it was finished would
+        either time out or lie about being done. This only enqueues; `/collecting`
+        works the queue a slice at a time.
+        """
+
         _check_csrf(request, csrf_token)
         session = _require_session(request)
         context = _context(request, session, Permission.COLLECTION_RUN)
         services = _services(request)
-        outcome = "collected"
         for kind in (RunKind.SUBSCRIBERS, RunKind.OWNER_CONTENT):
-            run = services.jobs.enqueue_run(
+            services.jobs.enqueue_run(
                 context,
                 EnqueueRun(
                     connection_id=connection_id,
@@ -611,19 +995,143 @@ def _register_routes(app: FastAPI) -> None:
                     idempotency_key=secrets.token_urlsafe(16),
                 ),
             )
-            finished = services.jobs.execute_run(
-                context,
-                ExecuteRun(run_id=run.run_id, idempotency_key=secrets.token_urlsafe(16)),
-            )
-            if finished.status.value == "PARTIAL":
-                outcome = "collect_partial"
-            elif finished.status.value in {"FAILED", "QUEUED"}:
-                outcome = "collect_failed"
+        return _redirect("/collecting")
+
+    @app.get("/collecting", response_class=HTMLResponse)
+    def collecting(request: Request) -> Response:
+        """Show progress without changing state or spending provider quota."""
+
+        session = _require_session(request)
+        context = _context(request, session, Permission.COLLECTION_RUN)
+        services = _services(request)
+        runs, waiting, suspended = _collection_progress(
+            services, context, datetime.now(UTC)
+        )
+        if not waiting:
+            return _redirect("/")
+        if suspended:
+            return _redirect("/", "collect_suspended")
+        return _render(
+            request,
+            "collecting.html",
+            {
+                "session": session,
+                "waiting": len(waiting),
+                "runs": [
+                    {
+                        "kind": RUN_KIND_LABELS.get(run.kind.value, run.kind.value),
+                        "status": RUN_STATUS_LABELS.get(
+                            run.status.value, run.status.value
+                        ),
+                        "pages_fetched": run.pages_fetched,
+                        "quota_spent": run.quota_spent,
+                    }
+                    for run in runs[:5]
+                ],
+            },
+        )
+
+    @app.post("/collecting/step")
+    def collecting_step(request: Request, csrf_token: str = Form("")) -> Response:
+        """Run one bounded slice; only a CSRF-protected write may spend quota."""
+
+        _check_csrf(request, csrf_token)
+        session = _require_session(request)
+        context = _context(request, session, Permission.COLLECTION_RUN)
+        services = _services(request)
+        worked = services.jobs.execute_due_runs(
+            context, datetime.now(UTC), BROWSER_SLICE_SECONDS
+        )
+        _, waiting, suspended = _collection_progress(
+            services, context, datetime.now(UTC)
+        )
+        if not waiting:
+            _purge_aged_out(services, context)
+            return _redirect("/", _collect_outcome(worked) if worked else None)
+        if suspended:
+            return _redirect("/", "collect_suspended")
+        return _redirect("/collecting")
+
+    @app.get("/assets/collecting.js", include_in_schema=False)
+    def collecting_script() -> Response:
+        return Response(
+            "document.getElementById('collection-step')?.requestSubmit();\n",
+            media_type="application/javascript",
+        )
+
+    @app.get("/assets/favicon.svg", include_in_schema=False)
+    def favicon() -> Response:
+        return Response(FAVICON_SVG, media_type="image/svg+xml")
+
+    @app.post("/internal/drain")
+    def drain(request: Request) -> Response:
+        """Continue every workspace's queued work, for a caller that is a clock.
+
+        There is no session here, and there must not be one: the runs this
+        finishes outlive the evening whoever started them was having, and a job
+        that borrowed their session would either die when they signed out or
+        keep acting as them after. The caller instead proves it is the scheduler
+        this deployment was configured with, and each workspace's work is done
+        under authority issued for that workspace alone, carrying the single
+        permission collecting needs.
+
+        The answer is a count and nothing else. Which workspaces exist, and
+        which of them have work waiting, are not facts this endpoint hands to
+        whoever asked.
+        """
+
+        caller = _services(request).drain_caller
+        if caller is None or not caller.verify(request.headers.get("authorization")):
+            # No body, and the same answer whether the deployment has a
+            # scheduler at all: a closed door describes itself to nobody.
+            return Response(status_code=401)
+        services = _services(request)
+        deadline = datetime.now(UTC) + timedelta(seconds=DRAIN_SLICE_SECONDS)
+        # Keep going until the slice is spent, rather than making one pass over
+        # the workspaces that were due at the start. A run that stops because
+        # its own slice ran out is due again immediately, and the point of this
+        # endpoint is to be the caller that finishes it.
+        worked = 0
+        purged: set[str] = set()
+        while True:
+            moment = datetime.now(UTC)
+            if int((deadline - moment).total_seconds()) < 1:
                 break
-        return _redirect("/", outcome)
+            due = services.jobs.due_workspace_ids(moment)
+            if not due:
+                break
+            before = worked
+            for workspace_id in due:
+                moment = datetime.now(UTC)
+                remaining = int((deadline - moment).total_seconds())
+                if remaining < 1:
+                    break
+                context = services.access.issue_job_context(
+                    workspace_id, Permission.COLLECTION_RUN
+                )
+                services.jobs.enqueue_due_runs(context, moment)
+                worked += len(
+                    services.jobs.execute_due_runs(context, moment, remaining)
+                )
+                if workspace_id not in purged:
+                    # Runs, quota rows and idempotency records all live in one
+                    # stored document with a hard size limit, and their
+                    # retention cutoffs only take effect when something asks
+                    # for them. This is the only caller that comes round on its
+                    # own, so it is the one that has to ask, once per workspace
+                    # per call. It needs no permission beyond the one it
+                    # already holds for collecting.
+                    services.jobs.purge_retention(context, moment)
+                    purged.add(workspace_id)
+            if worked == before:
+                # A pass that moved nothing will not move anything on the next
+                # one either: whatever is due cannot be worked right now, and
+                # spinning until the deadline would only burn the instance.
+                break
+        return JSONResponse({"worked": worked})
 
     @app.get("/analysis", response_class=HTMLResponse)
-    async def analysis(
+    def analysis(
         request: Request,
         channel_id: str = Query(...),
         never_commented: bool = Query(False),
@@ -633,16 +1141,22 @@ def _register_routes(app: FastAPI) -> None:
     ) -> Response:
         session = _require_session(request)
         context = _context(request, session, Permission.ANALYSIS_READ)
-        filters = AnalysisFilterInput(
+        filters = _AnalysisFilters(
             never_commented=never_commented,
             subscribed_within_days=subscribed_within_days,
-            segments=(segment,) if segment else (),
+            segment=segment,
         )
-        page = _services(request).analysis.run_analysis(
+        services = _services(request)
+        page = services.analysis.run_analysis(
             context,
-            RunAnalysis(channel_id=channel_id, filters=filters),
+            RunAnalysis(channel_id=channel_id, filters=filters.domain_input()),
             AnalysisPageRequest(cursor=cursor, limit=50),
         )
+        next_url = None
+        if page.next_cursor is not None:
+            next_query = [("channel_id", channel_id), *filters.query_pairs()]
+            next_query.append(("cursor", page.next_cursor))
+            next_url = f"/analysis?{urlencode(next_query)}"
         return _render(
             request,
             "analysis.html",
@@ -665,31 +1179,44 @@ def _register_routes(app: FastAPI) -> None:
                     }
                     for row in page.rows
                 ],
-                "filters": {
-                    "never_commented": never_commented,
-                    "subscribed_within_days": subscribed_within_days,
-                    "segment": segment,
-                },
-                "next_cursor": page.next_cursor,
+                "filters": filters,
+                "next_url": next_url,
                 "segment_options": list(SEGMENT_LABELS.items()),
+                "views": [
+                    {
+                        "view_id": view.view_id,
+                        "name": view.name,
+                        "href": _analysis_url(view.channel_id, view.filters),
+                        "updated_at": _display_datetime(view.updated_at)[1],
+                    }
+                    for view in services.analysis.list_views(context)
+                ],
             },
         )
 
     @app.post("/analysis/export")
-    async def export(
+    def export(
         request: Request,
         channel_id: str = Form(...),
         never_commented: bool = Form(False),
+        subscribed_within_days: Annotated[OptionalInt, Form()] = None,
+        segment: str | None = Form(None),
         csrf_token: str = Form(""),
     ) -> Response:
         _check_csrf(request, csrf_token)
         session = _require_session(request)
         context = _context(request, session, Permission.ANALYSIS_EXPORT)
+        filters = _AnalysisFilters(
+            never_commented=never_commented,
+            subscribed_within_days=subscribed_within_days,
+            segment=segment,
+        )
+
         document = _services(request).analysis.export_analysis(
             context,
             ExportAnalysis(
                 channel_id=channel_id,
-                filters=AnalysisFilterInput(never_commented=never_commented),
+                filters=filters.domain_input(),
             ),
         )
         return Response(
@@ -698,4 +1225,255 @@ def _register_routes(app: FastAPI) -> None:
             headers={
                 "Content-Disposition": f'attachment; filename="{document.filename}"'
             },
+        )
+
+    @app.get("/compare", response_class=HTMLResponse)
+    def compare(
+        request: Request,
+        channel_id: Annotated[list[str] | None, Query()] = None,
+        never_commented: bool = Query(False),
+        subscribed_within_days: Annotated[OptionalInt, Query()] = None,
+        segment: str | None = Query(None),
+    ) -> Response:
+        session = _require_session(request)
+        context = _context(request, session, Permission.ANALYSIS_READ)
+        services = _services(request)
+        connections = services.connections.list_connections(context).items
+        selected = tuple(channel_id or ())
+        filters = _AnalysisFilters(
+            never_commented=never_commented,
+            subscribed_within_days=subscribed_within_days,
+            segment=segment,
+        )
+        result = None
+        if selected:
+            if not 2 <= len(selected) <= 5:
+                raise AppError("INVALID_INPUT")
+            compared = services.analysis.compare_channels(
+                context,
+                CompareChannels(
+                    channel_ids=selected,
+                    filters=filters.domain_input(),
+                ),
+            )
+            titles = {
+                item.provider_channel_id: item.channel_title for item in connections
+            }
+            result = {
+                "reference_time": _display_datetime(compared.reference_time)[1],
+                "entries": [
+                    {
+                        "channel": titles.get(entry.channel_id, entry.channel_id),
+                        "ready": entry.summary is not None,
+                        "scope_count": (
+                            entry.summary.scope_count if entry.summary else None
+                        ),
+                        "filtered_count": (
+                            entry.summary.filtered_count if entry.summary else None
+                        ),
+                        "silent_count": (
+                            entry.summary.filtered_silent_count
+                            if entry.summary
+                            else None
+                        ),
+                        "status": (
+                            "分析可能"
+                            if entry.summary
+                            else READINESS_TEXT.get(
+                                entry.not_ready_reason or "", "分析データが未準備です。"
+                            )
+                        ),
+                    }
+                    for entry in compared.entries
+                ],
+            }
+        return _render(
+            request,
+            "compare.html",
+            {
+                "session": session,
+                "connections": [
+                    {
+                        "channel_id": item.provider_channel_id,
+                        "title": item.channel_title,
+                    }
+                    for item in connections
+                ],
+                "selected": frozenset(selected),
+                "filters": filters,
+                "segment_options": list(SEGMENT_LABELS.items()),
+                "comparison": result,
+            },
+        )
+
+    @app.post("/views")
+    def save_view(
+        request: Request,
+        name: str = Form(...),
+        channel_id: str = Form(...),
+        never_commented: bool = Form(False),
+        subscribed_within_days: Annotated[OptionalInt, Form()] = None,
+        segment: str | None = Form(None),
+        csrf_token: str = Form(""),
+    ) -> Response:
+        _check_csrf(request, csrf_token)
+        session = _require_session(request)
+        context = _context(request, session, Permission.ANALYSIS_READ)
+        filters = _AnalysisFilters(
+            never_commented=never_commented,
+            subscribed_within_days=subscribed_within_days,
+            segment=segment,
+        ).domain_input()
+        _services(request).analysis.save_view(
+            context,
+            SaveView(
+                name=name,
+                channel_id=channel_id,
+                filters=filters,
+                idempotency_key=secrets.token_urlsafe(16),
+            ),
+        )
+        return RedirectResponse(
+            f"{_analysis_url(channel_id, filters)}&msg=view_saved", status_code=303
+        )
+
+    @app.post("/views/{view_id}/delete")
+    def delete_view(
+        request: Request, view_id: str, csrf_token: str = Form("")
+    ) -> Response:
+        _check_csrf(request, csrf_token)
+        session = _require_session(request)
+        context = _context(request, session, Permission.ANALYSIS_READ)
+        service = _services(request).analysis
+        view = service.get_view(context, view_id)
+        service.delete_view(
+            context,
+            DeleteView(
+                view_id=view_id,
+                idempotency_key=secrets.token_urlsafe(16),
+            ),
+        )
+        return RedirectResponse(
+            f"/analysis?{urlencode({'channel_id': view.channel_id, 'msg': 'view_deleted'})}",
+            status_code=303,
+        )
+
+    @app.get("/members", response_class=HTMLResponse)
+    def members(request: Request, cursor: str | None = Query(None)) -> Response:
+        session = _require_session(request)
+        context = _context(request, session, Permission.MEMBERSHIP_LIST)
+        page = _services(request).access.list_memberships(
+            context,
+            MembershipPageRequest(cursor=cursor, limit=50),
+        )
+        return _render(
+            request,
+            "members.html",
+            {
+                "session": session,
+                "current_user_id": context.user_id,
+                "can_manage": Permission.MEMBERSHIP_MANAGE in context.permissions,
+                "members": [
+                    {
+                        "membership_id": item.membership_id,
+                        "user_id": item.user_id,
+                        "role": item.role.value.lower(),
+                        "role_label": "管理者" if item.role is Role.OWNER else "メンバー",
+                        "created_at": _display_datetime(item.created_at)[1],
+                    }
+                    for item in page.items
+                ],
+                "next_url": (
+                    None
+                    if page.next_cursor is None
+                    else f"/members?{urlencode({'cursor': page.next_cursor})}"
+                ),
+            },
+        )
+
+    @app.post("/members")
+    def add_member(
+        request: Request,
+        user_id: str = Form(...),
+        role: str = Form(...),
+        csrf_token: str = Form(""),
+    ) -> Response:
+        _check_csrf(request, csrf_token)
+        session = _require_session(request)
+        context = _context(request, session, Permission.MEMBERSHIP_MANAGE)
+        selected_role = {"owner": Role.OWNER, "member": Role.MEMBER}.get(role)
+        if selected_role is None:
+            raise AppError("INVALID_INPUT")
+        _services(request).access.grant_membership(
+            context,
+            GrantMembership(
+                user_id=user_id.strip(),
+                role=selected_role,
+                idempotency_key=secrets.token_urlsafe(16),
+            ),
+        )
+        return _redirect("/members", "member_added")
+
+    @app.post("/members/{membership_id}/role")
+    def change_member_role(
+        request: Request,
+        membership_id: str,
+        role: str = Form(...),
+        csrf_token: str = Form(""),
+    ) -> Response:
+        _check_csrf(request, csrf_token)
+        session = _require_session(request)
+        context = _context(request, session, Permission.MEMBERSHIP_MANAGE)
+        selected_role = {"owner": Role.OWNER, "member": Role.MEMBER}.get(role)
+        if selected_role is None:
+            raise AppError("INVALID_INPUT")
+        _services(request).access.change_membership_role(
+            context,
+            ChangeMembershipRole(
+                membership_id=membership_id,
+                role=selected_role,
+                idempotency_key=secrets.token_urlsafe(16),
+            ),
+        )
+        return _redirect("/members", "member_role_changed")
+
+    @app.post("/members/{membership_id}/delete")
+    def remove_member(
+        request: Request, membership_id: str, csrf_token: str = Form("")
+    ) -> Response:
+        _check_csrf(request, csrf_token)
+        session = _require_session(request)
+        context = _context(request, session, Permission.MEMBERSHIP_MANAGE)
+        _services(request).access.revoke_membership(
+            context,
+            RevokeMembership(
+                membership_id=membership_id,
+                idempotency_key=secrets.token_urlsafe(16),
+            ),
+        )
+        if membership_id == context.membership_id:
+            response = _redirect("/")
+            response.delete_cookie(WORKSPACE_COOKIE, path="/")
+            return response
+        return _redirect("/members", "member_removed")
+    @app.get("/audience-network", response_class=HTMLResponse)
+    def audience_network(request: Request) -> Response:
+        session = _require_session(request)
+        _context(request, session, Permission.ANALYSIS_READ)
+        return _render(
+            request,
+            "audience_network.html",
+            {"session": session, "report": AUDIENCE_REPORT},
+        )
+
+    @app.get("/audience-network/report.xlsx")
+    def audience_network_workbook(request: Request) -> Response:
+        session = _require_session(request)
+        _context(request, session, Permission.ANALYSIS_READ)
+        return FileResponse(
+            AUDIENCE_REPORT_WORKBOOK,
+            media_type=(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            ),
+            filename="audience-network-analysis.xlsx",
         )

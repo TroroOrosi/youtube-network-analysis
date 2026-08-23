@@ -10,12 +10,14 @@ an owner-authorized connection.
 from __future__ import annotations
 
 import json
+import logging
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import TypeVar
+from threading import RLock
+from typing import Protocol, TypeVar
 from urllib.parse import urlencode
 
 from channel_connections.errors import ChannelConnectionsError
@@ -37,6 +39,18 @@ from channel_connections.ports import (
     ProviderUnavailable,
 )
 from channel_connections.models import AuthorizationFailureReason as Reason
+
+
+_LOG = logging.getLogger(__name__)
+
+
+class StateStore(Protocol):
+    """Where the sealed credential document rests between two processes."""
+
+    def load(self) -> str | None: ...
+
+    def save(self, document: str) -> None: ...
+
 
 
 AUTHORIZATION_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth"
@@ -80,26 +94,155 @@ class GoogleCredentialStore:
 
     It satisfies the write-only `CredentialVault` port; the read side is
     internal so no service or route can reach credential material through it.
+
+    Given a `state_store` it also outlives the process. Only the refresh token
+    is written: an access token is good for an hour and can be asked for again,
+    so keeping it would multiply writes by every refresh and put a second live
+    secret at rest for no gain. A restored slot therefore comes back already
+    expired, and the first call refreshes it — which is the path that runs
+    hourly anyway.
+
+    What is written is the token itself, so the store handed in must be the
+    vault and nothing else: `web_ui.container` gives it the Secret Manager
+    store, never a module store. Without a store nothing is written at all, and
+    a deployment that persists modules without a vault is refused at startup
+    rather than left quietly dropping every credential.
+
+    The lock covers the slots and the write together. Two owners finishing an
+    authorization at the same moment run in different request threads, and the
+    vault behind this is a store where a save adds a version and destroys the
+    ones it replaced: interleaved, each save would destroy the other's version
+    and the surviving document could be the older one, silently missing a
+    connection nobody will be asked to make again.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        state_store: StateStore | None = None,
+        now: Callable[[], datetime] = lambda: datetime.now(UTC),
+    ) -> None:
         self._slots: dict[tuple[str, str], ProviderCredential] = {}
+        self._state_store = state_store
+        self._now = now
+        self._lock = RLock()
+        self._restore()
 
     def put(
         self, workspace_id: str, slot_id: str, credential: ProviderCredential
     ) -> None:
-        self._slots[(workspace_id, slot_id)] = credential
+        with self._lock:
+            previous = self._slots.get((workspace_id, slot_id))
+            self._slots[(workspace_id, slot_id)] = credential
+            if _refresh_material(previous) != _refresh_material(credential):
+                self._persist()
 
     def delete(self, workspace_id: str, slot_id: str) -> None:
-        self._slots.pop((workspace_id, slot_id), None)
+        with self._lock:
+            if self._slots.pop((workspace_id, slot_id), None) is not None:
+                self._persist()
 
     def slot_ids(self, workspace_id: str) -> tuple[str, ...]:
-        return tuple(
-            slot_id for stored, slot_id in self._slots if stored == workspace_id
-        )
+        with self._lock:
+            return tuple(
+                slot_id for stored, slot_id in self._slots if stored == workspace_id
+            )
 
     def _read(self, workspace_id: str, slot_id: str) -> ProviderCredential | None:
-        return self._slots.get((workspace_id, slot_id))
+        with self._lock:
+            return self._slots.get((workspace_id, slot_id))
+
+    def _persist(self) -> None:
+        if self._state_store is None:
+            return
+        kept = {
+            f"{workspace_id}\x1f{slot_id}": {
+                "refresh_token": credential.refresh_token.reveal(),
+                "scopes": list(credential.scopes),
+            }
+            for (workspace_id, slot_id), credential in self._slots.items()
+            if credential.refresh_token is not None
+        }
+        self._state_store.save(json.dumps(kept))
+
+    def _restore(self) -> None:
+        """Read the slots back, or refuse to start.
+
+        A document this code cannot open is not the same as no document. Coming
+        up empty would tell every owner their channel is unlinked and invite
+        them to authorize again, when the credential is still sitting there
+        unread — so the start fails instead and a person looks at it.
+        """
+
+        if self._state_store is None:
+            return
+        document = self._state_store.load()
+        if document is None:
+            return
+        kept = json.loads(document)
+        expired = self._now() - timedelta(seconds=1)
+        for key, entry in kept.items():
+            workspace_id, _, slot_id = key.partition("\x1f")
+            self._slots[(workspace_id, slot_id)] = ProviderCredential(
+                access_token=RedactedSecret("restored-and-already-expired"),
+                refresh_token=RedactedSecret(entry["refresh_token"]),
+                expires_at=expired,
+                scopes=tuple(entry["scopes"]),
+            )
+
+
+def _refresh_material(credential: ProviderCredential | None) -> tuple[object, ...]:
+    """What a slot would be written as, so an unchanged one is not rewritten.
+
+    Google returns the same refresh token on most refreshes, and a refresh
+    happens every hour per connection. Comparing first turns that hourly write
+    into no write at all until the grant actually changes.
+    """
+
+    if credential is None or credential.refresh_token is None:
+        return ()
+    return (credential.refresh_token.reveal(), credential.scopes)
+
+
+GRANT_FAILURE_REASONS = frozenset({"authError", "insufficientPermissions"})
+
+
+def _is_grant_failure(status: int, body: bytes) -> bool:
+    """Whether a refusal means the grant itself is gone.
+
+    401 always does. 403 usually does not: YouTube answers 403 for
+    `commentsDisabled`, `quotaExceeded` and other refusals about the resource,
+    with a grant that is perfectly good. Treating those as an expired grant used
+    to delete the stored credential and ask the owner to authorize again, which
+    could not help — the next run met the same 403 and deleted the new
+    credential too. One video with its comments switched off was enough to put a
+    channel in that loop for good. So a 403 counts only when Google names a
+    reason about authorization.
+    """
+
+    if status == 401:
+        return True
+    return status == 403 and bool(
+        GRANT_FAILURE_REASONS.intersection(_error_reasons(body))
+    )
+
+
+def _error_reasons(body: bytes) -> tuple[str, ...]:
+    """Google's `reason` keywords for a refusal, and nothing else from the body.
+
+    A body that cannot be read yields nothing rather than raising: this runs on
+    the failure path and must not replace one fault with another.
+    """
+
+    try:
+        errors = json.loads(body)["error"]["errors"]
+        return tuple(
+            str(entry["reason"])
+            for entry in errors
+            if isinstance(entry, Mapping) and "reason" in entry
+        )
+    except (ValueError, TypeError, KeyError, UnicodeDecodeError):
+        return ()
 
 
 def _rejected(reason: Reason) -> ProviderRejected:
@@ -107,11 +250,22 @@ def _rejected(reason: Reason) -> ProviderRejected:
 
 
 def _decode(status: int, body: bytes) -> dict[str, object]:
-    """Read a provider JSON body, mapping every failure to a safe reason."""
+    """Read a provider JSON body, mapping every failure to a safe reason.
+
+    Every 4xx becomes one reason on purpose, so the owner is never shown what
+    Google said. That collapse is also why an operator could not tell a revoked
+    grant from a disabled comment section from a bad parameter: one message, one
+    state, three different things to do about it. The log below keeps the two
+    fields that distinguish them and no others — the status, and Google's own
+    machine-readable `reason` keywords. Neither is user data or a credential.
+    """
 
     if status >= 500:
         raise ProviderUnavailable("provider returned a server error")
     if status >= 400:
+        _LOG.warning(
+            "provider refused with HTTP %s: %s", status, _error_reasons(body)
+        )
         raise _rejected(Reason.PROVIDER_DENIED)
     try:
         payload = json.loads(body)
@@ -214,7 +368,11 @@ class GoogleAuthorizationGateway(_GoogleClient):
                 "code_challenge_method": "S256",
                 "access_type": "offline",
                 "include_granted_scopes": "false",
-                "prompt": "consent",
+                # A signed-in operator may manage more than one Google account.
+                # Reauthorization must make that choice explicit; silently
+                # reusing the login account can grant the wrong channel and
+                # leave collection asking for reauthorization again.
+                "prompt": "consent select_account",
             }
         )
         return f"{AUTHORIZATION_ENDPOINT}?{query}"
@@ -345,9 +503,11 @@ class GoogleDataGateway(_GoogleClient):
         *,
         transport: Transport = http_transport,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
+        api_key: str | None = None,
     ) -> None:
         super().__init__(config, store, transport=transport, now=now)
         self._uploads_playlists: dict[tuple[str, str], str] = {}
+        self._api_key = api_key
 
     def list_subscribers(
         self,
@@ -435,9 +595,7 @@ class GoogleDataGateway(_GoogleClient):
         page_token: str | None,
         max_results: int,
     ) -> ProviderPage:
-        payload = self._list(
-            workspace_id,
-            credential_slot_id,
+        payload = self._list_public(
             "commentThreads",
             {
                 "part": "snippet",
@@ -489,6 +647,33 @@ class GoogleDataGateway(_GoogleClient):
         related = _mapping(_mapping(items[0], "contentDetails"), "relatedPlaylists")
         return _text(related, "uploads")
 
+    def _list_public(
+        self, path: str, params: dict[str, str], page_token: str | None
+    ) -> Mapping[str, object]:
+        """Read public data with an API key rather than the owner's grant.
+
+        Comments are public — anyone with the video's address can read them —
+        but `commentThreads.list` refuses `youtube.readonly` and wants
+        `youtube.force-ssl`, which also deletes comments and manages the
+        account. Asking an owner to hand a read-only analysis tool that, to read
+        what any visitor can read, is not a trade this product makes. The key
+        reads it instead.
+
+        No credential is in play here, so a refusal on this path can never be
+        read as an expired grant, and a channel whose comments are unavailable
+        cannot cost the owner their connection.
+        """
+
+        if self._api_key is None:
+            raise ProviderUnavailable("no api key is configured for public reads")
+        query = {**params, "key": self._api_key}
+        if page_token is not None:
+            query["pageToken"] = page_token
+        status, body = self._transport(
+            "GET", f"{API_ROOT}/{path}?{urlencode(query)}", headers={}, body=None
+        )
+        return _decode(status, body)
+
     def _list(
         self,
         workspace_id: str,
@@ -502,7 +687,8 @@ class GoogleDataGateway(_GoogleClient):
         status, body = self._get_api(
             path, params, self._access_token(workspace_id, credential_slot_id)
         )
-        if status in (401, 403):
+        if _is_grant_failure(status, body):
+            _LOG.warning("grant rejected with HTTP %s: %s", status, _error_reasons(body))
             raise ProviderAuthorizationExpired("the grant no longer permits this call")
         return _decode(status, body)
 

@@ -14,6 +14,7 @@ from .models import (
     BeginReauthorization,
     ChannelConnection,
     CompleteAuthorization,
+    CollectionTarget,
     ConnectionAuditEvent,
     ConnectionPage,
     ConnectionPageRequest,
@@ -93,6 +94,14 @@ class ConnectionExecutionBroker(Protocol):
     def run_provider_operation(
         self, authority: ExecutionAuthority, request: ProviderOperationRequest
     ) -> ProviderOperationResult: ...
+
+
+class CollectionTargetResolver(Protocol):
+    """Resolve only the secret-free identity needed to create a run."""
+
+    def resolve_collection_target(
+        self, context: WorkspaceContext, connection_id: str
+    ) -> CollectionTarget: ...
 
 
 class ConnectionPrivacyAdministrator(Protocol):

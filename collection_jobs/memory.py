@@ -29,6 +29,33 @@ class CursorRecord:
     created_at: datetime
 
 
+@dataclass(frozen=True, slots=True)
+class ResumePoint:
+    """Where an owner-content run stopped, so the next slice continues it.
+
+    Only the comment phase is resumable, and only because `channel-data`
+    already accepts coverage one video at a time: the candidate collection
+    named here stays open between slices and accumulates. The videos still to
+    cover are listed rather than looked up, because the accepted inventory has
+    no public listing and the identifiers are small; the rows already gathered
+    are not here at all, and never can be — they live in the candidate.
+    """
+
+    workspace_id: str
+    run_id: str
+    inventory_id: str
+    collection_id: str
+    covered: int
+    pending_video_ids: tuple[str, ...]
+    pages_fetched: int
+    quota_spent: int
+    saved_at: datetime
+    # Days that bought nothing: a run that wakes, cannot afford its next video
+    # and sleeps again has not moved, and counting that is the only way to tell
+    # a long collection apart from one the daily budget can never cover.
+    stalled: int = 0
+
+
 @dataclass(slots=True)
 class QuotaLedgerEntry:
     used_units: int
@@ -45,3 +72,4 @@ class MemoryState:
     )
     cursors: dict[str, CursorRecord] = field(default_factory=dict)
     revisions: dict[str, int] = field(default_factory=dict)
+    resume: dict[str, ResumePoint] = field(default_factory=dict)

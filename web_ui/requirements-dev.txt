@@ -1,0 +1,4 @@
+-r requirements.txt
+
+# Starlette TestClient integration only; not installed in the runtime image.
+httpx2==2.12.0

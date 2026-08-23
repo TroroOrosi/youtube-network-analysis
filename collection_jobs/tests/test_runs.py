@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest import mock
 
 from channel_data.models import CollectionKind, CollectionStatus
 from collection_jobs.errors import CollectionJobsError
@@ -32,6 +33,28 @@ class RunFixture(unittest.TestCase):
         return self.stack.jobs.execute_run(
             self.owner, ExecuteRun(run_id=run_id, idempotency_key=key)
         )
+
+
+class UnexpectedFailureTests(RunFixture):
+    def test_a_raising_provider_leaves_a_record_for_the_operator(self) -> None:
+        """The owner's message is deliberately vague; the log must not be.
+
+        Without this the handler returned UNEXPECTED_FAILURE and wrote nothing,
+        so a fault in the provider path was indistinguishable from a bug here
+        and neither could be found afterwards.
+        """
+
+        run = self.enqueue()
+        with mock.patch.object(
+            self.stack.jobs._broker,
+            "run_provider_operation",
+            side_effect=RuntimeError("provider exploded"),
+        ):
+            with self.assertLogs("collection_jobs.service", level="ERROR") as logged:
+                self.execute(run.run_id)
+        self.assertIn("provider operation", logged.output[0])
+        self.assertIn("RuntimeError", logged.output[0])
+        self.assertNotIn("provider exploded", logged.records[0].getMessage())
 
 
 class EnqueueTests(RunFixture):

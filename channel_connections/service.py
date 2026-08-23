@@ -43,6 +43,7 @@ from .models import (
     CALLBACK_REPLAY_TTL,
     ChannelConnection,
     CompleteAuthorization,
+    CollectionTarget,
     ConnectionAuditAction,
     ConnectionPage,
     ConnectionPageRequest,
@@ -73,7 +74,6 @@ from .ports import (
     EphemeralSecretStore,
     ProviderAuthorizationExpired,
     ProviderRejected,
-    ProviderUnavailable,
     StateStore,
     TokenGenerator,
     YouTubeAuthorizationGateway,
@@ -247,6 +247,13 @@ class ChannelConnectionsService:
 
         ponytail: the document is rewritten in full on every command; move to
         per-connection rows when a deployment keeps more than a few thousand.
+
+        A write that fails takes its change with it. Without that, memory holds
+        a connection the document has never heard of, the caller is told the
+        write failed, and the next restart quietly reinstates the older truth —
+        the one shape of data loss nobody goes looking for. Putting the state
+        back to what the store still holds keeps the two readings of the world
+        the same, and the error is raised so the caller knows nothing was kept.
         """
 
         if self._state_store is None:
@@ -254,7 +261,15 @@ class ChannelConnectionsService:
         document = snapshot.dump(self._state)
         if document == self._document:
             return
-        self._state_store.save(document)
+        try:
+            self._state_store.save(document)
+        except Exception:
+            self._state = (
+                snapshot.load(self._document)
+                if self._document is not None
+                else MemoryState()
+            )
+            raise
         self._document = document
 
     # Authorization
@@ -715,6 +730,19 @@ class ChannelConnectionsService:
         _require(context, Permission.CHANNEL_READ)
         with self._lock:
             return self._connection(context.workspace_id, connection_id)
+
+    def resolve_collection_target(
+        self, context: WorkspaceContext, connection_id: str
+    ) -> CollectionTarget:
+        """Resolve a run target without exposing general connection metadata."""
+
+        _require(context, Permission.COLLECTION_RUN)
+        with self._lock:
+            connection = self._connection(context.workspace_id, connection_id)
+            return CollectionTarget(
+                connection_id=connection.connection_id,
+                provider_channel_id=connection.provider_channel_id,
+            )
 
     def list_connections(
         self,
