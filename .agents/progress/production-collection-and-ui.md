@@ -17,7 +17,7 @@ Branch: `feature/multi-channel-analytics`
 
 Review baseline: `4c66120`
 
-Deployed code commit: `cd2b7c190b4a029371cd9fe7421d8268683aa147`
+Deployed code commit: `896e2d6`
 
 Remote target: `origin/feature/multi-channel-analytics`
 
@@ -56,6 +56,16 @@ Remote target: `origin/feature/multi-channel-analytics`
   or collect the channel.
 - Repeated workspace selection and creation forms share one template include,
   preserving CSRF, labels, required state, current selection, and input limits.
+- The authenticated hosted UI now publishes the aggregate-only audience
+  network report and a matching nine-sheet Excel workbook. All seven analysis
+  families are labelled as anonymized demo/research data with retrieval date.
+- Generated JSON and XLSX are validated together at startup; missing,
+  malformed, or schema-drifted artifacts fail closed. Formula-leading Excel
+  text is inert, empty analysis families render clear states, and no raw IDs,
+  edges, credentials, tokens, or local paths are published.
+- The ordinary per-channel analysis page no longer repeats the provider's raw
+  channel ID as visible UI. Hidden IDs required for filters, views, and exports
+  remain unchanged.
 
 ## Review and verification
 
@@ -83,6 +93,16 @@ Remote target: `origin/feature/multi-channel-analytics`
 - The runtime image runs as `nobody`; persisted state directory mode is
   `0700` and all five local state document files are `0600`.
 - The staged review fix contained no high-risk secret values.
+- Audience-report closure reviews reported zero unresolved Spec or Standards
+  findings. The final full suite passed with 622 tests, one expected Windows
+  POSIX skip, and 132 subtests.
+- The audience workbook has nine sheets, three populated charts, no formulas
+  or formula errors, deterministic content, and the same headline metrics as
+  the Web report. Its SHA-256 is
+  `FEFCC9D3D8D2234B7CC80BA533C75D2725D58F9DDC2243822B58B6CB3597D267`.
+- The final Docker image starts as `nobody`; aggregate JSON/XLSX startup
+  validation passes, and a Linux state directory/file check confirmed `0700`
+  and `0600` modes. Both dependency audits found no known vulnerabilities.
 
 ## Production deployment
 
@@ -110,22 +130,47 @@ Remote target: `origin/feature/multi-channel-analytics`
 
 ## Rollback
 
-The previous known-good revision is `yna-web-00014-g2t`. If the new revision
+The previous known-good revision is `yna-web-00019-rok`. If the new revision
 shows a data-integrity issue, new application error, or material latency
 regression, route traffic back with:
 
 ```powershell
 gcloud run services update-traffic yna-web --region asia-northeast1 `
-  --to-revisions yna-web-00014-g2t=100
+  --to-revisions yna-web-00019-rok=100
 ```
 
 No database migration or destructive state transformation was part of this
 release, so rollback requires only a traffic change.
 
+## Audience-network production publication
+
+- GitHub commits: `302dc96` (report UI/XLSX), `a5fd2ad` (artifact and Excel
+  hardening), `3da29d7` (Cloud Build allowlist), and `896e2d6` (remove the
+  redundant visible provider ID).
+- Cloud Run revision `yna-web-00021-mil` is Ready and receives 100% of traffic.
+  It was deployed with zero traffic first, checked through the tagged candidate
+  URL, and then promoted.
+- The first candidate correctly failed closed because `.gcloudignore` excluded
+  all XLSX files. The boundary now still excludes every CSV and generic XLSX,
+  while allowlisting only
+  `web_ui/assets/audience-network-analysis.xlsx`.
+- Authenticated production browser verification on
+  `https://yna-web-893183842893.asia-northeast1.run.app` confirmed the signed-in
+  account's completed 15:48 JST collection history, the zero-public-subscriber
+  live analysis, all seven demo analysis sections, retrieval date 2026-06-22,
+  six headline metrics, responsive 320/768/1440 layouts, and a successful Excel
+  download.
+- Final revision access logs show HTTP 200 for `/audience-network` and
+  `/audience-network/report.xlsx`; the ERROR and HTTP 5xx queries returned no
+  entries.
+- Immediate rollback target: `yna-web-00019-rok`, which was the previously
+  verified audience-report revision. Conservative pre-feature rollback target:
+  `yna-web-cd2b7c1`; it remains Ready.
+
 ## Current state
 
-- Production traffic: 100% `yna-web-cd2b7c1`.
-- Deployed code is saved in GitHub at `cd2b7c1`.
+- Production traffic: 100% `yna-web-00021-mil`.
+- Deployed code is saved in GitHub at `896e2d6`.
 - No known blocker remains.
 
 ## Post-rollout authenticated analysis verification
@@ -150,7 +195,7 @@ release, so rollback requires only a traffic change.
   14,694 projected network nodes, 226,516 projected edges, and 50 communities.
   Top co-subscriptions, viewer breadth, category distribution, community size,
   affinity lift, and popularity-versus-affinity calculations all returned
-  non-empty results. These network/community analyses are not currently
-  exposed by the hosted Web UI.
-- Cloud Run still routes 100% to `yna-web-cd2b7c1`; a fresh two-hour query found
-  no ERROR-level entries for the service.
+  non-empty results. These network/community analyses are now published in the
+  authenticated hosted UI as clearly labelled anonymized demo/research data.
+- Cloud Run now routes 100% to `yna-web-00021-mil`; the final revision has no
+  ERROR-level or HTTP 5xx entries.
