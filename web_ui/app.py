@@ -30,6 +30,7 @@ from analysis_api.errors import AnalysisApiError
 from analysis_api.models import (
     AnalysisFilterInput,
     AnalysisPageRequest,
+    CompareChannels,
     ExportAnalysis,
     RunAnalysis,
 )
@@ -1149,6 +1150,7 @@ def _register_routes(app: FastAPI) -> None:
             subscribed_within_days=subscribed_within_days,
             segment=segment,
         )
+
         document = _services(request).analysis.export_analysis(
             context,
             ExportAnalysis(
@@ -1161,5 +1163,84 @@ def _register_routes(app: FastAPI) -> None:
             media_type=document.content_type,
             headers={
                 "Content-Disposition": f'attachment; filename="{document.filename}"'
+            },
+        )
+
+    @app.get("/compare", response_class=HTMLResponse)
+    def compare(
+        request: Request,
+        channel_id: Annotated[list[str] | None, Query()] = None,
+        never_commented: bool = Query(False),
+        subscribed_within_days: Annotated[OptionalInt, Query()] = None,
+        segment: str | None = Query(None),
+    ) -> Response:
+        session = _require_session(request)
+        context = _context(request, session, Permission.ANALYSIS_READ)
+        services = _services(request)
+        connections = services.connections.list_connections(context).items
+        selected = tuple(channel_id or ())
+        filters = _AnalysisFilters(
+            never_commented=never_commented,
+            subscribed_within_days=subscribed_within_days,
+            segment=segment,
+        )
+        result = None
+        if selected:
+            if not 2 <= len(selected) <= 5:
+                raise AppError("INVALID_INPUT")
+            compared = services.analysis.compare_channels(
+                context,
+                CompareChannels(
+                    channel_ids=selected,
+                    filters=filters.domain_input(),
+                ),
+            )
+            titles = {
+                item.provider_channel_id: item.channel_title for item in connections
+            }
+            result = {
+                "reference_time": _display_datetime(compared.reference_time)[1],
+                "entries": [
+                    {
+                        "channel": titles.get(entry.channel_id, entry.channel_id),
+                        "ready": entry.summary is not None,
+                        "scope_count": (
+                            entry.summary.scope_count if entry.summary else None
+                        ),
+                        "filtered_count": (
+                            entry.summary.filtered_count if entry.summary else None
+                        ),
+                        "silent_count": (
+                            entry.summary.filtered_silent_count
+                            if entry.summary
+                            else None
+                        ),
+                        "status": (
+                            "分析可能"
+                            if entry.summary
+                            else READINESS_TEXT.get(
+                                entry.not_ready_reason or "", "分析データが未準備です。"
+                            )
+                        ),
+                    }
+                    for entry in compared.entries
+                ],
+            }
+        return _render(
+            request,
+            "compare.html",
+            {
+                "session": session,
+                "connections": [
+                    {
+                        "channel_id": item.provider_channel_id,
+                        "title": item.channel_title,
+                    }
+                    for item in connections
+                ],
+                "selected": frozenset(selected),
+                "filters": filters,
+                "segment_options": list(SEGMENT_LABELS.items()),
+                "comparison": result,
             },
         )

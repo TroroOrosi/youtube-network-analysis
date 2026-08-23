@@ -646,6 +646,27 @@ class GuidedFlowTests(WebFixture):
         self.assertIn("定期収集を解除しました", dashboard)
         self.assertNotIn("24時間ごと", dashboard)
 
+    def test_connected_channels_can_be_compared_with_one_filter_set(self) -> None:
+        self.login()
+        self.create_workspace()
+        self.connect_channel()
+        dashboard = self.client.get("/").text
+        connection_id = dashboard.split("/connections/")[1].split("/collect")[0]
+        self.collect_now(connection_id)
+
+        comparison = self.client.get(
+            "/compare?channel_id=UC_demo_channel&channel_id=UC_not_ready"
+            "&never_commented=true"
+        )
+
+        self.assertEqual(comparison.status_code, 200)
+        self.assertIn("チャンネル比較", comparison.text)
+        self.assertIn("デモチャンネル", comparison.text)
+        self.assertIn("UC_not_ready", comparison.text)
+        self.assertIn("未収集", comparison.text)
+        self.assertIn("コメントしたことがない人だけ", comparison.text)
+        self.assertIn('href="/compare"', self.client.get("/").text)
+
 
 class CollectionDriverTests(WebFixture):
     """The browser as the driver: many short calls, one collection."""
