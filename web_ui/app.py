@@ -85,6 +85,13 @@ RUN_PAGE_CAP = 20
 RUN_PAGE_SIZE = 100
 RATE_WINDOW = timedelta(minutes=1)
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+<rect width="64" height="64" rx="14" fill="#0b5cab"/>
+<path d="M17 42 29 30l8 7 11-15" fill="none" stroke="#fff" stroke-width="6"
+ stroke-linecap="round" stroke-linejoin="round"/>
+<circle cx="17" cy="42" r="4" fill="#fff"/><circle cx="29" cy="30" r="4" fill="#fff"/>
+<circle cx="37" cy="37" r="4" fill="#fff"/><circle cx="48" cy="22" r="4" fill="#fff"/>
+</svg>"""
 
 MESSAGES = {
     "connected": "チャンネルを接続しました。",
@@ -905,6 +912,10 @@ def _register_routes(app: FastAPI) -> None:
             "document.getElementById('collection-step')?.requestSubmit();\n",
             media_type="application/javascript",
         )
+
+    @app.get("/assets/favicon.svg", include_in_schema=False)
+    def favicon() -> Response:
+        return Response(FAVICON_SVG, media_type="image/svg+xml")
 
     @app.post("/internal/drain")
     def drain(request: Request) -> Response:

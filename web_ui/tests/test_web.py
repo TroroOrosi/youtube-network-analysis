@@ -129,6 +129,21 @@ class WebFixture(unittest.TestCase):
 
 
 class AuthenticationTests(WebFixture):
+    def test_pages_declare_a_self_hosted_favicon(self) -> None:
+        response = self.client.get("/login")
+
+        self.assertIn(
+            '<link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">',
+            response.text,
+        )
+
+    def test_the_favicon_asset_is_available(self) -> None:
+        response = self.client.get("/assets/favicon.svg")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["content-type"], "image/svg+xml")
+        self.assertIn("<svg", response.text)
+
     def test_the_home_page_requires_a_session(self) -> None:
         response = self.client.get("/")
 
