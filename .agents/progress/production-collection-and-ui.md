@@ -127,3 +127,30 @@ release, so rollback requires only a traffic change.
 - Production traffic: 100% `yna-web-cd2b7c1`.
 - Deployed code is saved in GitHub at `cd2b7c1`.
 - No known blocker remains.
+
+## Post-rollout authenticated analysis verification
+
+- A further authenticated collection completed on 2026-08-23 at 15:48 JST:
+  videos/comments completed with provider usage 2, and subscribers completed
+  with provider usage 1. The production dashboard shows the execution date,
+  channel, result, detail, and usage columns.
+- The connected production channel has zero publicly visible subscribers, so
+  its analysis scope, filtered result, silent total, and all four segment
+  totals are correctly zero. The page explicitly explains that private
+  subscriptions cannot be obtained from YouTube.
+- The production comparison page lists the one connected channel, explains
+  that at least two collected channels are required, and disables comparison.
+- Demo-backed hosted analysis verification passed independently:
+  - Web analysis flow: 9 passed (collection-to-analysis, empty/pre-collection
+    guidance, filters, pagination, CSV, saved conditions, and comparison).
+  - Analysis API: 20 passed.
+  - Analytics core: 14 passed and 12 subtests passed.
+- The repository's offline audience-network data also recomputed successfully:
+  808 viewers, 106,568 subscribed channels, 235,024 viewer-channel edges,
+  14,694 projected network nodes, 226,516 projected edges, and 50 communities.
+  Top co-subscriptions, viewer breadth, category distribution, community size,
+  affinity lift, and popularity-versus-affinity calculations all returned
+  non-empty results. These network/community analyses are not currently
+  exposed by the hosted Web UI.
+- Cloud Run still routes 100% to `yna-web-cd2b7c1`; a fresh two-hour query found
+  no ERROR-level entries for the service.
