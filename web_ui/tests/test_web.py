@@ -344,6 +344,10 @@ class GuidedFlowTests(WebFixture):
         analysis = self.client.get("/analysis?channel_id=UC_demo_channel")
         self.assertEqual(analysis.status_code, 200)
         self.assertIn("分析結果", analysis.text)
+        self.assertNotIn(
+            '<p class="limits">対象チャンネル:',
+            analysis.text,
+        )
         self.assertIn("セグメント分布", analysis.text)
         self.assertIn("<meter", analysis.text)
         for label in ("新規サイレント", "長期サイレント", "休眠", "アクティブ"):
