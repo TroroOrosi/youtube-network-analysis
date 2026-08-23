@@ -368,7 +368,11 @@ class GoogleAuthorizationGateway(_GoogleClient):
                 "code_challenge_method": "S256",
                 "access_type": "offline",
                 "include_granted_scopes": "false",
-                "prompt": "consent",
+                # A signed-in operator may manage more than one Google account.
+                # Reauthorization must make that choice explicit; silently
+                # reusing the login account can grant the wrong channel and
+                # leave collection asking for reauthorization again.
+                "prompt": "consent select_account",
             }
         )
         return f"{AUTHORIZATION_ENDPOINT}?{query}"

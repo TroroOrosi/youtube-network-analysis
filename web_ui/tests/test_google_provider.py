@@ -383,6 +383,7 @@ class AuthorizationUrlTests(unittest.TestCase):
         self.assertEqual(query["scope"], [APPROVED_SCOPES[0]])
         self.assertEqual(query["client_id"], [CONFIG.client_id])
         self.assertEqual(query["redirect_uri"], ["https://app.example/oauth/callback"])
+        self.assertEqual(query["prompt"], ["consent select_account"])
 
     def test_an_unknown_redirect_uri_is_refused(self) -> None:
         with self.assertRaises(ProviderUnavailable):

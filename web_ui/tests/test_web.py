@@ -576,6 +576,47 @@ class GuidedFlowTests(WebFixture):
         self.assertIn("利用可能", self.client.get("/").text)
 
 
+    def test_recent_collections_show_when_they_ran(self) -> None:
+        self.login()
+        self.create_workspace()
+        self.connect_channel()
+        connection_id = self.client.get("/").text.split("/connections/")[1].split("/collect")[0]
+        self.collect_now(connection_id)
+
+        dashboard = self.client.get("/").text
+
+        self.assertIn("実行日時", dashboard)
+        self.assertRegex(dashboard, r"20\d{2}/\d{2}/\d{2} \d{2}:\d{2}")
+
+    def test_recent_failed_collections_explain_the_next_action(self) -> None:
+        self.login()
+        self.create_workspace()
+        self.connect_channel()
+        connection_id = self.client.get("/").text.split("/connections/")[1].split("/collect")[0]
+        self.post(f"/connections/{connection_id}/collect")
+        session = self.services.access.authenticate_session(
+            SessionEvidence(AccessSecret(self.client.cookies["yna_session"]))
+        )
+        context = self.services.access.resolve_workspace_context(
+            session,
+            WorkspaceSelection(self.client.cookies["yna_workspace"]),
+            Permission.CHANNEL_MANAGE_CONNECTION,
+        )
+        self.services.connections.report_credential_invalidation(
+            context,
+            ReportCredentialInvalidation(
+                connection_id=connection_id,
+                idempotency_key="invalidate-before-collection",
+            ),
+        )
+        drive_collection(self, self.client)
+
+        dashboard = self.client.get("/").text
+
+        self.assertIn("詳細", dashboard)
+        self.assertIn("再認可が必要", dashboard)
+
+
 class CollectionDriverTests(WebFixture):
     """The browser as the driver: many short calls, one collection."""
 

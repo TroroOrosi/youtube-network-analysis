@@ -74,11 +74,25 @@
 <div class="table-scroll" role="region" aria-labelledby="runs-heading" tabindex="0">
 <table>
   <thead>
-    <tr><th scope="col">種類</th><th scope="col">結果</th><th scope="col">使用量</th></tr>
+    <tr>
+      <th scope="col">実行日時</th>
+      <th scope="col">チャンネル</th>
+      <th scope="col">種類</th>
+      <th scope="col">結果</th>
+      <th scope="col">詳細</th>
+      <th scope="col">使用量</th>
+    </tr>
   </thead>
   <tbody>
   {% for run in runs %}
-    <tr><td>{{ run.kind }}</td><td>{{ run.status }}</td><td>{{ run.quota_spent }}</td></tr>
+    <tr>
+      <td><time datetime="{{ run.timestamp_iso }}">{{ run.timestamp_label }}</time></td>
+      <td>{{ run.channel }}</td>
+      <td>{{ run.kind }}</td>
+      <td>{{ run.status }}</td>
+      <td>{{ run.detail }}</td>
+      <td>{{ run.quota_spent }}</td>
+    </tr>
   {% endfor %}
   </tbody>
 </table>

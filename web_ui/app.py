@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import secrets
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from threading import Lock
 from typing import Annotated, Any
@@ -179,6 +179,21 @@ RUN_STATUS_LABELS = {
     "FAILED": "失敗",
     "CANCELLED": "中止",
 }
+
+RUN_FAILURE_LABELS = {
+    "QUOTA_EXHAUSTED": "本日の取得上限",
+    "PROVIDER_UNAVAILABLE": "YouTubeの一時的なエラー",
+    "REAUTH_REQUIRED": "再認可が必要",
+    "CANCELLED": "利用者が中断",
+    "UNEXPECTED_FAILURE": "予期しないエラー",
+}
+
+JST = timezone(timedelta(hours=9), "JST")
+
+
+def _display_datetime(value: datetime) -> tuple[str, str]:
+    local = value.astimezone(JST)
+    return local.isoformat(), local.strftime("%Y/%m/%d %H:%M")
 
 
 class AppError(Exception):
@@ -653,6 +668,29 @@ def _register_routes(app: FastAPI) -> None:
         context = _context(request, session, Permission.CHANNEL_READ)
         connections = services.connections.list_connections(context)
         runs = services.jobs.list_runs(context)
+        connection_titles = {
+            item.connection_id: item.channel_title for item in connections.items
+        }
+        rendered_runs = []
+        for item in runs.items[:5]:
+            timestamp = item.finished_at or item.started_at or item.enqueued_at
+            timestamp_iso, timestamp_label = _display_datetime(timestamp)
+            failure = item.failure_reason.value if item.failure_reason else None
+            rendered_runs.append(
+                {
+                    "channel": connection_titles.get(
+                        item.connection_id, item.provider_channel_id
+                    ),
+                    "kind": RUN_KIND_LABELS.get(item.kind.value, item.kind.value),
+                    "status": RUN_STATUS_LABELS.get(
+                        item.status.value, item.status.value
+                    ),
+                    "timestamp_iso": timestamp_iso,
+                    "timestamp_label": timestamp_label,
+                    "detail": RUN_FAILURE_LABELS.get(failure, "") if failure else "—",
+                    "quota_spent": item.quota_spent,
+                }
+            )
         return _render(
             request,
             "dashboard.html",
@@ -671,17 +709,7 @@ def _register_routes(app: FastAPI) -> None:
                     }
                     for item in connections.items
                 ],
-                "runs": [
-                    {
-                        "kind": RUN_KIND_LABELS.get(item.kind.value, item.kind.value),
-                        "status": RUN_STATUS_LABELS.get(
-                            item.status.value, item.status.value
-                        ),
-                        "finished_at": item.finished_at,
-                        "quota_spent": item.quota_spent,
-                    }
-                    for item in runs.items[:5]
-                ],
+                "runs": rendered_runs,
             },
         )
 
