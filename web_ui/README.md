@@ -1,5 +1,12 @@
 # web-ui
 
+> **2026-09-16 recovery update:** Read
+> [site availability and large-channel recovery](../docs/operations/2026-09-16-availability-large-channels.md)
+> before deploying or rolling back. Large Firestore snapshots now use bounded
+> generation commits, jobs snapshots migrate from v1 to v2, and legacy RUNNING
+> records fail closed for explicit recovery. The detailed historical deployment
+> record below is not evidence of current production health.
+
 Server-rendered hosted application for non-engineers: connect a channel, collect
 data, read the segments, export a CSV.
 
@@ -180,19 +187,19 @@ documents then live in a `state` collection, each holding the module's text in
 one field. Saved analysis conditions live in `analysis_api` and therefore return
 with the rest of the workspace after a restart.
 
-Firestore caps a document a little under 1 MiB, and `channel_data` is the one
-whose text grows with what was collected, so a module's text is split when it
-passes `MAX_DOCUMENT_BYTES` (900,000). The head document, still named after the
-module, holds the first piece and how many pieces there are; `channel_data~1`,
-`channel_data~2` and so on hold the rest in order, and a read joins them back.
-Every piece is cut on a character boundary and every piece is written in one
-commit, which Firestore applies as a unit, so a save is still all or nothing
-and a document is still text a reader can decode without this code. A module
-that fits in one document is written exactly as it was before, which is what an
-already-deployed database holds and what it keeps being read as.
+Firestore caps each document at 1 MiB and each API request at 10 MiB.
+Module text is cut on UTF-8 character boundaries into pieces of at most
+900,000 bytes. Small states retain the legacy single-commit layout. Larger
+states stage immutable generation chunks using requests of at most 8,000,000
+serialized bytes and 200 writes, then atomically publish a small manifest.
+Readers validate its SHA-256; old chunks are reclaimed after publication.
+A failed staging write leaves the previously published state intact.
 
-What bounds a module is therefore the size of one commit — several megabytes —
-rather than the size of one document.
+New code reads both layouts. **Old binaries cannot read the generation
+manifest or jobs snapshot v2.** Follow the recovery document above for a
+quiesced, single-writer migration, backup, and coordinated rollback. This
+removes the single-request size ceiling, not the whole-state memory,
+serialization cost, or single-writer limitations.
 
 Two processes must not share one directory: each keeps the whole document in
 memory and the last writer wins.

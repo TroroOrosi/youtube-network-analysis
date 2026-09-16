@@ -19,7 +19,10 @@ from typing import Any, Callable
 
 from channel_connections.errors import ChannelConnectionsError
 from channel_connections.models import (
+    CommentAuthorRow,
     ExecutionAuthority,
+    SubscriberRow,
+    VideoRow,
     IssueExecutionAuthority,
     ProviderOperation,
     ProviderOperationRequest,
@@ -49,6 +52,7 @@ from .memory import (
     CursorRecord,
     IdempotencyRecord,
     MemoryState,
+    PageCheckpoint,
     QuotaLedgerEntry,
     ResumePoint,
 )
@@ -82,10 +86,8 @@ _LOG = logging.getLogger(__name__)
 ESTIMATED_CALL_UNITS = 3
 IDEMPOTENCY_TTL = timedelta(days=90)
 RETENTION_TTL = timedelta(days=90)
-# Days a suspended run may wake, cover no video at all and sleep again before
-# it is called finished. A collection larger than the daily budget still makes
-# progress every day; one whose budget cannot buy a single video makes none,
-# and waiting another day will not change that.
+# Days a suspended comment run may wake without buying a single new page.
+# Pages retained within a large video count as progress, even across many days.
 MAX_STALLED_DAYS = 3
 
 # The longest one run may hold this module's lock in a single call. A scheduled
@@ -170,10 +172,32 @@ _COLLECTION_FAILURE = {
 }
 
 
+def _merge_row(rows: dict[str, object], row: object) -> None:
+    """Merge a page into the minimized traversal, never duplicating an author.
+
+    Counts belong to distinct comment pages. For inventory/subscriber overlap,
+    retain the first (newest provider-ordered) observation of each identity.
+    """
+    if isinstance(row, CommentAuthorRow):
+        previous = rows.get(row.author_channel_id)
+        if isinstance(previous, CommentAuthorRow):
+            row = replace(
+                row, comment_count=previous.comment_count + row.comment_count,
+                latest_comment_at=max(previous.latest_comment_at, row.latest_comment_at),
+            )
+        rows[row.author_channel_id] = row
+    elif isinstance(row, SubscriberRow):
+        rows.setdefault(row.subscriber_channel_id, row)
+    elif isinstance(row, VideoRow):
+        rows.setdefault(row.video_id, row)
+    else:
+        raise TypeError("unsupported provider checkpoint row")
+
+
 class TraversalOutcome:
     """Rows gathered before a run stopped, with why it stopped."""
 
-    __slots__ = ("rows", "pages", "quota_spent", "reason")
+    __slots__ = ("rows", "pages", "quota_spent", "reason", "paused", "new_pages", "new_spent")
 
     def __init__(
         self,
@@ -181,7 +205,14 @@ class TraversalOutcome:
         pages: int,
         quota_spent: int,
         reason: RunFailureReason | None,
+        *,
+        paused: bool = False,
+        new_pages: int | None = None,
+        new_spent: int | None = None,
     ) -> None:
+        self.paused = paused
+        self.new_pages = pages if new_pages is None else new_pages
+        self.new_spent = quota_spent if new_spent is None else new_spent
         self.rows = rows
         self.pages = pages
         self.quota_spent = quota_spent
@@ -260,6 +291,19 @@ class CollectionJobsService:
             return None
         state = snapshot.load(document)
         self._document = document
+        # A previous process could persist RUNNING when publication raised.
+        # Its cross-module commit status is uncertain: do not replay it blindly.
+        # Fail closed, preserve accepted data, and let the owner start a new run.
+        for key, run in tuple(state.runs.items()):
+            if run.status is RunStatus.RUNNING:
+                state.runs[key] = replace(
+                    run, status=RunStatus.FAILED, finished_at=self._now(),
+                    failure_reason=RunFailureReason.UNEXPECTED_FAILURE,
+                    next_attempt_at=None,
+                )
+                state.resume.pop(key, None)
+                state.page_checkpoints.pop(key, None)
+                state.revisions[run.workspace_id] = state.revisions.get(run.workspace_id, 0) + 1
         return state
 
     def _flush(self) -> None:
@@ -392,9 +436,24 @@ class CollectionJobsService:
             if slice_seconds is not None
             else None
         )
-        running = replace(run, status=RunStatus.RUNNING, started_at=now)
+        running = replace(
+            run, status=RunStatus.RUNNING, started_at=run.started_at or now,
+            pages_fetched=run.pages_fetched if run.started_at is not None else 0,
+            quota_spent=run.quota_spent if run.started_at is not None else 0,
+        )
         self._store(running)
-        finished = self._execute(context, running, now, deadline)
+        try:
+            finished = self._execute(context, running, now, deadline)
+        except Exception:
+            # Do not persist a permanently unexecutable RUNNING record on error.
+            # Re-raise so a storage/publication failure is never reported as success.
+            self._forget_resume(running)
+            progress = self._run(run.workspace_id, run.run_id)
+            self._store(self._terminal(
+                progress, now, RunFailureReason.UNEXPECTED_FAILURE,
+                pages=progress.pages_fetched, spent=progress.quota_spent,
+            ))
+            raise
         self._store(finished)
         return finished
 
@@ -477,6 +536,10 @@ class CollectionJobsService:
             self._state.resume = {
                 key: point
                 for key, point in self._state.resume.items()
+                if point.workspace_id != workspace_id
+            }
+            self._state.page_checkpoints = {
+                key: point for key, point in self._state.page_checkpoints.items()
                 if point.workspace_id != workspace_id
             }
             self._bump_revision(workspace_id)
@@ -866,7 +929,7 @@ class CollectionJobsService:
             return self._terminal(run, now, _failure_reason(error), pages=0, spent=0)
 
         if run.kind is RunKind.SUBSCRIBERS:
-            return self._run_subscribers(context, run, authority, now)
+            return self._run_subscribers(context, run, authority, now, deadline)
         return self._run_owner_content(context, run, authority, now, deadline)
 
     def _run_subscribers(
@@ -875,6 +938,7 @@ class CollectionJobsService:
         run: CollectionRun,
         authority: ExecutionAuthority,
         now: datetime,
+        deadline: datetime | None,
     ) -> CollectionRun:
         collection_id = f"{run.run_id}-a{run.attempt}-subscribers"
         self._channel_data.start_collection(
@@ -883,13 +947,15 @@ class CollectionJobsService:
                 channel_id=run.provider_channel_id,
                 collection_id=collection_id,
                 kind=CollectionKind.SUBSCRIBERS,
-                started_at=now,
+                started_at=run.started_at or now,
                 idempotency_key=f"{collection_id}-start",
             ),
         )
         outcome = self._traverse(
-            context, authority, ProviderOperation.LIST_SUBSCRIBERS, None
+            context, authority, ProviderOperation.LIST_SUBSCRIBERS, None, run, deadline
         )
+        if outcome.paused:
+            return self._pause_traversal(run, now, outcome)
         if outcome.reason is not None:
             self._finish_collection(context, run, collection_id, now, outcome)
             return self._terminal(
@@ -953,8 +1019,10 @@ class CollectionJobsService:
 
         videos_collection = f"{run.run_id}-a{run.attempt}-videos"
         videos = self._collect_inventory(
-            context, run, authority, now, videos_collection
+            context, run, authority, now, videos_collection, deadline
         )
+        if videos.paused:
+            return self._pause_traversal(run, now, videos)
         if videos.reason is not None:
             self._finish_collection(context, run, videos_collection, now, videos)
             return self._terminal(
@@ -1005,6 +1073,7 @@ class CollectionJobsService:
         authority: ExecutionAuthority,
         now: datetime,
         collection_id: str,
+        deadline: datetime | None,
     ) -> TraversalOutcome:
         self._channel_data.start_collection(
             context,
@@ -1012,11 +1081,11 @@ class CollectionJobsService:
                 channel_id=run.provider_channel_id,
                 collection_id=collection_id,
                 kind=CollectionKind.VIDEOS,
-                started_at=now,
+                started_at=run.started_at or now,
                 idempotency_key=f"{collection_id}-start",
             ),
         )
-        return self._traverse(context, authority, ProviderOperation.LIST_VIDEOS, None)
+        return self._traverse(context, authority, ProviderOperation.LIST_VIDEOS, None, run, deadline)
 
     def _cover_comments(
         self,
@@ -1037,10 +1106,9 @@ class CollectionJobsService:
     ) -> CollectionRun:
         """Cover every video in the accepted inventory, over as many slices as it takes.
 
-        This is the only phase that can be stopped and continued, and it is the
-        one that needs to be: it costs a call per video, so an inventory larger
-        than the daily budget can never be covered by a traversal that has to
-        start again. It can be continued because `channel-data` accepts coverage
+        Each video and each comment page can be continued, so even a single
+        video's comment traversal may span multiple days without refetching
+        its first page. It can be continued because `channel-data` accepts coverage
         one video at a time and keeps the candidate open until it is told the
         coverage is complete — so a slice that stops leaves behind work that
         counts, and nothing is promoted until the last video is covered.
@@ -1058,6 +1126,7 @@ class CollectionJobsService:
                 ),
             )
         started_with = covered
+        started_pages = pages
         for index, video_id in enumerate(pending):
             if deadline is not None and self._now() >= deadline:
                 # A slice that covered nothing is not a stalled run: it is a
@@ -1080,16 +1149,23 @@ class CollectionJobsService:
                 authority,
                 ProviderOperation.LIST_VIDEO_COMMENT_AUTHORS,
                 video_id,
+                run,
+                deadline,
             )
-            pages += activity.pages
-            spent += activity.quota_spent
+            pages += activity.new_pages
+            spent += activity.new_spent
+            if activity.paused:
+                return self._suspend(
+                    run, now, collection_id=collection_id, inventory_id=inventory_id,
+                    pending=pending[index:], covered=covered, pages=pages, spent=spent,
+                    until=now, stalled=stalled,
+                )
             if activity.reason is RunFailureReason.QUOTA_EXHAUSTED:
-                # A day whose units bought no video at all proves nothing new.
-                # Let that repeat MAX_STALLED_DAYS times and the run is not
-                # slow, it is larger than any day this workspace is allowed to
-                # spend, so stop and hand back what was already covered rather
-                # than wake forever.
-                idle = covered == started_with
+                # Pages saved within one large video are real progress too.
+                # Only days with neither a completed video nor a new page
+                # count as stalled; otherwise a video larger than three daily
+                # budgets would be abandoned despite making steady progress.
+                idle = covered == started_with and pages == started_pages
                 if idle and stalled + 1 >= MAX_STALLED_DAYS:
                     self._forget_resume(run)
                     self._finish_partial(
@@ -1203,6 +1279,16 @@ class CollectionJobsService:
 
     def _forget_resume(self, run: CollectionRun) -> None:
         self._state.resume.pop(_key(run.workspace_id, run.run_id), None)
+        self._state.page_checkpoints.pop(_key(run.workspace_id, run.run_id), None)
+
+    def _pause_traversal(
+        self, run: CollectionRun, now: datetime, outcome: TraversalOutcome
+    ) -> CollectionRun:
+        return replace(
+            run, status=RunStatus.QUEUED, finished_at=None, failure_reason=None,
+            pages_fetched=outcome.pages, quota_spent=outcome.quota_spent,
+            next_attempt_at=now,
+        )
 
     def _finish_partial(
         self,
@@ -1243,16 +1329,51 @@ class CollectionJobsService:
         authority: ExecutionAuthority,
         operation: ProviderOperation,
         video_id: str | None,
+        run: CollectionRun,
+        deadline: datetime | None,
     ) -> TraversalOutcome:
-        rows: list[object] = []
-        pages = 0
-        spent = 0
-        page_token: str | None = None
-        while True:
-            if self._quota_remaining(context.workspace_id) < ESTIMATED_CALL_UNITS:
-                return TraversalOutcome(
-                    tuple(rows), pages, spent, RunFailureReason.QUOTA_EXHAUSTED
+        checkpoint_key = _key(run.workspace_id, run.run_id)
+        point = self._state.page_checkpoints.get(checkpoint_key)
+        if point is not None and (point.operation != operation.value or point.video_id != video_id):
+            raise ValueError("provider checkpoint does not match the active traversal")
+        rows: dict[str, object] = {}
+        for row in point.rows if point is not None else ():
+            _merge_row(rows, row)
+        pages = point.pages_fetched if point is not None else 0
+        spent = point.quota_spent if point is not None else 0
+        initial_pages, initial_spent = pages, spent
+        page_token = point.next_page_token if point is not None else None
+        visited = list(point.visited_tokens) if point is not None else []
+        seen = set(visited)
+
+        def outcome(reason=None, *, pause=False, keep=False):
+            if keep:
+                self._state.page_checkpoints[checkpoint_key] = PageCheckpoint(
+                    workspace_id=run.workspace_id, run_id=run.run_id,
+                    operation=operation.value, video_id=video_id,
+                    rows=tuple(rows.values()), next_page_token=page_token,
+                    visited_tokens=tuple(visited), pages_fetched=pages, quota_spent=spent,
                 )
+            else:
+                self._state.page_checkpoints.pop(checkpoint_key, None)
+            return TraversalOutcome(
+                tuple(rows.values()), pages, spent, reason, paused=pause,
+                new_pages=pages - initial_pages, new_spent=spent - initial_spent,
+            )
+
+        while True:
+            # A single video may have thousands of pages. Check BEFORE every
+            # provider request, not just at video boundaries. One in-flight
+            # provider call can still outlast this cooperative deadline.
+            if deadline is not None and self._now() >= deadline:
+                return outcome(pause=True, keep=True)
+            if self._quota_remaining(context.workspace_id) < ESTIMATED_CALL_UNITS:
+                return outcome(
+                    RunFailureReason.QUOTA_EXHAUSTED,
+                    keep=operation is ProviderOperation.LIST_VIDEO_COMMENT_AUTHORS,
+                )
+            if page_token in seen:
+                return outcome(RunFailureReason.UNEXPECTED_FAILURE)
             try:
                 result = self._broker.run_provider_operation(
                     authority,
@@ -1277,9 +1398,7 @@ class CollectionJobsService:
                     error.retryable,
                     error.correlation_id,
                 )
-                return TraversalOutcome(
-                    tuple(rows), pages, spent, _failure_reason(error)
-                )
+                return outcome(_failure_reason(error))
             except BaseException:
                 # The owner is told one careful sentence and never a provider
                 # response. The operator needs the opposite, and without this
@@ -1290,17 +1409,23 @@ class CollectionJobsService:
                 # it carries no credential; the access token travels in a header
                 # this code never formats into a message.
                 _LOG.exception("provider operation %s raised", operation)
-                return TraversalOutcome(
-                    tuple(rows), pages, spent, RunFailureReason.UNEXPECTED_FAILURE
-                )
+                return outcome(RunFailureReason.UNEXPECTED_FAILURE)
 
             self._spend(context.workspace_id, result.quota_cost)
-            rows.extend(result.rows)
+            progress = self._run(run.workspace_id, run.run_id)
+            self._store(replace(
+                progress, pages_fetched=progress.pages_fetched + 1,
+                quota_spent=progress.quota_spent + result.quota_cost,
+            ))
+            for row in result.rows:
+                _merge_row(rows, row)
             pages += 1
             spent += result.quota_cost
+            visited.append(page_token)
+            seen.add(page_token)
             page_token = result.next_page_token
             if page_token is None:
-                return TraversalOutcome(tuple(rows), pages, spent, None)
+                return outcome()
 
     def _finish_collection(
         self,
@@ -1344,6 +1469,7 @@ class CollectionJobsService:
         pages: int,
         spent: int,
     ) -> CollectionRun:
+        self._forget_resume(run)
         if reason is RunFailureReason.PROVIDER_UNAVAILABLE and run.attempt < MAX_ATTEMPTS:
             return replace(
                 run,

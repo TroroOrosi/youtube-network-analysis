@@ -77,6 +77,7 @@ from .audience_report import (
 )
 from .container import Services, build_services
 from .google_login import STATE_TTL, GoogleLogin, LoginFailed
+from .gcp import GcpUnavailable
 
 SESSION_COOKIE = "yna_session"
 WORKSPACE_COOKIE = "yna_workspace"
@@ -132,6 +133,10 @@ MESSAGES = {
 }
 
 ERROR_TEXT = {
+    "STORAGE_UNAVAILABLE": (
+        "データの保存先に一時的に接続できません。",
+        "データを初期化せず、しばらく待ってからページを開き直してください。",
+    ),
     "PERMISSION_DENIED": ("この操作を行う権限がありません。", "ワークスペースの管理者に権限を依頼してください。"),
     "CONNECTION_NOT_FOUND_OR_FORBIDDEN": ("その接続は見つかりません。", "一覧から選び直してください。"),
     "CONNECTION_ALREADY_EXISTS": ("そのチャンネルはすでに接続済みです。", "一覧の接続を利用してください。"),
@@ -375,7 +380,9 @@ def create_app(services: Services | None = None, *, base_url: str = "https://loc
             )
             client = _client_key(request)
             if not limiter.allow(f"{client}|{limit}", limit):
-                return _error_response(request, "TOO_MANY_REQUESTS", 429)
+                response = _error_response(request, "TOO_MANY_REQUESTS", 429)
+                response.headers["Retry-After"] = "60"
+                return response
         return await call_next(request)
 
     @app.middleware("http")
@@ -571,6 +578,14 @@ def _domain_error(error: Exception) -> AppError:
 
 
 def _register_routes(app: FastAPI) -> None:
+    @app.exception_handler(GcpUnavailable)
+    async def handle_storage_unavailable(request: Request, error: GcpUnavailable) -> Response:
+        # Rendering this response must not authenticate a session or touch the
+        # failed store again. Never expose provider replies or stored values.
+        response = _error_response(request, "STORAGE_UNAVAILABLE", 503)
+        response.headers["Retry-After"] = "60"
+        return response
+
     @app.exception_handler(AppError)
     async def handle_app_error(request: Request, error: AppError) -> Response:
         if error.code == "UNAUTHENTICATED":
@@ -1054,8 +1069,8 @@ def _register_routes(app: FastAPI) -> None:
 
     @app.get("/assets/collecting.js", include_in_schema=False)
     def collecting_script() -> Response:
-        return Response(
-            "document.getElementById('collection-step')?.requestSubmit();\n",
+        return FileResponse(
+            Path(__file__).parent / "static" / "collecting.js",
             media_type="application/javascript",
         )
 
