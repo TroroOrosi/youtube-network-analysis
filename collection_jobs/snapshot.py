@@ -19,10 +19,12 @@ from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any
 
+from channel_connections.models import CommentAuthorRow, SubscriberRow, VideoRow
+
 from . import memory, models
 from .memory import MemoryState
 
-VERSION = 1
+VERSION = 2
 
 
 def _known_types() -> dict[str, type]:
@@ -33,6 +35,10 @@ def _known_types() -> dict[str, type]:
                 is_dataclass(value) or issubclass(value, Enum)
             ):
                 found[value.__name__] = value
+    # Only these minimized, validated provider DTOs may enter a checkpoint.
+    # In particular, never register credential or execution-authority types.
+    for value in (CommentAuthorRow, SubscriberRow, VideoRow):
+        found[value.__name__] = value
     return found
 
 
@@ -54,7 +60,7 @@ def load(document: str) -> MemoryState:
         raise ValueError("state document is not readable JSON") from error
     if not isinstance(payload, dict):
         raise ValueError("state document is not an object")
-    if payload.get("version") != VERSION:
+    if payload.get("version") not in (1, VERSION):
         raise ValueError(
             f"state document version {payload.get('version')!r} is not supported"
         )

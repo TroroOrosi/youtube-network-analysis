@@ -12,6 +12,9 @@
   時間をおくと続きから再開します。
 </p>
 
+<p id="collection-driver-status" role="status" aria-live="polite"></p>
+<p><a href="/collecting">進捗ページを開き直す</a></p>
+
 <form id="collection-step" method="post" action="/collecting/step">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   <p><button type="submit">収集を続ける</button></p>

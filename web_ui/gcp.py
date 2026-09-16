@@ -15,12 +15,14 @@ that otherwise costs nothing.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import logging
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from collections.abc import Callable, Mapping
 
 _LOG = logging.getLogger(__name__)
@@ -37,6 +39,11 @@ STATE_COLLECTION = "state"
 DOCUMENT_FIELD = "document"
 PARTS_FIELD = "parts"
 MAX_DOCUMENT_BYTES = 900_000
+# Leave room below Firestore's 10 MiB API request limit, including JSON escapes.
+MAX_COMMIT_BYTES = 8_000_000
+MAX_COMMIT_WRITES = 200
+GENERATION_FIELD = "generation"
+DIGEST_FIELD = "sha256"
 REQUEST_TIMEOUT_SECONDS = 20.0
 TOKEN_REFRESH_MARGIN_SECONDS = 60
 
@@ -45,6 +52,10 @@ Transport = Callable[..., tuple[int, bytes]]
 
 class GcpUnavailable(RuntimeError):
     """The platform did not answer. Never carries a credential."""
+
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 def http_transport(
@@ -240,28 +251,17 @@ class SecretManagerStateStore:
 
 
 class FirestoreStateStore:
-    """One module's state text, kept as a Firestore document and its parts.
+    """Atomic state snapshots, including modules larger than one API request.
 
-    It satisfies the same `StateStore` port as the file store and is what a host
-    without a disk uses instead. A write replaces the whole text or does not
-    happen — every part goes in one commit, which Firestore applies as a unit —
-    so a process killed mid-save leaves the previous text intact, the property
-    the file store gets from a rename.
+    Small legacy snapshots remain a single commit. Large snapshots stage
+    immutable generation chunks in bounded commits, then publish ONE head.
+    A failed stage cannot alter the previous head. A failed read never starts
+    an empty application. Readers understand both the original layout and
+    the generation manifest, and validate the latter's whole-text digest.
 
-    A document is a single field holding the module's own text, so this store
-    never learns what is inside and the modules stay independently extractable.
-    Firestore caps one document a little under 1 MiB and `channel_data` grows
-    with what was collected, so text past `MAX_DOCUMENT_BYTES` is split: the
-    head document holds the first piece and how many pieces there are, and
-    `module~1`, `module~2` ... hold the rest in order. A piece is cut on a
-    character boundary, so each one is text a reader can decode on its own.
-    What bounds a module is now the size of one commit, several megabytes,
-    rather than the size of one document.
-
-    A read that fails is raised, not swallowed: starting empty would show a live
-    owner an unlinked channel and spend YouTube quota collecting data that is
-    already there. A part the head counts but the database does not hold is such
-    a failure too — text that stops early is not the text this wrote.
+    Superseded chunks are reclaimed only after publication. A reader racing
+    reclamation retries from the new head, never joins different generations.
+    This is still a single-writer store, not multi-instance coordination.
     """
 
     def __init__(
@@ -277,60 +277,151 @@ class FirestoreStateStore:
         self._token = token
         self._transport = transport
         self._parts = 1
+        self._generation: str | None = None
 
     def load(self) -> str | None:
-        head = self._read(0)
-        if head is None:
-            return None
-        text, parts = head
-        pieces = [text]
-        for index in range(1, parts):
-            part = self._read(index)
-            if part is None:
-                raise GcpUnavailable(f"{self._module} is missing part {index}")
-            pieces.append(part[0])
-        self._parts = parts
-        return "".join(pieces)
+        for _ in range(3):
+            head = self._read_fields(self._name(0))
+            if head is None:
+                return None
+            parts = _parts_held(head.get(PARTS_FIELD))
+            generation = self._generation_held(head)
+            try:
+                if generation is None:
+                    pieces = [self._text(head)]
+                    for index in range(1, parts):
+                        pieces.append(self._text(self._read_fields(self._name(index))))
+                else:
+                    pieces = [
+                        self._text(self._read_fields(self._name(index, generation)))
+                        for index in range(parts)
+                    ]
+                document = "".join(pieces)
+                if generation is not None:
+                    digest = head.get(DIGEST_FIELD, {}).get("stringValue")
+                    if digest != hashlib.sha256(document.encode()).hexdigest():
+                        raise GcpUnavailable("state generation checksum mismatch")
+            except GcpUnavailable:
+                # A writer may have published and reclaimed the generation
+                # we were reading. Only a CHANGED head justifies a retry.
+                if generation is not None and self._read_fields(self._name(0)) != head:
+                    continue
+                raise
+            self._parts, self._generation = parts, generation
+            return document
+        raise GcpUnavailable("state changed repeatedly during read")
 
     def save(self, document: str) -> None:
         pieces = _split(document, MAX_DOCUMENT_BYTES)
-        writes: list[dict[str, object]] = [
-            {
-                "update": {
-                    "name": self._name(index),
-                    "fields": self._fields(piece, index, len(pieces)),
-                }
-            }
+        legacy = [
+            {"update": {"name": self._name(index),
+                        "fields": self._fields(piece, index, len(pieces))}}
             for index, piece in enumerate(pieces)
         ]
-        writes += [
-            {"delete": self._name(index)}
-            for index in range(len(pieces), self._parts)
+        if self._generation is None:
+            legacy += [{"delete": self._name(index)}
+                       for index in range(len(pieces), self._parts)]
+        old_names = self._old_names()
+        if len(legacy) <= MAX_COMMIT_WRITES and len(self._body(legacy)) <= MAX_COMMIT_BYTES:
+            self._publish(legacy)
+            if self._generation is not None:
+                self._cleanup(old_names)
+            self._parts, self._generation = len(pieces), None
+            return
+
+        generation = uuid.uuid4().hex
+        staged = [
+            {"update": {"name": self._name(index, generation),
+                        "fields": {DOCUMENT_FIELD: {"stringValue": piece}}}}
+            for index, piece in enumerate(pieces)
         ]
-        body = json.dumps({"writes": writes}, ensure_ascii=False).encode()
+        try:
+            self._commit_batches(staged)
+        except GcpUnavailable:
+            # The head has NOT been attempted, so these new names cannot be
+            # live, even if a staging response was lost after its commit.
+            self._cleanup([self._name(index, generation) for index in range(len(pieces))])
+            raise
+        fields = {
+            GENERATION_FIELD: {"stringValue": generation},
+            PARTS_FIELD: {"integerValue": str(len(pieces))},
+            DIGEST_FIELD: {"stringValue": hashlib.sha256(document.encode()).hexdigest()},
+        }
+        # Intentionally omit the legacy document field: old binaries must
+        # fail closed, not mistake a manifest for an empty/partial dataset.
+        # On an ambiguous publish failure, retain BOTH generations. Deleting
+        # either could destroy the state a reader is actually using.
+        self._publish([{"update": {"name": self._name(0), "fields": fields}}])
+        self._parts, self._generation = len(pieces), generation
+        self._cleanup(old_names)
+
+    def _publish(self, writes: list[dict]) -> None:
+        try:
+            self._commit(writes)
+        except GcpUnavailable as error:
+            if error.status_code is not None and error.status_code < 500:
+                # A definitive refusal (including authorization and quota)
+                # cannot have published our snapshot. Do not issue more reads.
+                raise
+            # A timeout/503 can arrive AFTER an atomic commit. Confirm all
+            # intended values before telling a domain service to roll back.
+            # If confirmation itself fails, retain both generations and fail.
+            for write in writes:
+                update = write.get("update")
+                name = update["name"] if update is not None else write["delete"]
+                wanted = update["fields"] if update is not None else None
+                if self._read_fields(name) != wanted:
+                    raise
+
+    def _old_names(self) -> list[str]:
+        start = 0 if self._generation is not None else 1
+        return [self._name(index, self._generation) for index in range(start, self._parts)]
+
+    def _cleanup(self, names: list[str]) -> None:
+        try:
+            self._commit_batches([{"delete": name} for name in names])
+        except GcpUnavailable:
+            # Publication already succeeded, or these are unreferenced stage
+            # files. Housekeeping must never turn success into a rollback.
+            _LOG.warning("state chunk cleanup deferred for module %s", self._module)
+
+    @staticmethod
+    def _body(writes: list[dict]) -> bytes:
+        return json.dumps({"writes": writes}, ensure_ascii=False, separators=(",", ":")).encode()
+
+    def _commit_batches(self, writes: list[dict]) -> None:
+        batch: list[dict] = []
+        size = len(self._body([]))
+        for write in writes:
+            added = len(json.dumps(write, ensure_ascii=False, separators=(",", ":")).encode())
+            if batch and (len(batch) >= MAX_COMMIT_WRITES or size + added + 1 > MAX_COMMIT_BYTES):
+                self._commit(batch)
+                batch, size = [], len(self._body([]))
+            size += added + (1 if batch else 0)
+            batch.append(write)
+        if batch:
+            self._commit(batch)
+
+    def _commit(self, writes: list[dict]) -> None:
+        body = self._body(writes)
+        if len(body) > MAX_COMMIT_BYTES or len(writes) > MAX_COMMIT_WRITES:
+            raise GcpUnavailable("state commit exceeds the bounded request size")
         status, _ = self._transport(
-            "POST",
-            f"{FIRESTORE_ROOT}/{self._documents}:commit",
-            headers={
-                "Authorization": f"Bearer {self._token()}",
-                "Content-Type": "application/json",
-            },
+            "POST", f"{FIRESTORE_ROOT}/{self._documents}:commit",
+            headers={"Authorization": f"Bearer {self._token()}", "Content-Type": "application/json"},
             body=body,
         )
         if status != 200:
-            # The size is in the message because it is the one number that
-            # explains a refusal nothing else here can: a commit is capped at
-            # about 10 MiB, and a module that grew into it needs the parts
-            # written under a new prefix and the head swapped, not a shorter
-            # retention period.
             raise GcpUnavailable(
-                f"writing {self._module} ({len(pieces)} parts, "
-                f"{len(body)} bytes) answered {status}"
+                f"writing {self._module} ({len(body)} bytes) answered {status}",
+                status_code=status,
             )
-        self._parts = len(pieces)
 
-    def _name(self, index: int) -> str:
-        tail = self._module if index == 0 else f"{self._module}~{index}"
+    def _name(self, index: int, generation: str | None = None) -> str:
+        if generation is not None:
+            tail = f"{self._module}~g{generation}~{index}"
+        else:
+            tail = self._module if index == 0 else f"{self._module}~{index}"
         return f"{self._documents}/{STATE_COLLECTION}/{tail}"
 
     def _fields(self, piece: str, index: int, parts: int) -> dict[str, object]:
@@ -339,24 +430,39 @@ class FirestoreStateStore:
             fields[PARTS_FIELD] = {"integerValue": str(parts)}
         return fields
 
-    def _read(self, index: int) -> tuple[str, int] | None:
+    @staticmethod
+    def _generation_held(fields: Mapping) -> str | None:
+        if GENERATION_FIELD not in fields:
+            return None
+        field = fields[GENERATION_FIELD]
+        value = field.get("stringValue") if isinstance(field, Mapping) else None
+        if not isinstance(value, str) or len(value) != 32 or any(c not in "0123456789abcdef" for c in value):
+            raise GcpUnavailable("state generation is malformed")
+        digest_field = fields.get(DIGEST_FIELD)
+        if not isinstance(digest_field, Mapping):
+            raise GcpUnavailable("state generation has no checksum")
+        return value
+
+    def _text(self, fields: Mapping | None) -> str:
+        field = fields.get(DOCUMENT_FIELD) if fields is not None else None
+        text = field.get("stringValue") if isinstance(field, Mapping) else None
+        if not isinstance(text, str):
+            raise GcpUnavailable(f"{self._module} holds no complete document this wrote")
+        return text
+
+    def _read_fields(self, name: str) -> Mapping | None:
         status, body = self._transport(
-            "GET",
-            f"{FIRESTORE_ROOT}/{self._name(index)}",
-            headers={"Authorization": f"Bearer {self._token()}"},
-            body=None,
+            "GET", f"{FIRESTORE_ROOT}/{name}",
+            headers={"Authorization": f"Bearer {self._token()}"}, body=None,
         )
         if status == 404:
             return None
         if status != 200:
             raise GcpUnavailable(f"reading {self._module} answered {status}")
-        held = _json(body).get("fields")
-        fields = held if isinstance(held, Mapping) else {}
-        field = fields.get(DOCUMENT_FIELD)
-        text = field.get("stringValue") if isinstance(field, Mapping) else None
-        if not isinstance(text, str):
-            raise GcpUnavailable(f"{self._module} holds no document this wrote")
-        return text, _parts_held(fields.get(PARTS_FIELD))
+        fields = _json(body).get("fields")
+        if not isinstance(fields, Mapping):
+            raise GcpUnavailable("state document fields are malformed")
+        return fields
 
 
 class ScheduledCaller:
