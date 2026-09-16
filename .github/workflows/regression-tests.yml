@@ -1,0 +1,43 @@
+name: Hosted application regression tests
+
+on:
+  push:
+    branches: [main, fix/site-availability-large-channel-collection]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: regression-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Package tracked runtime sources for reproducible offline debugging
+        run: >-
+          git archive --format=tar.gz --output=runtime-source.tar.gz HEAD
+          web_ui workspace_access channel_connections channel_data collection_jobs
+          analysis_api subscriber_analytics Dockerfile .dockerignore .gcloudignore
+      - uses: actions/upload-artifact@v4
+        with:
+          name: runtime-source
+          path: runtime-source.tar.gz
+          retention-days: 1
+      - name: Install test dependencies
+        run: python -m pip install -r web_ui/requirements-dev.txt pytest pytest-subtests openpyxl pandas
+      - name: Run domain and web tests
+        run: >-
+          python -m pytest -q analysis_api/tests channel_connections/tests
+          channel_data/tests collection_jobs/tests subscriber_analytics/tests
+          web_ui/tests workspace_access/tests
