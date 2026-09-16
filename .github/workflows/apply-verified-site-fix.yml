@@ -1,0 +1,68 @@
+name: Apply verified site repair (temporary)
+
+on:
+  push:
+    branches: [fix/site-availability-large-channel-collection]
+    paths: [.github/workflows/apply-verified-site-fix.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.repository == 'TroroOrosi/youtube-network-analysis' && github.ref == 'refs/heads/fix/site-availability-large-channel-collection'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify exact patch and restrict changed paths
+        run: |
+          python - <<'PY'
+          import base64, hashlib, lzma, pathlib, subprocess
+          parts = [pathlib.Path(f'.agents/patches/site-fix-{i:02}.b64') for i in range(1, 5)]
+          encoded = ''.join(p.read_text().strip() for p in parts)
+          assert len(encoded) == 29144
+          patch = lzma.decompress(base64.b64decode(encoded, validate=True), memlimit=256*1024*1024)
+          assert len(patch) == 80520
+          assert hashlib.sha256(patch).hexdigest() == '647a05ef1c744c35d55187c40bf5d34bea98fd470f7ec2fdd7a6fe2a735c9d03'
+          allowed = {
+              'collection_jobs/memory.py', 'collection_jobs/service.py',
+              'collection_jobs/snapshot.py', 'collection_jobs/tests/test_large_channels.py',
+              'docs/operations/2026-09-16-availability-large-channels.md',
+              'web_ui/README.md', 'web_ui/app.py', 'web_ui/gcp.py',
+              'web_ui/static/collecting.js', 'web_ui/templates/collecting.html',
+              'web_ui/tests/collecting.test.cjs', 'web_ui/tests/test_availability.py',
+              'web_ui/tests/test_large_state.py',
+          }
+          names = {line.split('\t', 2)[2] for line in subprocess.check_output(['git', 'apply', '--numstat'], input=patch).decode().splitlines()}
+          assert names == allowed, names
+          subprocess.run(['git', 'apply', '--check', '--index'], input=patch, check=True)
+          subprocess.run(['git', 'apply', '--index', '--whitespace=error'], input=patch, check=True)
+          print('Verified patch SHA256:', hashlib.sha256(patch).hexdigest())
+          PY
+      - name: Install complete test dependencies
+        run: python -m pip install -r web_ui/requirements-dev.txt -r subscriber_analytics/requirements.txt pytest openpyxl ruff
+      - name: Full domain and web regression suite
+        run: >-
+          python -m pytest -q --import-mode=importlib analysis_api/tests channel_connections/tests
+          channel_data/tests collection_jobs/tests subscriber_analytics/tests web_ui/tests workspace_access/tests
+      - name: Browser driver regressions
+        run: node --test web_ui/tests/collecting.test.cjs
+      - name: Compile and critical lint
+        run: |
+          python -m compileall -q web_ui collection_jobs channel_data channel_connections analysis_api workspace_access
+          ruff check --select E9,F63,F7,F82 web_ui collection_jobs
+          git diff --cached --check
+      - name: Commit tested runtime changes without merging or deploying
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'fix: resume large-channel collection and atomically persist bounded state snapshots'
+          git push origin HEAD:refs/heads/fix/site-availability-large-channel-collection
+          echo "Verified repair commit: $(git rev-parse HEAD)"
