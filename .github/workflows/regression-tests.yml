@@ -24,20 +24,21 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.14'
-      - name: Anonymous production login diagnostic (no cookies or credentials)
-        continue-on-error: true
-        run: >-
-          curl --silent --show-error --max-time 40 --output /dev/null
-          --write-out 'Production login HTTP=%{http_code} seconds=%{time_total}\n'
-          https://yna-web-893183842893.asia-northeast1.run.app/login
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - name: Install test dependencies
         run: >-
           python -m pip install -r web_ui/requirements-dev.txt
-          -r subscriber_analytics/requirements.txt pytest pytest-subtests openpyxl ruff
+          -r subscriber_analytics/requirements.txt pytest openpyxl ruff
       - name: Run domain and web tests
         run: >-
           python -m pytest -q --import-mode=importlib analysis_api/tests channel_connections/tests
           channel_data/tests collection_jobs/tests subscriber_analytics/tests
           web_ui/tests workspace_access/tests
-      - name: Compile runtime modules
-        run: python -m compileall -q web_ui collection_jobs channel_data channel_connections analysis_api workspace_access
+      - name: Browser collection driver regressions
+        run: node --test web_ui/tests/collecting.test.cjs
+      - name: Compile runtime modules and check critical Python errors
+        run: |
+          python -m compileall -q web_ui collection_jobs channel_data channel_connections analysis_api workspace_access
+          ruff check --select E9,F63,F7,F82 web_ui collection_jobs
