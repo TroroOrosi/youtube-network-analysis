@@ -2,6 +2,9 @@
 {% block title %}分析 | YouTube 分析{% endblock %}
 {% block content %}
 <h2>分析結果</h2>
+<p class="notice" role="note">対象はYouTube APIが返した公開登録者です。
+取得処理が完了しても、チャンネルの全登録者を取得できたことは保証しません。
+API提供元の返却件数制限があり、非公開の登録者は含みません。</p>
 
 <div class="cards">
   <div class="card"><div>対象の登録者</div><div class="value">{{ summary.scope_count }}</div></div>

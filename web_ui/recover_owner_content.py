@@ -1,7 +1,7 @@
 """Operator-only, jobs-only recovery. Standalone Python 3.11+ / Cloud Shell.
 
-Default: inspect and plan. --apply queues ONE replacement; it does not call
-YouTube. Requires separately verified patched code, drained writers and a
+Default: inspect and plan. --apply queues ONE content replacement; optional
+--include-subscribers also queues ONE fresh subscriber traversal. No YouTube calls. Requires separately verified patched code, drained writers and a
 manually disabled Cloud Run service. No session or credential is manufactured.
 """
 from __future__ import annotations
@@ -120,7 +120,7 @@ def _matches(run, target):
             and enum_value(run.get('kind'), 'RunKind') == 'OWNER_CONTENT')
 
 
-def prepare_recovery(jobs, connections, access, target, now):
+def _prepare_content_recovery(jobs, connections, access, target, now):
     """Pure transition. Never mutates input or subscriber data. No I/O."""
     validate_target(target)
     require(now.utcoffset() is not None, 'Recovery time must have a timezone.')
@@ -210,6 +210,68 @@ def prepare_recovery(jobs, connections, access, target, now):
     return updated, report
 
 
+def prepare_recovery(jobs, connections, access, target, now, *, include_subscribers=False):
+    """Plan a content recovery, optionally adding one explicit subscriber refresh.
+
+    The same live ownership/connection validation applies to both operations.
+    Old successful subscriber runs and all accepted data remain untouched.
+    A completed 1,000-row traversal has no next cursor to resume: this optional
+    fresh run begins at page one, using the newly deployed mySubscribers feed.
+    """
+    updated, report = _prepare_content_recovery(jobs, connections, access, target, now)
+    if not include_subscribers:
+        return updated, report
+    current = updated if updated is not None else jobs
+    fields = state(current, (1, 2))
+    ws = target['workspace_id']
+    subscriber_id = 'run_recovery_sub_' + hashlib.sha256(canonical([
+        ws, target['connection_id'], target['channel_id'], target['source_run_id'],
+        'SUBSCRIBERS',
+    ]).encode()).hexdigest()[:32]
+    key = ws + '\x1f' + subscriber_id
+    report.update(subscriber_recollection=True, subscriber_run_id=subscriber_id,
+                  subscriber_query='mySubscribers', provider_result_limit='NOT_REMOVABLE')
+    existing = lookup(fields['runs'], key)
+    if existing is not None:
+        fresh = record(existing, 'CollectionRun')
+        require(fresh.get('run_id') == subscriber_id
+                and all(fresh.get(k) == target[k] for k in ('workspace_id', 'connection_id'))
+                and fresh.get('provider_channel_id') == target['channel_id']
+                and enum_value(fresh.get('kind'), 'RunKind') == 'SUBSCRIBERS',
+                'Subscriber replacement ID collision; no changes made.')
+        report['subscriber_status'] = enum_value(fresh.get('status'), 'RunStatus')
+        return updated, report
+    source = record(lookup(fields['runs'], ws + '\x1f' + target['source_run_id']), 'CollectionRun')
+    for _, value in pairs(fields['runs']):
+        other = record(value, 'CollectionRun')
+        same_channel = (other.get('workspace_id') == ws
+                        and other.get('provider_channel_id') == target['channel_id']
+                        and enum_value(other.get('kind'), 'RunKind') == 'SUBSCRIBERS')
+        if same_channel:
+            require(enum_value(other.get('status'), 'RunStatus') not in ('QUEUED', 'RUNNING')
+                    and moment(other.get('enqueued_at')) <= moment(source.get('enqueued_at')),
+                    'Another active or newer subscriber run exists; inspect it before refreshing.')
+    updated = deepcopy(current)
+    fields = updated['state']['f']
+    fields['runs']['v'].append([key, {'#': 'obj', 't': 'CollectionRun', 'f': {
+        'run_id': subscriber_id, 'workspace_id': ws, 'connection_id': target['connection_id'],
+        'provider_channel_id': target['channel_id'], 'kind': enum('RunKind', 'SUBSCRIBERS'),
+        'status': enum('RunStatus', 'QUEUED'), 'attempt': 1,
+        'enqueued_at': {'#': 'time', 'v': now.astimezone(UTC).isoformat()},
+        'started_at': None, 'finished_at': None, 'pages_fetched': 0, 'quota_spent': 0,
+        'failure_reason': None, 'next_attempt_at': None,
+    }}])
+    revision = lookup(fields.get('revisions'), ws)
+    require(type(revision) is int and revision >= 0, 'Invalid workspace jobs revision.')
+    for pair in pairs(fields['revisions']):
+        if pair[0] == ws:
+            pair[1] += 1
+    require(len(canonical(updated).encode()) <= MAX_STATE_BYTES,
+            'Repaired jobs document would require chunking; use a reviewed migration.')
+    report.update(outcome='READY_TO_APPLY', subscriber_status='QUEUED', writes=['state/collection_jobs'])
+    return updated, report
+
+
 def read_snapshot(head):
     require(isinstance(head, dict) and isinstance(head.get('fields'), dict),
             'Required state document is missing.')
@@ -293,7 +355,7 @@ class Cloud:
 
 
 def execute(cloud, target, *, apply=False, expected_revision=None,
-            writers_stopped=False, patched_code_verified=False, backup_dir=None):
+            writers_stopped=False, patched_code_verified=False, backup_dir=None, include_subscribers=False):
     """Narrow adapter. Only Firestore's jobs document may be changed."""
     validate_target(target)
     base = ('https://run.googleapis.com/v2/projects/' + target['project']
@@ -301,7 +363,7 @@ def execute(cloud, target, *, apply=False, expected_revision=None,
     service = cloud.request('GET', base)
     revision = serving_revision(service)
     if apply:
-        require(patched_code_verified, 'Verify the PR #9 collection fixes are deployed before apply.')
+        require(patched_code_verified, 'Verify the collection fixes and, for subscriber refresh, the multi-day mySubscribers code are deployed.')
         verify_disabled(service, expected_revision, writers_stopped)
     live_revision = cloud.request('GET', base + '/revisions/' + revision)
     containers = live_revision.get('containers', [])
@@ -324,7 +386,8 @@ def execute(cloud, target, *, apply=False, expected_revision=None,
                  for name in ('workspace_access', 'channel_connections', 'collection_jobs')}
         jobs = read_snapshot(heads['collection_jobs'])
         changed, report = prepare_recovery(jobs, read_snapshot(heads['channel_connections']),
-                                           read_snapshot(heads['workspace_access']), target, datetime.now(UTC))
+                                           read_snapshot(heads['workspace_access']), target, datetime.now(UTC),
+                                           include_subscribers=include_subscribers)
         report.update(serving_revision=revision, database=values[0], mode='APPLY' if apply else 'PLAN')
         if not apply or changed is None:
             return report
@@ -365,17 +428,19 @@ def execute(cloud, target, *, apply=False, expected_revision=None,
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--target', type=Path, required=True, help='JSON with the eight target identifiers')
+    parser.add_argument('--include-subscribers', action='store_true',
+                        help='Also queue one fresh subscriber traversal; old accepted data is preserved')
     parser.add_argument('--apply', action='store_true', help='Queue a replacement (default is read-only PLAN)')
     parser.add_argument('--expected-revision', help='Revision whose patched code you verified')
     parser.add_argument('--writers-stopped', action='store_true', help='Attest all writers/requests have drained')
-    parser.add_argument('--patched-code-verified', action='store_true', help='Attest the PR #9 fixes are deployed')
+    parser.add_argument('--patched-code-verified', action='store_true', help='Attest the selected recovery and multi-day collection fixes are deployed')
     parser.add_argument('--backup-dir', type=Path, default=Path.home()/'.yna-recovery-backups')
     args = parser.parse_args(argv)
     try:
         target = parse_json(args.target.read_text(encoding='utf-8'))
         report = execute(Cloud(), target, apply=args.apply, expected_revision=args.expected_revision,
                          writers_stopped=args.writers_stopped, patched_code_verified=args.patched_code_verified,
-                         backup_dir=args.backup_dir)
+                         backup_dir=args.backup_dir, include_subscribers=args.include_subscribers)
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0
     except (RecoveryError, OSError, ValueError, TypeError, KeyError, AttributeError) as error:

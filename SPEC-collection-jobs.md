@@ -3,6 +3,7 @@
 Status: Approved
 Module id: `collection-jobs`
 Date: 2026-08-21
+Quota-continuation amendment: 2026-09-17 (user-requested multi-day collection)
 
 ## Objective
 
@@ -23,8 +24,8 @@ identifiers.
   channel, or create a schedule that enqueues one automatically.
 - A run reports its own progress: queued, running, succeeded, partial, failed,
   or cancelled, with a safe reason and the quota it consumed.
-- A run that exhausts the workspace quota budget stops cleanly as partial. The
-  previously accepted dataset stays readable and unchanged.
+- A run that exhausts a daily budget returns to `QUEUED`, preserving its page
+  checkpoint and previously accepted data until the next eligible time.
 - A run interrupted by a transient provider problem retries on a deterministic
   backoff and only then fails.
 - A run against a connection whose grant is no longer valid fails closed and
@@ -69,21 +70,19 @@ Each workspace has a daily budget in provider units, defaulting to 10000, keyed
 by workspace and UTC date. Every brokered call deducts the cost the gateway
 reported. A run stops before a call it cannot afford.
 
-What happens then depends on the phase it stopped in. A run that has reached
-comment coverage is **suspended**: it returns to `QUEUED` with
-`next_attempt_at` set to the next UTC midnight, carries no failure reason, and
-keeps its `channel-data` collection open with everything covered so far still
-in it. A run stopped in an earlier phase finishes as `PARTIAL` with
-`QUOTA_EXHAUSTED` and its collection is finished as `PARTIAL` so nothing is
-promoted.
+All three phases (subscribers, video inventory and comments) suspend as `QUEUED`
+with `failure_reason=QUOTA_EXHAUSTED`, no finish time and the same run/attempt.
+PageCheckpoint retains rows, next page token, visited tokens and usage. The local
+workspace budget resumes at UTC midnight, preserving the existing ledger format.
+An explicit YouTube `quotaExceeded` / `dailyLimitExceeded` response resumes at
+Pacific midnight using `America/Los_Angeles`, including daylight-saving changes.
+Rejected API calls count toward usage, never toward fetched pages. Such a response
+does not invalidate the owner's Google grant. Local workspace budgets are not
+Google's project-wide quota; other clients/workspaces may have consumed it.
 
-The difference is not a policy choice; it is what the data allows. Comment
-coverage is published to `channel-data` one video at a time, so a suspended run
-resumes by covering the videos it has not covered yet. Subscribers and video
-inventory are published in a single call each, so a partial traversal of either
-has nowhere to rest between two processes and must restart. A collection larger
-than one day of units is therefore possible for comments and not for the other
-two phases.
+No caller may run the queued work before `next_attempt_at`. Completion requires
+an exhausted traversal, not a daily limit. Incomplete candidates do not replace
+accepted subscriber data; comments still require exact-inventory coverage.
 
 ## Slices, suspension, and resuming
 
@@ -92,12 +91,11 @@ the deadline and suspends exactly as a quota stop does, except that
 `next_attempt_at` is the moment it stopped, so the next caller continues at
 once. Without one, execution runs to completion as before.
 
-A suspended run records where it stopped: the open collection, the accepted
-inventory it is bound to, the videos still to cover, and the pages and units
-already spent. The rows already gathered are not in that record and never can
-be — they are in the `channel-data` collection, which is the only place large
-enough to hold them. The record survives a restart with the rest of the
-module's state, so a run may span processes and days.
+A suspended run keeps the open collection, inventory, pending video IDs and
+page-level checkpoint. The checkpoint contains minimized, deduplicated rows and
+an opaque next page token, persisted with collection_jobs v2. Completed per-video
+comment candidates remain in channel_data. A restart retains queued checkpoints;
+orphan RUNNING jobs still fail closed instead of guessing their commit outcome.
 
 `QUEUED` is deliberately reused for a suspended run rather than a new status:
 it is exactly what a suspended run is, and every rule about at most one active
@@ -120,19 +118,13 @@ session is never reused as job authority. For each due workspace the driver
 calls `enqueue_due_runs` before `execute_due_runs`, so a schedule becomes a run
 under the same least-privilege `collection.run` context that executes it.
 
-### When a suspended run gives up
+### Long waits and cancellation
 
-Suspension carries no attempt counter, so nothing in the rules above ever ends
-a run that keeps waking up and getting nowhere. A workspace whose day of units
-cannot pay for even one video would requeue such a run every midnight for good,
-holding its candidate collection open and its pending list with it.
-
-A wake that covers no video at all is therefore counted. `MAX_STALLED_DAYS`
-(three) consecutive wakes that cover nothing end the run `PARTIAL` with
-`QUOTA_EXHAUSTED` and drop its resume point, which is exactly what a quota stop
-in an earlier phase does. Any wake that covers at least one video clears the
-count: a collection that needs a month of days is slow, not stalled, and is
-allowed to take the month.
+Quota waiting alone never ends a run after a fixed number of days. No-progress
+counts in older ResumePoint records are diagnostic only. A cancelled run clears
+its checkpoint and is no longer driven. Repeated/cyclic provider page tokens,
+invalid credentials, and other permanent failures still fail closed. Daily quota
+waiting is not an unlimited retry of every kind of provider error.
 
 ### What a slice is not
 
@@ -153,7 +145,8 @@ lock. The caller comes straight back for the rest.
 A retryable provider failure returns the run to `QUEUED` with `attempt + 1` and
 `next_attempt_at = now + backoff(attempt)`, where backoff is 1, 5, and 25
 minutes. After three attempts the run is `FAILED` with the last safe reason.
-`REAUTH_REQUIRED` and quota exhaustion are never retried automatically.
+`REAUTH_REQUIRED` is not automatically retried. Quota exhaustion uses the
+continuation path above and does not increment the transient retry attempt.
 
 ## Schedules
 

@@ -988,7 +988,7 @@ class CollectionDriverTests(WebFixture):
         location = drive_collection(self, self.client)
 
         self.assertIn("msg=collect_suspended", location)
-        self.assertIn("翌日以降に自動で再開", self.client.get(location).text)
+        self.assertIn("利用枠の回復待ち", self.client.get(location).text)
 
 
 class ScheduledDrainTests(WebFixture):

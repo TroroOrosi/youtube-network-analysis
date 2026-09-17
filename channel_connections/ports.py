@@ -46,6 +46,16 @@ class ProviderUnavailable(Exception):
     """A gateway could not determine the provider outcome, such as a timeout."""
 
 
+class ProviderQuotaExceeded(Exception):
+    """YouTube's daily API budget is exhausted; the authorization is intact."""
+
+    def __init__(self, *, quota_cost: int = 1) -> None:
+        if type(quota_cost) is not int or quota_cost < 1:
+            raise ValueError("quota_cost must count at least the rejected API call")
+        super().__init__("provider daily quota exhausted")
+        self.quota_cost = quota_cost
+
+
 class ProviderAuthorizationExpired(Exception):
     """The stored grant is revoked or expired and can no longer be used."""
 

@@ -20,6 +20,8 @@ from .errors import ChannelConnectionsError, ErrorCode
 MAX_IDENTIFIER_LENGTH = 256
 MAX_DISPLAY_TEXT_LENGTH = 500
 MAX_CURSOR_LENGTH = 512
+# Separate from resource IDs: allow query-version envelopes around provider cursors.
+MAX_PROVIDER_PAGE_TOKEN_LENGTH = 512
 MAX_SECRET_LENGTH = 2048
 MAX_URL_LENGTH = 2048
 
@@ -85,12 +87,14 @@ def _invalid(field_name: str, message: str) -> ChannelConnectionsError:
     )
 
 
-def _identifier(value: object, field_name: str) -> str:
+def _identifier(
+    value: object, field_name: str, *, max_length: int = MAX_IDENTIFIER_LENGTH
+) -> str:
     if (
         not isinstance(value, str)
         or not value
         or value != value.strip()
-        or len(value) > MAX_IDENTIFIER_LENGTH
+        or len(value) > max_length
         or "\x00" in value
     ):
         raise _invalid(field_name, f"{field_name} must be a bounded non-empty identifier")
@@ -484,7 +488,7 @@ class ProviderOperationRequest:
     def __post_init__(self) -> None:
         _enum(self.operation, ProviderOperation, "operation")
         if self.page_token is not None:
-            _identifier(self.page_token, "page_token")
+            _identifier(self.page_token, "page_token", max_length=MAX_PROVIDER_PAGE_TOKEN_LENGTH)
         if self.video_id is not None:
             _identifier(self.video_id, "video_id")
         if (
@@ -506,7 +510,7 @@ class ProviderPage:
     def __post_init__(self) -> None:
         _tuple(self.rows, "rows")
         if self.next_page_token is not None:
-            _identifier(self.next_page_token, "next_page_token")
+            _identifier(self.next_page_token, "next_page_token", max_length=MAX_PROVIDER_PAGE_TOKEN_LENGTH)
         if (
             isinstance(self.quota_cost, bool)
             or not isinstance(self.quota_cost, int)
@@ -526,7 +530,7 @@ class ProviderOperationResult:
         _enum(self.operation, ProviderOperation, "operation")
         _tuple(self.rows, "rows")
         if self.next_page_token is not None:
-            _identifier(self.next_page_token, "next_page_token")
+            _identifier(self.next_page_token, "next_page_token", max_length=MAX_PROVIDER_PAGE_TOKEN_LENGTH)
         if (
             isinstance(self.quota_cost, bool)
             or not isinstance(self.quota_cost, int)

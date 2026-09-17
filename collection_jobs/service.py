@@ -15,6 +15,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, time, timedelta
 from threading import RLock
 from types import TracebackType
+from zoneinfo import ZoneInfo
 from typing import Any, Callable
 
 from channel_connections.errors import ChannelConnectionsError
@@ -86,10 +87,6 @@ _LOG = logging.getLogger(__name__)
 ESTIMATED_CALL_UNITS = 3
 IDEMPOTENCY_TTL = timedelta(days=90)
 RETENTION_TTL = timedelta(days=90)
-# Days a suspended comment run may wake without buying a single new page.
-# Pages retained within a large video count as progress, even across many days.
-MAX_STALLED_DAYS = 3
-
 # The longest one run may hold this module's lock in a single call. A scheduled
 # caller has minutes to spend, but the same process serves pages with the same
 # lock, so the work is handed back at short intervals rather than held for the
@@ -155,7 +152,20 @@ def _next_utc_day(moment: datetime) -> datetime:
     return datetime.combine(moment.date() + timedelta(days=1), time.min, tzinfo=UTC)
 
 
+def _next_youtube_day(moment: datetime) -> datetime:
+    """YouTube daily quota resets at Pacific midnight, including DST changes.
+
+    The local workspace ledger deliberately remains UTC for backward-compatible
+    accounting. It is an application budget, not the provider project ledger.
+    """
+    pacific = ZoneInfo("America/Los_Angeles")
+    tomorrow = moment.astimezone(pacific).date() + timedelta(days=1)
+    return datetime.combine(tomorrow, time.min, tzinfo=pacific).astimezone(UTC)
+
+
 def _failure_reason(error: ChannelConnectionsError) -> RunFailureReason:
+    if error.reason_code == "QUOTA_EXHAUSTED":
+        return RunFailureReason.QUOTA_EXHAUSTED
     if error.code in {"CONNECTION_REAUTH_REQUIRED", "AUTHORITY_NOT_FOUND_OR_EXPIRED"}:
         return RunFailureReason.REAUTH_REQUIRED
     if error.retryable:
@@ -176,7 +186,7 @@ def _merge_row(rows: dict[str, object], row: object) -> None:
     """Merge a page into the minimized traversal, never duplicating an author.
 
     Counts belong to distinct comment pages. For inventory/subscriber overlap,
-    retain the first (newest provider-ordered) observation of each identity.
+    retain the first observation of each identity; subscriber order is arbitrary.
     """
     if isinstance(row, CommentAuthorRow):
         previous = rows.get(row.author_channel_id)
@@ -197,7 +207,7 @@ def _merge_row(rows: dict[str, object], row: object) -> None:
 class TraversalOutcome:
     """Rows gathered before a run stopped, with why it stopped."""
 
-    __slots__ = ("rows", "pages", "quota_spent", "reason", "paused", "new_pages", "new_spent")
+    __slots__ = ("rows", "pages", "quota_spent", "reason", "paused", "new_pages", "new_spent", "retry_at")
 
     def __init__(
         self,
@@ -209,7 +219,9 @@ class TraversalOutcome:
         paused: bool = False,
         new_pages: int | None = None,
         new_spent: int | None = None,
+        retry_at: datetime | None = None,
     ) -> None:
+        self.retry_at = retry_at
         self.paused = paused
         self.new_pages = pages if new_pages is None else new_pages
         self.new_spent = quota_spent if new_spent is None else new_spent
@@ -926,7 +938,10 @@ class CollectionJobsService:
                 context, IssueExecutionAuthority(connection_id=run.connection_id)
             )
         except ChannelConnectionsError as error:
-            return self._terminal(run, now, _failure_reason(error), pages=0, spent=0)
+            return self._terminal(
+                run, now, _failure_reason(error),
+                pages=run.pages_fetched, spent=run.quota_spent,
+            )
 
         if run.kind is RunKind.SUBSCRIBERS:
             return self._run_subscribers(context, run, authority, now, deadline)
@@ -954,7 +969,7 @@ class CollectionJobsService:
         outcome = self._traverse(
             context, authority, ProviderOperation.LIST_SUBSCRIBERS, None, run, deadline
         )
-        if outcome.paused:
+        if outcome.paused or outcome.reason is RunFailureReason.QUOTA_EXHAUSTED:
             return self._pause_traversal(run, now, outcome)
         if outcome.reason is not None:
             self._finish_collection(context, run, collection_id, now, outcome)
@@ -1021,7 +1036,7 @@ class CollectionJobsService:
         videos = self._collect_inventory(
             context, run, authority, now, videos_collection, deadline
         )
-        if videos.paused:
+        if videos.paused or videos.reason is RunFailureReason.QUOTA_EXHAUSTED:
             return self._pause_traversal(run, now, videos)
         if videos.reason is not None:
             self._finish_collection(context, run, videos_collection, now, videos)
@@ -1130,8 +1145,8 @@ class CollectionJobsService:
         for index, video_id in enumerate(pending):
             if deadline is not None and self._now() >= deadline:
                 # A slice that covered nothing is not a stalled run: it is a
-                # slice that was short. Only a day's units failing to buy a
-                # single video counts against the run.
+                # slice that was short. Quota stalls are only diagnostic;
+                # neither a short slice nor a daily wait terminates this run.
                 return self._suspend(
                     run,
                     now,
@@ -1161,19 +1176,9 @@ class CollectionJobsService:
                     until=now, stalled=stalled,
                 )
             if activity.reason is RunFailureReason.QUOTA_EXHAUSTED:
-                # Pages saved within one large video are real progress too.
-                # Only days with neither a completed video nor a new page
-                # count as stalled; otherwise a video larger than three daily
-                # budgets would be abandoned despite making steady progress.
+                # A daily limit is a wait condition, not a three-day failure.
+                # Retain the failed page even on days another run used the budget.
                 idle = covered == started_with and pages == started_pages
-                if idle and stalled + 1 >= MAX_STALLED_DAYS:
-                    self._forget_resume(run)
-                    self._finish_partial(
-                        context, run, collection_id, now, activity.reason, covered
-                    )
-                    return self._terminal(
-                        run, now, activity.reason, pages=pages, spent=spent
-                    )
                 return self._suspend(
                     run,
                     now,
@@ -1183,7 +1188,8 @@ class CollectionJobsService:
                     covered=covered,
                     pages=pages,
                     spent=spent,
-                    until=_next_utc_day(now),
+                    until=activity.retry_at or _next_utc_day(self._now()),
+                    reason=RunFailureReason.QUOTA_EXHAUSTED,
                     stalled=stalled + 1 if idle else 0,
                 )
             if activity.reason is not None:
@@ -1244,6 +1250,7 @@ class CollectionJobsService:
         spent: int,
         until: datetime,
         stalled: int,
+        reason: RunFailureReason | None = None,
     ) -> CollectionRun:
         """Remember where a run stopped and put it back in the queue.
 
@@ -1271,7 +1278,7 @@ class CollectionJobsService:
             run,
             status=RunStatus.QUEUED,
             finished_at=None,
-            failure_reason=None,
+            failure_reason=reason,
             pages_fetched=pages,
             quota_spent=spent,
             next_attempt_at=until,
@@ -1285,9 +1292,9 @@ class CollectionJobsService:
         self, run: CollectionRun, now: datetime, outcome: TraversalOutcome
     ) -> CollectionRun:
         return replace(
-            run, status=RunStatus.QUEUED, finished_at=None, failure_reason=None,
+            run, status=RunStatus.QUEUED, finished_at=None, failure_reason=outcome.reason,
             pages_fetched=outcome.pages, quota_spent=outcome.quota_spent,
-            next_attempt_at=now,
+            next_attempt_at=outcome.retry_at or now,
         )
 
     def _finish_partial(
@@ -1346,7 +1353,7 @@ class CollectionJobsService:
         visited = list(point.visited_tokens) if point is not None else []
         seen = set(visited)
 
-        def outcome(reason=None, *, pause=False, keep=False):
+        def outcome(reason=None, *, pause=False, keep=False, retry_at=None):
             if keep:
                 self._state.page_checkpoints[checkpoint_key] = PageCheckpoint(
                     workspace_id=run.workspace_id, run_id=run.run_id,
@@ -1359,6 +1366,7 @@ class CollectionJobsService:
             return TraversalOutcome(
                 tuple(rows.values()), pages, spent, reason, paused=pause,
                 new_pages=pages - initial_pages, new_spent=spent - initial_spent,
+                retry_at=retry_at,
             )
 
         while True:
@@ -1370,7 +1378,7 @@ class CollectionJobsService:
             if self._quota_remaining(context.workspace_id) < ESTIMATED_CALL_UNITS:
                 return outcome(
                     RunFailureReason.QUOTA_EXHAUSTED,
-                    keep=operation is ProviderOperation.LIST_VIDEO_COMMENT_AUTHORS,
+                    keep=True, retry_at=_next_utc_day(self._now()),
                 )
             if page_token in seen:
                 return outcome(RunFailureReason.UNEXPECTED_FAILURE)
@@ -1398,7 +1406,15 @@ class CollectionJobsService:
                     error.retryable,
                     error.correlation_id,
                 )
-                return outcome(_failure_reason(error))
+                reason = _failure_reason(error)
+                if reason is RunFailureReason.QUOTA_EXHAUSTED:
+                    # Rejected API calls also cost units. Never count them as
+                    # successfully fetched pages or invalidate their page cursor.
+                    cost = error.quota_cost
+                    self._spend(context.workspace_id, cost)
+                    spent += cost
+                    return outcome(reason, keep=True, retry_at=_next_youtube_day(self._now()))
+                return outcome(reason)
             except BaseException:
                 # The owner is told one careful sentence and never a provider
                 # response. The operator needs the opposite, and without this

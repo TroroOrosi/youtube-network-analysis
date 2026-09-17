@@ -36,6 +36,7 @@ from channel_connections.models import (
 from channel_connections.ports import (
     ProviderAuthorizationExpired,
     ProviderRejected,
+    ProviderQuotaExceeded,
     ProviderUnavailable,
 )
 from channel_connections.models import AuthorizationFailureReason as Reason
@@ -252,14 +253,17 @@ def _rejected(reason: Reason) -> ProviderRejected:
 def _decode(status: int, body: bytes) -> dict[str, object]:
     """Read a provider JSON body, mapping every failure to a safe reason.
 
-    Every 4xx becomes one reason on purpose, so the owner is never shown what
-    Google said. That collapse is also why an operator could not tell a revoked
+    Daily quota exhaustion is kept distinct so collection can wait for reset.
+    Other 4xx responses become one safe reason, never Google's response body.
+    That collapse is also why an operator could not tell a revoked
     grant from a disabled comment section from a bad parameter: one message, one
     state, three different things to do about it. The log below keeps the two
     fields that distinguish them and no others — the status, and Google's own
     machine-readable `reason` keywords. Neither is user data or a credential.
     """
 
+    if status in (403, 429) and {"quotaExceeded", "dailyLimitExceeded"}.intersection(_error_reasons(body)):
+        raise ProviderQuotaExceeded()
     if status >= 500:
         raise ProviderUnavailable("provider returned a server error")
     if status >= 400:
@@ -428,7 +432,7 @@ class GoogleAuthorizationGateway(_GoogleClient):
 
         status, _ = self._get_api(
             "subscriptions",
-            {"part": "subscriberSnippet", "myRecentSubscribers": "true", "maxResults": "1"},
+            {"part": "subscriberSnippet", "mySubscribers": "true", "maxResults": "1"},
             access_token,
         )
         if status >= 500:
@@ -488,6 +492,11 @@ def _next_page_token(payload: Mapping[str, object]) -> str | None:
     return token if isinstance(token, str) and token else None
 
 
+# A legacy unprefixed cursor was issued for myRecentSubscribers. Never feed it
+# to mySubscribers after a deployment; those are different provider queries.
+_SUBSCRIBERS_CURSOR_PREFIX = "yna:subscribers:v1:"
+
+
 class GoogleDataGateway(_GoogleClient):
     """Implements `YouTubeDataGateway` against the YouTube Data API v3.
 
@@ -517,13 +526,19 @@ class GoogleDataGateway(_GoogleClient):
         page_token: str | None,
         max_results: int,
     ) -> ProviderPage:
+        all_feed = page_token is None or page_token.startswith(_SUBSCRIBERS_CURSOR_PREFIX)
+        if page_token is not None and all_feed:
+            page_token = page_token[len(_SUBSCRIBERS_CURSOR_PREFIX):]
+            if not page_token:
+                raise _rejected(Reason.INVALID_PROVIDER_RESPONSE)
+        selector = "mySubscribers" if all_feed else "myRecentSubscribers"
         payload = self._list(
             workspace_id,
             credential_slot_id,
             "subscriptions",
             {
                 "part": "subscriberSnippet,snippet",
-                "myRecentSubscribers": "true",
+                selector: "true",
                 "maxResults": str(max_results),
             },
             page_token,
@@ -539,9 +554,12 @@ class GoogleDataGateway(_GoogleClient):
             )
             if row is not None:
                 rows.append(row)
+        next_token = _next_page_token(payload)
+        if all_feed and next_token is not None:
+            next_token = _SUBSCRIBERS_CURSOR_PREFIX + next_token
         return ProviderPage(
             rows=tuple(rows),
-            next_page_token=_next_page_token(payload),
+            next_page_token=next_token,
             quota_cost=1,
         )
 
@@ -558,17 +576,20 @@ class GoogleDataGateway(_GoogleClient):
         if key not in self._uploads_playlists:
             self._uploads_playlists[key] = self._uploads_playlist(*key)
             quota_cost += 1
-        payload = self._list(
-            workspace_id,
-            credential_slot_id,
-            "playlistItems",
-            {
-                "part": "snippet",
-                "playlistId": self._uploads_playlists[key],
-                "maxResults": str(max_results),
-            },
-            page_token,
-        )
+        try:
+            payload = self._list(
+                workspace_id,
+                credential_slot_id,
+                "playlistItems",
+                {
+                    "part": "snippet",
+                    "playlistId": self._uploads_playlists[key],
+                    "maxResults": str(max_results),
+                },
+                page_token,
+            )
+        except ProviderQuotaExceeded as exhausted:
+            raise ProviderQuotaExceeded(quota_cost=quota_cost - 1 + exhausted.quota_cost) from None
         rows = []
         for item in _items(payload):
             snippet = _mapping(item, "snippet")

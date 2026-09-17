@@ -117,8 +117,9 @@ MESSAGES = {
     "collect_partial": "本日の取得上限に達したため、途中まで収集しました。明日以降に再実行してください。",
     "collect_failed": "収集できませんでした。接続の再認可が必要な可能性があります。",
     "collect_suspended": (
-        "本日の取得上限に達しました。"
-        "続きは翌日以降に自動で再開します。このまま閉じて構いません。"
+        "利用枠の回復待ちです。取得済みデータを保持しています。"
+        "次回実行可能時刻以降、自動実行が設定されている場合は続きから再開します。"
+        "未設定の場合は進捗ページから継続してください。"
     ),
     "collect_stopped": "収集を中断しました。次に開いたときに続きから再開します。",
     "schedule_created": "定期収集を設定しました。",
@@ -760,6 +761,11 @@ def _register_routes(app: FastAPI) -> None:
                     "timestamp_label": timestamp_label,
                     "detail": RUN_FAILURE_LABELS.get(failure, "") if failure else "—",
                     "quota_spent": item.quota_spent,
+                    "pages_fetched": item.pages_fetched,
+                    "next_attempt": (
+                        _display_datetime(item.next_attempt_at)[1]
+                        if item.next_attempt_at is not None else "—"
+                    ),
                 }
             )
         return _render(

@@ -663,7 +663,7 @@ class SubscriberListingTests(DataGatewayFixture):
         ).encode(),
     )
 
-    def test_the_owners_recent_subscribers_are_requested(self) -> None:
+    def test_legacy_recent_subscriber_cursor_keeps_its_original_selector(self) -> None:
         gateway, transport, _ = self.build(
             {f"{API_ROOT}/subscriptions": self.REPLY}, stored_credential()
         )
@@ -690,7 +690,7 @@ class SubscriberListingTests(DataGatewayFixture):
         self.assertEqual(
             page.rows[0].api_published_at, datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
         )
-        self.assertEqual(page.next_page_token, "next-1")
+        self.assertEqual(page.next_page_token, "yna:subscribers:v1:next-1")
 
     def test_an_unreadable_subscriber_row_is_skipped(self) -> None:
         gateway, _, _ = self.build(

@@ -5,6 +5,7 @@ import unittest
 from datetime import timedelta
 
 from collection_jobs.models import (
+    CancelRun,
     CreateSchedule,
     DEFAULT_DAILY_QUOTA_UNITS,
     EnqueueRun,
@@ -171,6 +172,8 @@ class SpentQuotaTests(RestartFixture):
             self.owner, ExecuteRun(run_id=first.run_id, idempotency_key="execute-1")
         )
 
+        # Explicit cancellation allows a new run; it must not refund quota.
+        self.jobs.cancel_run(self.owner, CancelRun(run_id=first.run_id, idempotency_key="cancel-1"))
         self.restart()
 
         second = self.enqueue("enqueue-2")

@@ -57,16 +57,16 @@ class QuotaTests(PolicyFixture):
     def test_a_run_stops_before_an_unaffordable_call(self) -> None:
         finished = self.execute()
 
-        self.assertEqual(finished.status, RunStatus.PARTIAL)
+        self.assertEqual(finished.status, RunStatus.QUEUED)
         self.assertEqual(finished.failure_reason, RunFailureReason.QUOTA_EXHAUSTED)
         self.assertEqual(finished.pages_fetched, 1)
         self.assertEqual(finished.quota_spent, 3)
         self.assertEqual(
             [state.status for state in self.collection_states()],
-            [CollectionStatus.PARTIAL],
+            [CollectionStatus.IN_PROGRESS],
         )
 
-    def test_a_partial_run_promotes_nothing(self) -> None:
+    def test_a_quota_wait_promotes_nothing(self) -> None:
         self.execute()
 
         freshness = self.stack.channel_data.get_freshness(self.owner, "UC_channel_1")
@@ -157,7 +157,7 @@ class FailClosedTests(PolicyFixture):
         self.assertEqual(finished.attempt, 1)
         self.assertEqual(self.collection_states(), [])
 
-    def test_quota_exhaustion_is_never_auto_retried(self) -> None:
+    def test_quota_exhaustion_is_not_retried_before_reset(self) -> None:
         stack = build_stack(daily_quota_units=5)
         owner = context()
         connection = stack.connect(owner)
@@ -174,8 +174,18 @@ class FailClosedTests(PolicyFixture):
             owner, ExecuteRun(run_id=queued.run_id, idempotency_key="x1")
         )
 
-        self.assertEqual(finished.status, RunStatus.PARTIAL)
-        self.assertIsNone(finished.next_attempt_at)
+        self.assertEqual(finished.status, RunStatus.QUEUED)
+        self.assertEqual(finished.failure_reason, RunFailureReason.QUOTA_EXHAUSTED)
+        self.assertGreater(finished.next_attempt_at, stack.clock.now())
+        calls = len(stack.data_gateway.calls)
+        self.assertEqual(stack.jobs.execute_due_runs(owner, stack.clock.now(), 10), ())
+        self.assertEqual(len(stack.data_gateway.calls), calls)
+        stack.clock.advance(timedelta(days=1))
+        continued = stack.jobs.execute_run(owner, ExecuteRun(
+            run_id=queued.run_id, idempotency_key="x2"))
+        self.assertEqual(continued.run_id, queued.run_id)
+        self.assertEqual(continued.attempt, 1)
+        self.assertGreater(continued.pages_fetched, finished.pages_fetched)
 
 
 class CancellationTests(PolicyFixture):
