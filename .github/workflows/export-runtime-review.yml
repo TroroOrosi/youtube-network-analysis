@@ -1,0 +1,28 @@
+name: Export runtime for collection review (temporary)
+on:
+  push:
+    branches: [fix/targeted-owner-content-recovery]
+    paths: [.github/workflows/export-runtime-review.yml]
+permissions:
+  contents: read
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Archive tracked runtime and specifications only
+        run: |
+          git archive --format=tar.gz --output=runtime-review.tar.gz HEAD web_ui workspace_access channel_connections channel_data collection_jobs analysis_api subscriber_analytics Dockerfile .dockerignore .gcloudignore .github docs 'SPEC-*'
+          git ls-tree -r HEAD > runtime-review-tree.txt
+          git rev-parse HEAD > runtime-review-commit.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: runtime-review
+          path: |
+            runtime-review.tar.gz
+            runtime-review-tree.txt
+            runtime-review-commit.txt
+          retention-days: 1
