@@ -118,6 +118,9 @@
 {% endif %}
 
 <h2 id="runs-heading">最近の収集</h2>
+<p><a href="/collecting">進捗を確認・収集を継続する</a></p>
+<p class="limits">日次上限では取得済みデータを保持します。次回実行可能時刻（日本時間）以降、
+自動実行が設定されている場合は続きから再開します。未設定の場合は上の進捗ページから継続してください。</p>
 {% if runs %}
 <div class="table-scroll" role="region" aria-labelledby="runs-heading" tabindex="0">
 <table>
@@ -129,6 +132,8 @@
       <th scope="col">結果</th>
       <th scope="col">詳細</th>
       <th scope="col">使用量</th>
+      <th scope="col">取得済みページ数</th>
+      <th scope="col">次回実行可能時刻</th>
     </tr>
   </thead>
   <tbody>
@@ -140,6 +145,8 @@
       <td>{{ run.status }}</td>
       <td>{{ run.detail }}</td>
       <td>{{ run.quota_spent }}</td>
+      <td>{{ run.pages_fetched }}</td>
+      <td>{{ run.next_attempt }}</td>
     </tr>
   {% endfor %}
   </tbody>

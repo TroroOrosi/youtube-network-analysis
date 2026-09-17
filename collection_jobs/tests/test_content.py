@@ -6,7 +6,6 @@ from datetime import UTC, datetime, timedelta
 from channel_connections.ports import ProviderUnavailable
 from channel_data.models import CollectionKind, CollectionStatus
 from collection_jobs.models import EnqueueRun, ExecuteRun, RunFailureReason, RunKind, RunStatus
-from collection_jobs.service import MAX_STALLED_DAYS
 from collection_jobs.tests.support import NOW, TickingClock, build_stack, context
 
 
@@ -135,7 +134,7 @@ class OwnerContentExecutionTests(OwnerContentFixture):
         )
 
         self.assertEqual(stopped.status, RunStatus.QUEUED)
-        self.assertIsNone(stopped.failure_reason)
+        self.assertEqual(stopped.failure_reason, RunFailureReason.QUOTA_EXHAUSTED)
         self.assertEqual(
             stopped.next_attempt_at, datetime(2026, 8, 22, tzinfo=UTC)
         )
@@ -254,59 +253,43 @@ class OwnerContentExecutionTests(OwnerContentFixture):
         self.assertEqual(subscribers.status, RunStatus.SUCCEEDED)
 
 
-    def test_a_run_that_never_covers_a_video_stops_being_woken(self) -> None:
-        """Waking, affording nothing and sleeping again is not progress.
-
-        Suspension has no attempt counter behind it, so a workspace whose day
-        of units cannot pay for even one comment call would requeue this run
-        every midnight for good: the run never ends, the candidate collection
-        it opened never closes, and the pending list is carried forever. After
-        MAX_STALLED_DAYS days that bought no video at all the run stops, keeps
-        the PARTIAL status that says why, and lets go of its resume point.
-        """
-
+    def test_budget_starvation_beyond_three_days_retains_and_then_finishes_comments(self) -> None:
+        """A daily budget is a wait condition even when other work used it first."""
         limited = build_stack(daily_quota_units=6)
         owner = context()
         connection = limited.connect(owner)
-        content = limited.jobs.enqueue_run(
-            owner,
-            EnqueueRun(
-                connection_id=connection.connection_id,
-                kind=RunKind.OWNER_CONTENT,
-                idempotency_key="c1",
-            ),
-        )
-        # Day one: listing the videos spends the whole budget, so the first
-        # comment call is already out of reach and the run sleeps having
-        # covered nothing.
-        stopped = limited.jobs.execute_run(
-            owner, ExecuteRun(run_id=content.run_id, idempotency_key="x0")
-        )
+        content = limited.jobs.enqueue_run(owner, EnqueueRun(
+            connection_id=connection.connection_id, kind=RunKind.OWNER_CONTENT,
+            idempotency_key="c1"))
+        stopped = limited.jobs.execute_run(owner, ExecuteRun(
+            run_id=content.run_id, idempotency_key="x0"))
         self.assertEqual(stopped.status, RunStatus.QUEUED)
-
-        for day in range(1, MAX_STALLED_DAYS):
+        # Exactly two pages complete the burner instead of leaving another
+        # unfinished subscriber run which would correctly block its replacement.
+        limited.data_gateway.subscribers = limited.data_gateway.subscribers[:4]
+        for day in range(1, 6):
             limited.clock.advance(timedelta(days=1))
-            # Another run takes the day's units before this one wakes, which is
-            # what a budget too small for the channel looks like from here.
-            burner = limited.jobs.enqueue_run(
-                owner,
-                EnqueueRun(
-                    connection_id=connection.connection_id,
-                    kind=RunKind.SUBSCRIBERS,
-                    idempotency_key=f"s{day}",
-                ),
-            )
-            limited.jobs.execute_run(
-                owner, ExecuteRun(run_id=burner.run_id, idempotency_key=f"b{day}")
-            )
-            stopped = limited.jobs.execute_run(
-                owner, ExecuteRun(run_id=content.run_id, idempotency_key=f"x{day}")
-            )
-
-        self.assertEqual(stopped.status, RunStatus.PARTIAL)
-        self.assertEqual(stopped.failure_reason, RunFailureReason.QUOTA_EXHAUSTED)
-        self.assertIsNone(stopped.next_attempt_at)
-        self.assertEqual(limited.jobs.due_workspace_ids(NOW + timedelta(days=30)), ())
+            burner = limited.jobs.enqueue_run(owner, EnqueueRun(
+                connection_id=connection.connection_id, kind=RunKind.SUBSCRIBERS,
+                idempotency_key=f"s{day}"))
+            self.assertEqual(limited.jobs.execute_run(owner, ExecuteRun(
+                run_id=burner.run_id, idempotency_key=f"b{day}")).status, RunStatus.SUCCEEDED)
+            stopped = limited.jobs.execute_run(owner, ExecuteRun(
+                run_id=content.run_id, idempotency_key=f"x{day}"))
+            self.assertEqual(stopped.status, RunStatus.QUEUED)
+            self.assertEqual(stopped.failure_reason, RunFailureReason.QUOTA_EXHAUSTED)
+            self.assertIsNotNone(stopped.next_attempt_at)
+            self.assertEqual(stopped.attempt, 1)
+        # With the next days' budgets available, finish without relisting videos.
+        for day in range(6, 12):
+            limited.clock.advance(timedelta(days=1))
+            stopped = limited.jobs.execute_run(owner, ExecuteRun(
+                run_id=content.run_id, idempotency_key=f"x{day}"))
+            if stopped.status is not RunStatus.QUEUED:
+                break
+        self.assertEqual(stopped.status, RunStatus.SUCCEEDED)
+        videos = [c for c in limited.data_gateway.calls if c.operation == "LIST_VIDEOS"]
+        self.assertEqual(len(videos), 2)
 
     def test_a_day_that_covers_something_clears_the_stall_count(self) -> None:
         """Slow is not stalled: any video covered means the run is still moving."""
@@ -326,7 +309,7 @@ class OwnerContentExecutionTests(OwnerContentFixture):
             owner, ExecuteRun(run_id=content.run_id, idempotency_key="x0")
         )
 
-        for day in range(1, MAX_STALLED_DAYS + 3):
+        for day in range(1, 6):
             if run.status is not RunStatus.QUEUED:
                 break
             limited.clock.advance(timedelta(days=1))

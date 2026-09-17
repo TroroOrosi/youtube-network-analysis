@@ -82,7 +82,7 @@ The adapter asks for offline access and an S256 PKCE challenge, refreshes the
 access token when it is within a minute of expiry, and revokes the grant at the
 provider when a connection is disconnected. Only the channel owner's own
 account can connect: the exchange verifies the owner channel and probes
-`subscriptions?myRecentSubscribers=true`, and a grant without that capability is
+`subscriptions?mySubscribers=true`, and a grant without that capability is
 refused with `PROVIDER_CAPABILITY_MISSING`.
 
 Nothing starts on its own. A real run still needs an owner to press 接続する and
@@ -545,30 +545,20 @@ application. `--oidc-token-audience` must match the URL exactly, because that is
 the half of the check that stops a token issued for some other service being
 replayed here.
 
-Hourly is generous for what the job is for. The only thing it can unblock is a
-run waiting for units, and units refill once a day at UTC midnight; the extra
-23 calls are there so a suspension that happens for another reason is not
-waiting a whole day.
+The scheduled drain advances queued work after its eligible time. Local application
+budgets reset at UTC midnight; YouTube's explicit daily quota errors wait for
+Pacific midnight. An hourly drain resumes on the next configured tick, not
+necessarily exactly at midnight. Completed runs are not rerun unless a separate
+recurring collection schedule requests it.
 
 ### What it costs
 
-Nothing, and here is the arithmetic rather than the assurance:
-
-- **Cloud Scheduler** allows 3 jobs free per billing account. This is one.
-- **Cloud Run** allows 180,000 vCPU-seconds a month. An hourly call that finds
-  nothing queued answers immediately: 720 calls a month of well under a second
-  each, which is a rounding error. A call that does find work is capped at
-  `DRAIN_SLICE_SECONDS` (120 s), so even the impossible case where all 720 ran
-  the full slice is 86,400 vCPU-seconds — still inside the allowance, though it
-  would leave under half of it for people using the site. The daily quota stops
-  collection long before that, so it is a ceiling and not an expectation.
-- **Firestore** allows 20,000 writes a day. A slice writes the module documents
-  it touched, once per slice, not once per provider call. A module whose text
-  has grown past one document counts as one write per piece, so a `channel_data`
-  of three pieces spends three of that allowance per save.
-- The scheduler job itself makes no image, holds no storage, and adds no
-  always-on instance: `--min-instances 0` still stands, and the drain simply
-  cold-starts.
+Do not assume multi-day collection is free. Cloud Run processing, Firestore
+reads/writes and stored state, Cloud Scheduler and build/image storage depend on
+actual usage and applicable allowances. Larger page checkpoints increase stored
+state and write size; a complete state rewrite remains part of this reference
+implementation. No quota, billing account or scaling ceiling is raised by the
+multi-day collection change. Check budgets and billing before enabling drivers.
 
 If the drain is not set up, nothing breaks. Collections still finish while the
 browser is on `/collecting`, and one that runs out of units waits for an owner
@@ -641,3 +631,20 @@ python -m unittest discover -s web_ui/tests -t web_ui/tests -v
 those modes mean nothing. It was last observed passing on `python:3.14-slim`
 with `umask 0022`, which reported `0o700` for the directory and `0o600` for the
 document.
+
+## Multi-day subscriber, video and comment collection (2026-09-17)
+
+New hosted subscriber traversals use `mySubscribers=true` and follow every
+returned page token with no application 1,000-row/20-page cutoff. YouTube can
+limit both subscriber feeds, and private subscriptions are not obtainable by
+this change. Do not label a completed traversal as all channel subscribers.
+Older unprefixed continuation tokens keep the original `myRecentSubscribers`
+query; new tokens carry an application prefix stripped before API requests.
+Do not roll back to a binary that cannot interpret those saved cursors.
+
+All phases keep checkpoints at daily limits and expose progress / next eligible
+JST time on the dashboard. Deployment of the new runtime is required; running a
+recovery script alone does not upgrade collection behavior. The existing
+single-writer backup and cutover requirements still apply.
+
+[Behavior, tests and recovery operations](../docs/operations/multiday-collection.md)

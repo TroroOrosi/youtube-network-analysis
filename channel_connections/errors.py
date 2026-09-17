@@ -36,6 +36,7 @@ class ChannelConnectionsError(ValueError):
         retryable: bool = False,
         correlation_id: str | None = None,
         reason_code: str | None = None,
+        quota_cost: int = 0,
     ) -> None:
         super().__init__(message)
         self.code = code.value
@@ -44,3 +45,4 @@ class ChannelConnectionsError(ValueError):
         self.retryable = retryable
         self.correlation_id = correlation_id or f"error_{uuid.uuid4().hex}"
         self.reason_code = reason_code
+        self.quota_cost = quota_cost

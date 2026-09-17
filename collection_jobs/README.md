@@ -33,7 +33,7 @@ coverage to the accepted inventory identifier.
 
 ```text
 QUEUED --execute--> RUNNING --+--> SUCCEEDED
-                              +--> PARTIAL   (quota exhausted)
+                              +--> QUEUED    (daily quota; same attempt, saved cursor)
                               +--> FAILED    (reauth required, or attempts spent)
                               +--> QUEUED    (transient failure, backoff)
 QUEUED | RUNNING --cancel--> CANCELLED
@@ -62,9 +62,15 @@ it neither exposes general connection metadata nor requires `channel.read`.
 
 A workspace has a daily budget in provider units, defaulting to 10000, keyed by
 workspace and UTC date. Before every brokered call the run must be able to
-afford a conservative reservation; otherwise it stops cleanly as `PARTIAL` with
-`QUOTA_EXHAUSTED`. The gateway reports the actual cost of each call and the
-ledger deducts it. Quota is never shared across workspaces.
+afford a conservative reservation; otherwise it waits as `QUEUED` with
+`QUOTA_EXHAUSTED` and `next_attempt_at` at UTC midnight. This applies to subscribers,
+video inventory and comments. All keep page checkpoints across process restarts.
+The gateway reports the actual cost of each successful call and daily-quota
+rejection; the ledger deducts it. Application budgets are workspace scoped, but
+YouTube quotas can be shared by all clients of a Google project. Explicit provider
+daily exhaustion waits until Pacific midnight, not the local UTC budget reset.
+Use system IANA timezone data or the runtime's `tzdata` dependency on Windows/slim
+images. Quota waiting does not discard checkpoints after three days.
 
 ## Retries
 
@@ -72,8 +78,12 @@ A transient provider failure requeues the run with `attempt + 1` and
 `next_attempt_at` set by the exact backoff schedule of 1, 5, and 25 minutes.
 Executing before that time fails with a retryable
 `INVALID_RUN_TRANSITION`. After three attempts the run is `FAILED`.
-Quota exhaustion and a revoked grant are never retried automatically: the owner
-reauthorizes the connection or waits for the next quota day.
+Daily quota exhaustion is a continuation, not a new attempt: the existing driver
+resumes only after the recorded eligible time. A revoked grant still requires the
+owner to reauthorize. A missing grant after a daily wait preserves recorded usage.
+
+See [multi-day collection operations](../docs/operations/multiday-collection.md)
+for provider result limits, deployment, and the opt-in subscriber refresh.
 
 ## Reads
 

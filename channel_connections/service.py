@@ -74,6 +74,7 @@ from .ports import (
     EphemeralSecretStore,
     ProviderAuthorizationExpired,
     ProviderRejected,
+    ProviderQuotaExceeded,
     StateStore,
     TokenGenerator,
     YouTubeAuthorizationGateway,
@@ -472,6 +473,15 @@ class ChannelConnectionsService:
             except ProviderAuthorizationExpired:
                 self._invalidate_credentials(authority, now)
                 raise _safe_error(ErrorCode.CONNECTION_REAUTH_REQUIRED) from None
+            except ProviderQuotaExceeded as exhausted:
+                # Quota is not an expired grant. Preserve both the connection
+                # and the caller's resumable traversal, without provider text.
+                error = _safe_error(
+                    ErrorCode.PROVIDER_AUTHORIZATION_FAILED,
+                    retryable=True, reason_code="QUOTA_EXHAUSTED",
+                )
+                error.quota_cost = exhausted.quota_cost
+                raise error from None
             except BaseException:
                 raise _safe_error(
                     ErrorCode.PROVIDER_AUTHORIZATION_FAILED,
