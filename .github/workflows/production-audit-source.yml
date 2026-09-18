@@ -20,22 +20,22 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.14'
-      - name: Apply reviewed patch without production access
+      - name: Reproduce release boundaries and apply exact-context fixes
         run: python .production-readiness-patch.py
       - name: Install regression dependencies
         run: python -m pip install -q -r web_ui/requirements-dev.txt -r subscriber_analytics/requirements.txt pytest openpyxl ruff
-      - name: Verify runtime and domain integration
+      - name: Verify all domain and operator regressions
         run: |
-          python -m pytest -q --import-mode=importlib --ignore=web_ui/tests/test_production_release.py analysis_api/tests channel_connections/tests channel_data/tests collection_jobs/tests subscriber_analytics/tests web_ui/tests workspace_access/tests
+          python -m pytest -q --import-mode=importlib analysis_api/tests channel_connections/tests channel_data/tests collection_jobs/tests subscriber_analytics/tests web_ui/tests workspace_access/tests
           node --test web_ui/tests/collecting.test.cjs
-          ruff check --select E9,F63,F7,F82 web_ui collection_jobs
-          python -m compileall -q web_ui collection_jobs
-      - name: Commit tested integration only to the work branch
+          ruff check --select E9,F63,F7,F82 web_ui collection_jobs scripts/release_production.py
+          python -m compileall -q web_ui collection_jobs scripts/release_production.py
+      - name: Commit tested changes only to the work branch
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add web_ui/app.py web_ui/main.py collection_jobs/service.py Dockerfile
+          git add scripts/release_production.py web_ui/tests/test_production_release.py README.md web_ui/README.md
           git rm .production-readiness-patch.py
           git diff --cached --check
-          git commit -m 'fix: resume existing collections and enforce hosted runtime safety'
+          git commit -m 'fix: detect release configuration drift and pause ambiguous scheduler resumes'
           git push origin HEAD:refs/heads/fix/production-readiness-20260918
