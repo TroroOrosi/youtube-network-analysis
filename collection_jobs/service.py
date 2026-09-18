@@ -838,6 +838,26 @@ class CollectionJobsService:
 
     # Reads
 
+    def active_runs(
+        self, context: WorkspaceContext, connection_id: str | None = None
+    ) -> tuple[CollectionRun, ...]:
+        """Unfinished work, independent of the paginated terminal history.
+
+        Used to resume collection and determine completion. History display
+        limits must never hide an old quota-suspended run. No provider calls.
+        """
+        _require(context, Permission.COLLECTION_READ)
+        query = RunQuery(connection_id=connection_id)
+        with self._lock:
+            return tuple(sorted(
+                (run for run in self._state.runs.values()
+                 if run.workspace_id == context.workspace_id
+                 and run.status in ACTIVE_STATUSES
+                 and (query.connection_id is None
+                      or run.connection_id == query.connection_id)),
+                key=lambda run: (run.enqueued_at, run.run_id), reverse=True,
+            ))
+
     def get_run(self, context: WorkspaceContext, run_id: str) -> CollectionRun:
         _require(context, Permission.COLLECTION_READ)
         with self._lock:
