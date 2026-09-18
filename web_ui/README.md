@@ -1,5 +1,13 @@
 # web-ui
 
+> **2026-09-18 production entry point:** Use
+> [the guarded production release runbook](../docs/operations/production-release.md)
+> for an existing Cloud Run service. Hosted startup now requires complete Google,
+> Firestore, credential-vault, API-key and Scheduler configuration.
+> The historical bootstrap commands below are not an existing-service update recipe:
+> do not replace existing environment/secrets with `--set-env-vars` or `--set-secrets`.
+> Local demo operation remains supported; an incomplete public Cloud Run demo does not.
+
 > **2026-09-16 recovery update:** Read
 > [site availability and large-channel recovery](../docs/operations/2026-09-16-availability-large-channels.md)
 > before deploying or rolling back. Large Firestore snapshots now use bounded

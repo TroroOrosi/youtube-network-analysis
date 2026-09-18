@@ -59,6 +59,8 @@ def inspect_service(service: dict, jobs: list, *, stopped: bool = False,
             environment[name] = '__secret_reference__' if reference else entry.get('value', '')
         validate_production_environment(environment)
         revision = service['status']['latestReadyRevisionName']
+        require(service['status'].get('latestCreatedRevisionName', revision) == revision,
+                'A newer revision is not ready; inspect its configuration before releasing.')
         require(bool(re.fullmatch(r'[a-z0-9-]{1,128}', revision)), 'Invalid ready revision.')
         if expected_revision is not None:
             require(revision == expected_revision, 'Live revision changed; inspect again.')
@@ -95,6 +97,15 @@ def inspect_service(service: dict, jobs: list, *, stopped: bool = False,
             'database': environment['YNA_FIRESTORE_DATABASE'],
             'scheduler_name': scheduler['name'],
             'scheduler_state': scheduler.get('state', 'UNKNOWN'),
+            # Compare configuration, not volatile execution timestamps. This
+            # digest detects drift without printing secret-reference values.
+            'configuration_fingerprint': hashlib.sha256(json.dumps({
+                'spec': service['spec'],
+                'annotations': service['metadata'].get('annotations', {}),
+                'scheduler': {key: scheduler.get(key) for key in (
+                    'name', 'state', 'schedule', 'timeZone',
+                    'httpTarget', 'attemptDeadline', 'retryConfig')},
+            }, sort_keys=True, separators=(',', ':')).encode()).hexdigest(),
         }
     except ReleaseError:
         raise
@@ -217,6 +228,14 @@ def deploy_prepared_source(checked: dict, *, project: str, region: str, service:
     except BaseException:
         # Never switch an old binary onto a possibly migrated snapshot. Even
         # Ctrl-C during activation fails closed, rather than rolling back data.
+        # A resume request can succeed remotely before its response is lost.
+        # Re-pause it on every failure, then stop the service independently.
+        try:
+            parts = checked['scheduler_name'].split('/')
+            command('scheduler', 'jobs', 'pause', parts[5],
+                    '--project=' + parts[1], '--location=' + parts[3])
+        except Exception:
+            print('WARNING: Scheduler pause could not be confirmed; inspect it immediately.')
         try:
             command('run', 'services', 'update', service, *common, '--scaling=0')
         except Exception:

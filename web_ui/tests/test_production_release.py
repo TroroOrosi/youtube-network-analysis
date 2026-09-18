@@ -171,3 +171,38 @@ class ReleaseTests(unittest.TestCase):
             with self.assertRaises(module.ReleaseError):
                 module.backup_state(target, changing)
             self.assertFalse((target / 'manifest.json').exists())
+
+
+class ReleaseBoundaryTests(unittest.TestCase):
+    def test_unready_newer_revision_is_not_mistaken_for_serving_config(self):
+        from scripts import release_production as module
+        service = service_fixture()
+        service['status']['latestCreatedRevisionName'] = 'yna-web-unready'
+        with self.assertRaises(module.ReleaseError):
+            module.inspect_service(service, scheduler_fixture())
+
+    def test_secret_reference_drift_changes_inspection_fingerprint(self):
+        from scripts import release_production as module
+        first = service_fixture()
+        changed = deepcopy(first)
+        env = changed['spec']['template']['spec']['containers'][0]['env']
+        next(item for item in env if item['name'] == 'YNA_GOOGLE_CLIENT_SECRET')['valueFrom']['secretKeyRef']['key'] = '8'
+        self.assertNotEqual(module.inspect_service(first, scheduler_fixture()),
+                            module.inspect_service(changed, scheduler_fixture()))
+
+    def test_resume_timeout_pauses_scheduler_before_disabling_service(self):
+        from scripts import release_production as module
+        checked = module.inspect_service(service_fixture(), scheduler_fixture(), stopped=True)
+        calls = []
+        def command(*args):
+            calls.append(args)
+            if args[:3] == ('scheduler', 'jobs', 'resume'):
+                raise module.ReleaseError('resume may already have succeeded remotely')
+            return {}
+        with self.assertRaises(module.ReleaseError):
+            module.deploy_prepared_source(
+                checked, project='example', region='asia-northeast1', service='yna-web',
+                source=Path('/tmp/source'), source_sha='c' * 40, suffix='p-timeout',
+                command=command, probe=lambda *args: None)
+        self.assertEqual(calls[-2][:3], ('scheduler', 'jobs', 'pause'))
+        self.assertIn('--scaling=0', calls[-1])
