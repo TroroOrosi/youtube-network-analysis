@@ -16,14 +16,29 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Archive tracked source for isolated regression testing
+      - name: Inspect deployment source only
         run: |
-          git rev-parse HEAD > source-commit.txt
-          git archive --format=tar.gz --output=source.tar.gz HEAD
-      - uses: actions/upload-artifact@v4
-        with:
-          name: production-audit-source
-          path: |
-            source.tar.gz
-            source-commit.txt
-          retention-days: 1
+          git ls-files '*AGENTS.md' '*CLAUDE.md' '*cloud*' '*deploy*' 'web_ui/*' 'scripts/*'
+          for f in AGENTS.md web_ui/AGENTS.md Dockerfile web_ui/main.py web_ui/requirements.txt; do
+            if [ -f "$f" ]; then printf '\n=== %s ===\n' "$f"; cat "$f"; fi
+          done
+      - name: Read-only unauthenticated production health
+        run: |
+          python - <<'PY'
+          import datetime, json, urllib.request, urllib.error
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  return None
+          opener = urllib.request.build_opener(NoRedirect)
+          base = 'https://yna-web-893183842893.asia-northeast1.run.app'
+          for path in ['/login', '/', '/healthz', '/readyz', '/internal/drain']:
+              try:
+                  r = opener.open(urllib.request.Request(base + path, headers={'User-Agent': 'YNA-production-readiness-read-only'}), timeout=30)
+              except urllib.error.HTTPError as exc:
+                  r = exc
+              except urllib.error.URLError as exc:
+                  print(json.dumps({'path': path, 'network_error': str(exc.reason)}))
+                  continue
+              print(json.dumps({'utc': datetime.datetime.now(datetime.timezone.utc).isoformat(), 'path': path, 'status': r.code, 'headers': {k: r.headers.get(k) for k in ['location','content-type','x-content-type-options','x-frame-options','cache-control','x-yna-revision']}}))
+              r.close()
+          PY
