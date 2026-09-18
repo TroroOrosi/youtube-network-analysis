@@ -1,0 +1,29 @@
+name: Production audit source (temporary)
+
+on:
+  push:
+    branches: [fix/production-readiness-20260918]
+    paths: [.github/workflows/production-audit-source.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Archive tracked source for isolated regression testing
+        run: |
+          git rev-parse HEAD > source-commit.txt
+          git archive --format=tar.gz --output=source.tar.gz HEAD
+      - uses: actions/upload-artifact@v4
+        with:
+          name: production-audit-source
+          path: |
+            source.tar.gz
+            source-commit.txt
+          retention-days: 1
