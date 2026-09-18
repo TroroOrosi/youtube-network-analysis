@@ -4,6 +4,11 @@ from __future__ import annotations
 
 import os
 
+from .runtime import validate_production_environment
+
+# Refuse incomplete hosted settings before constructing any service.
+validate_production_environment(os.environ)
+
 from .app import create_app
 from .container import (
     build_services,

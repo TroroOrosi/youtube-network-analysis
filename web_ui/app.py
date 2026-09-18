@@ -78,6 +78,7 @@ from .audience_report import (
 from .container import Services, build_services
 from .google_login import STATE_TTL, GoogleLogin, LoginFailed
 from .gcp import GcpUnavailable
+from .runtime import install_operational_routes
 
 SESSION_COOKIE = "yna_session"
 WORKSPACE_COOKIE = "yna_workspace"
@@ -353,9 +354,9 @@ def _collection_progress(
     services: Services, context: WorkspaceContext, moment: datetime
 ) -> tuple[tuple[CollectionRun, ...], tuple[CollectionRun, ...], bool]:
     runs = _every_run(services, context)
-    waiting = tuple(
-        run for run in runs if run.status.value in {"QUEUED", "RUNNING"}
-    )
+    waiting = services.jobs.active_runs(context)
+    active_ids = {run.run_id for run in waiting}
+    runs = waiting + tuple(run for run in runs if run.run_id not in active_ids)
     suspended = bool(waiting) and all(
         run.next_attempt_at is not None and run.next_attempt_at > moment
         for run in waiting
@@ -366,6 +367,7 @@ def _collection_progress(
 def create_app(services: Services | None = None, *, base_url: str = "https://localhost") -> FastAPI:
     app = FastAPI(title="YouTube 分析", docs_url=None, redoc_url=None)
     app.state.services = services or build_services(base_url)
+    app.state.collection_start_lock = Lock()
 
     limiter = _RateLimiter()
 
@@ -415,6 +417,7 @@ def create_app(services: Services | None = None, *, base_url: str = "https://loc
         return response
 
     _register_routes(app)
+    install_operational_routes(app)
     return app
 
 
@@ -533,6 +536,7 @@ def _render(
 
 
 def _error_response(request: Request, code: str, status_code: int) -> HTMLResponse:
+    request.state.error_code = code
     title, action = ERROR_TEXT.get(
         code, ("処理を完了できませんでした。", "時間をおいて再度お試しください。")
     )
@@ -1007,15 +1011,28 @@ def _register_routes(app: FastAPI) -> None:
         session = _require_session(request)
         context = _context(request, session, Permission.COLLECTION_RUN)
         services = _services(request)
-        for kind in (RunKind.SUBSCRIBERS, RunKind.OWNER_CONTENT):
-            services.jobs.enqueue_run(
-                context,
-                EnqueueRun(
-                    connection_id=connection_id,
-                    kind=kind,
-                    idempotency_key=secrets.token_urlsafe(16),
-                ),
-            )
+        # Serialize browser starts, not collection execution. Repeated clicks
+        # resume the existing batch instead of resetting a quota checkpoint or
+        # re-collecting subscribers while content is still queued.
+        with request.app.state.collection_start_lock:
+            if services.jobs.active_runs(context, connection_id):
+                return _redirect("/collecting")
+            for kind in (RunKind.SUBSCRIBERS, RunKind.OWNER_CONTENT):
+                try:
+                    services.jobs.enqueue_run(
+                        context,
+                        EnqueueRun(
+                            connection_id=connection_id,
+                            kind=kind,
+                            idempotency_key=secrets.token_urlsafe(16),
+                        ),
+                    )
+                except CollectionJobsError as error:
+                    # A scheduler may have queued work since the read above.
+                    # Authorization/storage/input errors must still propagate.
+                    if error.code != "RUN_ALREADY_ACTIVE":
+                        raise
+                    return _redirect("/collecting")
         return _redirect("/collecting")
 
     @app.get("/collecting", response_class=HTMLResponse)
