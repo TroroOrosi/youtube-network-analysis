@@ -197,6 +197,16 @@ class ReleaseTests(unittest.TestCase):
             self.assertEqual(calls['analysis_api'], 2)
 
 
+    def test_existing_backup_directory_is_rejected_with_actionable_error(self):
+        module = self.module()
+        with tempfile.TemporaryDirectory() as parent:
+            target = Path(parent) / 'already-there'
+            target.mkdir()
+            with self.assertRaises(module.ReleaseError) as caught:
+                module.backup_state(target, lambda name: '{}')
+            self.assertIn('already exists', str(caught.exception))
+
+
 class ReleaseBoundaryTests(unittest.TestCase):
     def test_unready_newer_revision_is_not_mistaken_for_serving_config(self):
         from scripts import release_production as module
