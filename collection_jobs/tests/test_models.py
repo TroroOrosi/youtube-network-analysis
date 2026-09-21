@@ -106,7 +106,8 @@ class PolicyConstantTests(unittest.TestCase):
 class EnumContractTests(unittest.TestCase):
     def test_run_enums_are_stable(self) -> None:
         self.assertEqual(
-            [item.value for item in RunKind], ["SUBSCRIBERS", "OWNER_CONTENT"]
+            [item.value for item in RunKind],
+            ["SUBSCRIBERS", "OWNER_CONTENT", "AUDIENCE_NETWORK"],
         )
         self.assertEqual(
             [item.value for item in RunStatus],

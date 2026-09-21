@@ -24,6 +24,7 @@ from channel_connections.errors import ChannelConnectionsError
 from channel_connections.models import (
     APPROVED_SCOPES,
     CommentAuthorRow,
+    ChannelSubscriptionRow,
     ConnectionProvider,
     ProviderCredential,
     ProviderPage,
@@ -63,7 +64,7 @@ REQUEST_TIMEOUT_SECONDS = 20.0
 REFRESH_MARGIN = timedelta(seconds=60)
 
 Transport = Callable[..., tuple[int, bytes]]
-_Row = TypeVar("_Row", SubscriberRow, VideoRow, CommentAuthorRow)
+_Row = TypeVar("_Row", SubscriberRow, VideoRow, CommentAuthorRow, ChannelSubscriptionRow)
 
 
 @dataclass(frozen=True, slots=True)
@@ -561,6 +562,71 @@ class GoogleDataGateway(_GoogleClient):
             rows=tuple(rows),
             next_page_token=next_token,
             quota_cost=1,
+        )
+
+    def list_channel_subscriptions(
+        self,
+        workspace_id: str,
+        credential_slot_id: str,
+        *,
+        channel_id: str,
+        page_token: str | None,
+        max_results: int,
+    ) -> ProviderPage:
+        """Read one comment author's public subscription list.
+
+        This is public channel data, so use the API key rather than the owner's
+        OAuth grant. A private/closed/missing viewer is a coverage limitation,
+        not a broken owner credential.
+        """
+
+        if self._api_key is None:
+            raise ProviderUnavailable("no api key is configured for public reads")
+        query = {
+            "part": "snippet",
+            "channelId": channel_id,
+            "maxResults": str(max_results),
+            "key": self._api_key,
+        }
+        if page_token is not None:
+            query["pageToken"] = page_token
+        status, body = self._transport(
+            "GET",
+            f"{API_ROOT}/subscriptions?{urlencode(query)}",
+            headers={},
+            body=None,
+        )
+        reasons = set(_error_reasons(body))
+        inaccessible = {
+            "subscriptionForbidden",
+            "accountClosed",
+            "accountSuspended",
+            "subscriberNotFound",
+        }
+        if status in (403, 404) and reasons.intersection(inaccessible):
+            return ProviderPage(
+                rows=(),
+                next_page_token=None,
+                quota_cost=1,
+                accessible=False,
+            )
+        payload = _decode(status, body)
+        rows = []
+        for item in _items(payload):
+            snippet = _mapping(item, "snippet")
+            resource = _mapping(snippet, "resourceId")
+            row = _row(
+                ChannelSubscriptionRow,
+                channel_id=resource.get("channelId"),
+                title=snippet.get("title"),
+            )
+            if row is not None:
+                rows.append(row)
+        return ProviderPage(
+            rows=tuple(rows),
+            next_page_token=_next_page_token(payload),
+            quota_cost=1,
+            accessible=True,
         )
 
     def list_videos(

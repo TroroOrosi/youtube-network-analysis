@@ -13,6 +13,7 @@ from datetime import UTC, datetime, timedelta
 
 from channel_connections.models import (
     APPROVED_SCOPES,
+    ChannelSubscriptionRow,
     CommentAuthorRow,
     ConnectionProvider,
     ProviderCredential,
@@ -35,6 +36,7 @@ class DemoDataSet:
     subscribers: tuple[SubscriberRow, ...]
     videos: tuple[VideoRow, ...]
     comment_authors: dict[str, tuple[CommentAuthorRow, ...]]
+    channel_subscriptions: dict[str, tuple[ChannelSubscriptionRow, ...] | None]
 
 
 def build_demo_dataset(now: datetime | None = None) -> DemoDataSet:
@@ -72,7 +74,22 @@ def build_demo_dataset(now: datetime | None = None) -> DemoDataSet:
         ),
         "demo-video-3": (),
     }
-    return DemoDataSet(subscribers=subscribers, videos=videos, comment_authors=comment_authors)
+    channel_subscriptions = {
+        "UC_demo_sub_1": (
+            ChannelSubscriptionRow("UC_demo_other_1", "学びチャンネル"),
+            ChannelSubscriptionRow("UC_demo_shared", "共通チャンネル"),
+        ),
+        "UC_demo_sub_2": (
+            ChannelSubscriptionRow("UC_demo_other_2", "ニュースチャンネル"),
+            ChannelSubscriptionRow("UC_demo_shared", "共通チャンネル"),
+        ),
+    }
+    return DemoDataSet(
+        subscribers=subscribers,
+        videos=videos,
+        comment_authors=comment_authors,
+        channel_subscriptions=channel_subscriptions,
+    )
 
 
 class DemoAuthorizationGateway:
@@ -139,6 +156,23 @@ class DemoDataGateway:
         max_results: int,
     ) -> ProviderPage:
         return _page(self._dataset.subscribers, page_token, max_results)
+
+    def list_channel_subscriptions(
+        self,
+        workspace_id: str,
+        credential_slot_id: str,
+        *,
+        channel_id: str,
+        page_token: str | None,
+        max_results: int,
+    ) -> ProviderPage:
+        rows = self._dataset.channel_subscriptions.get(channel_id)
+        if rows is None:
+            return ProviderPage(
+                rows=(), next_page_token=None,
+                quota_cost=QUOTA_COST, accessible=False,
+            )
+        return _page(rows, page_token, max_results)
 
     def list_videos(
         self,

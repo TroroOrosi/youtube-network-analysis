@@ -67,6 +67,7 @@ class ProviderOperation(str, Enum):
     LIST_SUBSCRIBERS = "LIST_SUBSCRIBERS"
     LIST_VIDEOS = "LIST_VIDEOS"
     LIST_VIDEO_COMMENT_AUTHORS = "LIST_VIDEO_COMMENT_AUTHORS"
+    LIST_CHANNEL_SUBSCRIPTIONS = "LIST_CHANNEL_SUBSCRIPTIONS"
 
 
 class ConnectionAuditAction(str, Enum):
@@ -441,6 +442,18 @@ class SubscriberRow:
 
 
 @dataclass(frozen=True, slots=True)
+class ChannelSubscriptionRow:
+    """One public channel that an observed audience member subscribes to."""
+
+    channel_id: str
+    title: str
+
+    def __post_init__(self) -> None:
+        _identifier(self.channel_id, "channel_id")
+        _display_text(self.title, "title")
+
+
+@dataclass(frozen=True, slots=True)
 class VideoRow:
     video_id: str
     title: str
@@ -484,6 +497,7 @@ class ProviderOperationRequest:
     page_token: str | None = None
     video_id: str | None = None
     max_results: int = 50
+    channel_id: str | None = None
 
     def __post_init__(self) -> None:
         _enum(self.operation, ProviderOperation, "operation")
@@ -491,6 +505,8 @@ class ProviderOperationRequest:
             _identifier(self.page_token, "page_token", max_length=MAX_PROVIDER_PAGE_TOKEN_LENGTH)
         if self.video_id is not None:
             _identifier(self.video_id, "video_id")
+        if self.channel_id is not None:
+            _identifier(self.channel_id, "channel_id")
         if (
             isinstance(self.max_results, bool)
             or not isinstance(self.max_results, int)
@@ -506,9 +522,12 @@ class ProviderPage:
     rows: tuple[object, ...]
     next_page_token: str | None
     quota_cost: int
+    accessible: bool = True
 
     def __post_init__(self) -> None:
         _tuple(self.rows, "rows")
+        if not isinstance(self.accessible, bool):
+            raise _invalid("accessible", "accessible must be a boolean")
         if self.next_page_token is not None:
             _identifier(self.next_page_token, "next_page_token", max_length=MAX_PROVIDER_PAGE_TOKEN_LENGTH)
         if (
@@ -525,10 +544,13 @@ class ProviderOperationResult:
     rows: tuple[object, ...]
     next_page_token: str | None
     quota_cost: int
+    accessible: bool = True
 
     def __post_init__(self) -> None:
         _enum(self.operation, ProviderOperation, "operation")
         _tuple(self.rows, "rows")
+        if not isinstance(self.accessible, bool):
+            raise _invalid("accessible", "accessible must be a boolean")
         if self.next_page_token is not None:
             _identifier(self.next_page_token, "next_page_token", max_length=MAX_PROVIDER_PAGE_TOKEN_LENGTH)
         if (

@@ -133,7 +133,7 @@ Google all end in the same message on purpose.
   response, credential, or internal identifier.
 - The workspace cookie is only a hint: every request re-resolves a real
   `WorkspaceContext` and the module checks the exact permission.
-- Rate limiting: 30 writes per minute per client, and 3 collection write
+- Rate limiting: 30 writes per minute per client, and 6 collection write
   requests (queueing or advancing a run) per minute, refused with a Japanese
   429 page. Reads are never limited. A client is
   the last entry of `X-Forwarded-For`, which is the one the front end wrote and

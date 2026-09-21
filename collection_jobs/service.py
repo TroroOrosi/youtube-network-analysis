@@ -20,6 +20,7 @@ from typing import Any, Callable
 
 from channel_connections.errors import ChannelConnectionsError
 from channel_connections.models import (
+    ChannelSubscriptionRow,
     CommentAuthorRow,
     ExecutionAuthority,
     SubscriberRow,
@@ -29,6 +30,7 @@ from channel_connections.models import (
     ProviderOperationRequest,
 )
 from channel_connections.ports import CollectionTargetResolver, ConnectionExecutionBroker
+from channel_data.errors import ChannelDataError
 from channel_data.models import (
     CollectionKind,
     CollectionFailureCode,
@@ -50,6 +52,7 @@ from workspace_access.models import Permission, WorkspaceContext
 from . import snapshot
 from .errors import CollectionJobsError, ErrorCode
 from .memory import (
+    AudienceResumePoint,
     CursorRecord,
     IdempotencyRecord,
     MemoryState,
@@ -59,6 +62,9 @@ from .memory import (
 )
 from .models import (
     ACTIVE_STATUSES,
+    AudienceChannel,
+    AudienceNetworkSnapshot,
+    AudienceViewerSubscriptions,
     BACKOFF_SCHEDULE,
     CancelRun,
     CollectionRun,
@@ -198,6 +204,8 @@ def _merge_row(rows: dict[str, object], row: object) -> None:
         rows[row.author_channel_id] = row
     elif isinstance(row, SubscriberRow):
         rows.setdefault(row.subscriber_channel_id, row)
+    elif isinstance(row, ChannelSubscriptionRow):
+        rows.setdefault(row.channel_id, row)
     elif isinstance(row, VideoRow):
         rows.setdefault(row.video_id, row)
     else:
@@ -207,7 +215,10 @@ def _merge_row(rows: dict[str, object], row: object) -> None:
 class TraversalOutcome:
     """Rows gathered before a run stopped, with why it stopped."""
 
-    __slots__ = ("rows", "pages", "quota_spent", "reason", "paused", "new_pages", "new_spent", "retry_at")
+    __slots__ = (
+        "rows", "pages", "quota_spent", "reason", "paused",
+        "new_pages", "new_spent", "retry_at", "accessible",
+    )
 
     def __init__(
         self,
@@ -220,8 +231,10 @@ class TraversalOutcome:
         new_pages: int | None = None,
         new_spent: int | None = None,
         retry_at: datetime | None = None,
+        accessible: bool = True,
     ) -> None:
         self.retry_at = retry_at
+        self.accessible = accessible
         self.paused = paused
         self.new_pages = pages if new_pages is None else new_pages
         self.new_spent = quota_spent if new_spent is None else new_spent
@@ -550,6 +563,16 @@ class CollectionJobsService:
                 for key, point in self._state.resume.items()
                 if point.workspace_id != workspace_id
             }
+            self._state.audience_resume = {
+                key: point
+                for key, point in self._state.audience_resume.items()
+                if point.workspace_id != workspace_id
+            }
+            self._state.audience_snapshots = {
+                key: value
+                for key, value in self._state.audience_snapshots.items()
+                if value.workspace_id != workspace_id
+            }
             self._state.page_checkpoints = {
                 key: point for key, point in self._state.page_checkpoints.items()
                 if point.workspace_id != workspace_id
@@ -577,7 +600,13 @@ class CollectionJobsService:
                 and run.finished_at is not None
                 and run.finished_at + RETENTION_TTL <= reference_time
             ]:
-                del self._state.runs[key]
+                removed = self._state.runs.pop(key)
+                self._state.audience_snapshots.pop(
+                    _key(removed.workspace_id, removed.run_id), None
+                )
+                self._state.audience_resume.pop(
+                    _key(removed.workspace_id, removed.run_id), None
+                )
                 runs_removed += 1
 
             quota_removed = 0
@@ -891,6 +920,33 @@ class CollectionJobsService:
                 },
             )
 
+    def latest_audience_network(
+        self,
+        context: WorkspaceContext,
+        channel_id: str,
+    ) -> AudienceNetworkSnapshot | None:
+        """Newest completed aggregate source for one connected channel."""
+
+        _require(context, Permission.ANALYSIS_READ)
+        if (
+            not isinstance(channel_id, str)
+            or not channel_id
+            or len(channel_id) > MAX_IDENTIFIER_LENGTH
+        ):
+            raise _safe_error(ErrorCode.INVALID_INPUT, field="channel_id")
+        with self._lock:
+            rows = [
+                snapshot
+                for snapshot in self._state.audience_snapshots.values()
+                if snapshot.workspace_id == context.workspace_id
+                and snapshot.channel_id == channel_id
+            ]
+            return max(
+                rows,
+                key=lambda item: (item.captured_at, item.run_id),
+                default=None,
+            )
+
     def list_schedules(
         self,
         context: WorkspaceContext,
@@ -965,6 +1021,8 @@ class CollectionJobsService:
 
         if run.kind is RunKind.SUBSCRIBERS:
             return self._run_subscribers(context, run, authority, now, deadline)
+        if run.kind is RunKind.AUDIENCE_NETWORK:
+            return self._run_audience_network(context, run, authority, now, deadline)
         return self._run_owner_content(context, run, authority, now, deadline)
 
     def _run_subscribers(
@@ -1021,6 +1079,148 @@ class CollectionJobsService:
         self._finish_collection(context, run, collection_id, now, outcome)
         return self._terminal(
             run, now, None, pages=outcome.pages, spent=outcome.quota_spent
+        )
+
+    def _run_audience_network(
+        self,
+        context: WorkspaceContext,
+        run: CollectionRun,
+        authority: ExecutionAuthority,
+        now: datetime,
+        deadline: datetime | None,
+    ) -> CollectionRun:
+        """Collect public subscription lists for the latest comment-author panel."""
+
+        resume_key = _key(run.workspace_id, run.run_id)
+        resuming = self._state.audience_resume.get(resume_key)
+        if resuming is None:
+            try:
+                pending = self._channel_data.load_audience_network_viewers(
+                    context, run.provider_channel_id
+                )
+            except ChannelDataError as error:
+                if error.code == "DATASET_NOT_READY":
+                    return replace(
+                        run,
+                        status=RunStatus.QUEUED,
+                        finished_at=None,
+                        failure_reason=None,
+                        next_attempt_at=now + timedelta(minutes=5),
+                    )
+                raise
+            viewers: tuple[AudienceViewerSubscriptions, ...] = ()
+        else:
+            pending = resuming.pending_viewer_ids
+            viewers = resuming.viewers
+
+        completed = list(viewers)
+        for index, viewer_channel_id in enumerate(pending):
+            if deadline is not None and self._now() >= deadline:
+                progress = self._run(run.workspace_id, run.run_id)
+                self._state.audience_resume[resume_key] = AudienceResumePoint(
+                    workspace_id=run.workspace_id,
+                    run_id=run.run_id,
+                    pending_viewer_ids=pending[index:],
+                    viewers=tuple(completed),
+                    pages_fetched=progress.pages_fetched,
+                    quota_spent=progress.quota_spent,
+                    saved_at=self._now(),
+                )
+                return replace(
+                    progress,
+                    status=RunStatus.QUEUED,
+                    finished_at=None,
+                    failure_reason=None,
+                    next_attempt_at=now,
+                )
+
+            outcome = self._traverse(
+                context,
+                authority,
+                ProviderOperation.LIST_CHANNEL_SUBSCRIPTIONS,
+                None,
+                run,
+                deadline,
+                channel_id=viewer_channel_id,
+            )
+            progress = self._run(run.workspace_id, run.run_id)
+            if outcome.paused or outcome.reason is RunFailureReason.QUOTA_EXHAUSTED:
+                self._state.audience_resume[resume_key] = AudienceResumePoint(
+                    workspace_id=run.workspace_id,
+                    run_id=run.run_id,
+                    pending_viewer_ids=pending[index:],
+                    viewers=tuple(completed),
+                    pages_fetched=progress.pages_fetched,
+                    quota_spent=progress.quota_spent,
+                    saved_at=self._now(),
+                )
+                return replace(
+                    progress,
+                    status=RunStatus.QUEUED,
+                    finished_at=None,
+                    failure_reason=outcome.reason,
+                    next_attempt_at=outcome.retry_at or now,
+                )
+            if outcome.reason is not None:
+                self._state.audience_resume[resume_key] = AudienceResumePoint(
+                    workspace_id=run.workspace_id,
+                    run_id=run.run_id,
+                    pending_viewer_ids=pending[index:],
+                    viewers=tuple(completed),
+                    pages_fetched=progress.pages_fetched,
+                    quota_spent=progress.quota_spent,
+                    saved_at=self._now(),
+                )
+                if (
+                    outcome.reason is RunFailureReason.PROVIDER_UNAVAILABLE
+                    and run.attempt < MAX_ATTEMPTS
+                ):
+                    return replace(
+                        progress,
+                        status=RunStatus.QUEUED,
+                        attempt=run.attempt + 1,
+                        started_at=run.started_at,
+                        finished_at=None,
+                        failure_reason=None,
+                        next_attempt_at=now + BACKOFF_SCHEDULE[run.attempt - 1],
+                    )
+                self._forget_resume(run)
+                return self._terminal(
+                    progress,
+                    now,
+                    outcome.reason,
+                    pages=progress.pages_fetched,
+                    spent=progress.quota_spent,
+                )
+
+            subscriptions = tuple(
+                AudienceChannel(row.channel_id, row.title)
+                for row in outcome.rows
+                if isinstance(row, ChannelSubscriptionRow)
+            )
+            completed.append(
+                AudienceViewerSubscriptions(
+                    viewer_channel_id=viewer_channel_id,
+                    public=outcome.accessible,
+                    subscriptions=subscriptions if outcome.accessible else (),
+                )
+            )
+
+        progress = self._run(run.workspace_id, run.run_id)
+        self._state.audience_snapshots[resume_key] = AudienceNetworkSnapshot(
+            run_id=run.run_id,
+            workspace_id=run.workspace_id,
+            channel_id=run.provider_channel_id,
+            captured_at=self._now(),
+            viewers=tuple(completed),
+        )
+        self._state.audience_resume.pop(resume_key, None)
+        return self._terminal(
+            progress,
+            now,
+            None,
+            pages=progress.pages_fetched,
+            spent=progress.quota_spent,
         )
 
     def _run_owner_content(
@@ -1305,8 +1505,10 @@ class CollectionJobsService:
         )
 
     def _forget_resume(self, run: CollectionRun) -> None:
-        self._state.resume.pop(_key(run.workspace_id, run.run_id), None)
-        self._state.page_checkpoints.pop(_key(run.workspace_id, run.run_id), None)
+        key = _key(run.workspace_id, run.run_id)
+        self._state.resume.pop(key, None)
+        self._state.audience_resume.pop(key, None)
+        self._state.page_checkpoints.pop(key, None)
 
     def _pause_traversal(
         self, run: CollectionRun, now: datetime, outcome: TraversalOutcome
@@ -1358,10 +1560,16 @@ class CollectionJobsService:
         video_id: str | None,
         run: CollectionRun,
         deadline: datetime | None,
+        *,
+        channel_id: str | None = None,
     ) -> TraversalOutcome:
         checkpoint_key = _key(run.workspace_id, run.run_id)
         point = self._state.page_checkpoints.get(checkpoint_key)
-        if point is not None and (point.operation != operation.value or point.video_id != video_id):
+        if point is not None and (
+            point.operation != operation.value
+            or point.video_id != video_id
+            or point.channel_id != channel_id
+        ):
             raise ValueError("provider checkpoint does not match the active traversal")
         rows: dict[str, object] = {}
         for row in point.rows if point is not None else ():
@@ -1372,6 +1580,7 @@ class CollectionJobsService:
         page_token = point.next_page_token if point is not None else None
         visited = list(point.visited_tokens) if point is not None else []
         seen = set(visited)
+        accessible = True
 
         def outcome(reason=None, *, pause=False, keep=False, retry_at=None):
             if keep:
@@ -1379,6 +1588,7 @@ class CollectionJobsService:
                     workspace_id=run.workspace_id, run_id=run.run_id,
                     operation=operation.value, video_id=video_id,
                     rows=tuple(rows.values()), next_page_token=page_token,
+                    channel_id=channel_id,
                     visited_tokens=tuple(visited), pages_fetched=pages, quota_spent=spent,
                 )
             else:
@@ -1387,6 +1597,7 @@ class CollectionJobsService:
                 tuple(rows.values()), pages, spent, reason, paused=pause,
                 new_pages=pages - initial_pages, new_spent=spent - initial_spent,
                 retry_at=retry_at,
+                accessible=accessible,
             )
 
         while True:
@@ -1409,6 +1620,7 @@ class CollectionJobsService:
                         operation=operation,
                         page_token=page_token,
                         video_id=video_id,
+                        channel_id=channel_id,
                         max_results=self._page_size,
                     ),
                 )
@@ -1448,6 +1660,7 @@ class CollectionJobsService:
                 return outcome(RunFailureReason.UNEXPECTED_FAILURE)
 
             self._spend(context.workspace_id, result.quota_cost)
+            accessible = accessible and result.accessible
             progress = self._run(run.workspace_id, run.run_id)
             self._store(replace(
                 progress, pages_fetched=progress.pages_fetched + 1,

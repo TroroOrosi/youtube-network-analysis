@@ -25,6 +25,7 @@ MAX_ATTEMPTS = 3
 class RunKind(str, Enum):
     SUBSCRIBERS = "SUBSCRIBERS"
     OWNER_CONTENT = "OWNER_CONTENT"
+    AUDIENCE_NETWORK = "AUDIENCE_NETWORK"
 
 
 class RunStatus(str, Enum):
@@ -68,6 +69,17 @@ def _identifier(value: object, field_name: str) -> str:
         or "\x00" in value
     ):
         raise _invalid(field_name, f"{field_name} must be a bounded identifier")
+    return value
+
+
+def _display_text(value: object, field_name: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > 500
+        or "\x00" in value
+    ):
+        raise _invalid(field_name, f"{field_name} must be bounded non-empty text")
     return value
 
 
@@ -148,6 +160,59 @@ class CollectionRun:
                 raise _invalid("failure_reason", "this outcome requires a reason")
         elif self.finished_at is not None:
             raise _invalid("finished_at", "an active run cannot be finished")
+
+
+@dataclass(frozen=True, slots=True)
+class AudienceChannel:
+    channel_id: str
+    title: str
+
+    def __post_init__(self) -> None:
+        _identifier(self.channel_id, "channel_id")
+        _display_text(self.title, "title")
+
+
+@dataclass(frozen=True, slots=True)
+class AudienceViewerSubscriptions:
+    viewer_channel_id: str
+    public: bool
+    subscriptions: tuple[AudienceChannel, ...]
+
+    def __post_init__(self) -> None:
+        _identifier(self.viewer_channel_id, "viewer_channel_id")
+        if not isinstance(self.public, bool):
+            raise _invalid("public", "public must be a boolean")
+        if not isinstance(self.subscriptions, tuple):
+            raise _invalid("subscriptions", "subscriptions must be a tuple")
+        if not self.public and self.subscriptions:
+            raise _invalid("subscriptions", "private viewers cannot expose subscriptions")
+        for row in self.subscriptions:
+            if not isinstance(row, AudienceChannel):
+                raise _invalid("subscriptions", "subscriptions contain an invalid row")
+
+
+@dataclass(frozen=True, slots=True)
+class AudienceNetworkSnapshot:
+    run_id: str
+    workspace_id: str
+    channel_id: str
+    captured_at: datetime
+    viewers: tuple[AudienceViewerSubscriptions, ...]
+
+    def __post_init__(self) -> None:
+        _identifier(self.run_id, "run_id")
+        _identifier(self.workspace_id, "workspace_id")
+        _identifier(self.channel_id, "channel_id")
+        object.__setattr__(self, "captured_at", _utc(self.captured_at, "captured_at"))
+        if not isinstance(self.viewers, tuple):
+            raise _invalid("viewers", "viewers must be a tuple")
+        seen: set[str] = set()
+        for viewer in self.viewers:
+            if not isinstance(viewer, AudienceViewerSubscriptions):
+                raise _invalid("viewers", "viewers contain an invalid row")
+            if viewer.viewer_channel_id in seen:
+                raise _invalid("viewers", "viewer ids must be unique")
+            seen.add(viewer.viewer_channel_id)
 
 
 @dataclass(frozen=True, slots=True)

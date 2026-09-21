@@ -77,6 +77,7 @@ from .audience_report import (
 )
 from .container import Services, build_services
 from .google_login import STATE_TTL, GoogleLogin, LoginFailed
+from .live_audience_network import build_live_audience_report
 from .gcp import GcpUnavailable
 from .runtime import install_operational_routes
 
@@ -87,7 +88,7 @@ LOGIN_COOKIE = "yna_login"
 
 CONSENT_ORIGIN = "https://accounts.google.com"
 WRITE_LIMIT_PER_MINUTE = 30
-COLLECT_LIMIT_PER_MINUTE = 3
+COLLECT_LIMIT_PER_MINUTE = 6
 COLLECTION_WRITE_PATHS = frozenset({"/collecting/step"})
 # How long one call may spend collecting. The browser's slice is short
 # because a person is watching a page that is not answering yet; the
@@ -211,6 +212,7 @@ STATUS_LABELS = {
 RUN_KIND_LABELS = {
     "SUBSCRIBERS": "登録者",
     "OWNER_CONTENT": "動画とコメント",
+    "AUDIENCE_NETWORK": "視聴者ネットワーク",
 }
 
 RUN_STATUS_LABELS = {
@@ -1035,6 +1037,37 @@ def _register_routes(app: FastAPI) -> None:
                     return _redirect("/collecting")
         return _redirect("/collecting")
 
+    @app.post("/connections/{connection_id}/audience-network/collect")
+    def collect_audience_network(
+        request: Request, connection_id: str, csrf_token: str = Form("")
+    ) -> Response:
+        """Queue the expensive comment-author public-subscription traversal."""
+
+        _check_csrf(request, csrf_token)
+        session = _require_session(request)
+        context = _context(request, session, Permission.COLLECTION_RUN)
+        services = _services(request)
+        with request.app.state.collection_start_lock:
+            if any(
+                run.kind is RunKind.AUDIENCE_NETWORK
+                for run in services.jobs.active_runs(context, connection_id)
+            ):
+                return _redirect("/collecting")
+            try:
+                services.jobs.enqueue_run(
+                    context,
+                    EnqueueRun(
+                        connection_id=connection_id,
+                        kind=RunKind.AUDIENCE_NETWORK,
+                        idempotency_key=secrets.token_urlsafe(16),
+                    ),
+                )
+            except CollectionJobsError as error:
+                if error.code != "RUN_ALREADY_ACTIVE":
+                    raise
+                return _redirect("/collecting")
+        return _redirect("/collecting")
+
     @app.get("/collecting", response_class=HTMLResponse)
     def collecting(request: Request) -> Response:
         """Show progress without changing state or spending provider quota."""
@@ -1495,13 +1528,67 @@ def _register_routes(app: FastAPI) -> None:
             return response
         return _redirect("/members", "member_removed")
     @app.get("/audience-network", response_class=HTMLResponse)
-    def audience_network(request: Request) -> Response:
+    def audience_network(
+        request: Request,
+        channel_id: str | None = Query(None),
+        demo: bool = Query(False),
+    ) -> Response:
         session = _require_session(request)
-        _context(request, session, Permission.ANALYSIS_READ)
+        context = _context(request, session, Permission.ANALYSIS_READ)
+        services = _services(request)
+        connections = tuple(services.connections.list_connections(context).items)
+        selected = None
+        if channel_id is not None:
+            selected = next(
+                (
+                    connection
+                    for connection in connections
+                    if connection.provider_channel_id == channel_id
+                ),
+                None,
+            )
+            if selected is None:
+                raise AppError("CONNECTION_NOT_FOUND_OR_FORBIDDEN", status_code=404)
+        elif len(connections) == 1:
+            selected = connections[0]
+
+        live_snapshot = (
+            services.jobs.latest_audience_network(
+                context, selected.provider_channel_id
+            )
+            if selected is not None and not demo
+            else None
+        )
+        report = (
+            AUDIENCE_REPORT
+            if demo
+            else (
+                build_live_audience_report(live_snapshot)
+                if live_snapshot is not None
+                else None
+            )
+        )
         return _render(
             request,
             "audience_network.html",
-            {"session": session, "report": AUDIENCE_REPORT},
+            {
+                "session": session,
+                "report": report,
+                "demo": demo,
+                "selected_channel_id": (
+                    selected.provider_channel_id if selected is not None else None
+                ),
+                "selected_connection_id": (
+                    selected.connection_id if selected is not None else None
+                ),
+                "connections": [
+                    {
+                        "channel_id": connection.provider_channel_id,
+                        "title": connection.channel_title,
+                    }
+                    for connection in connections
+                ],
+            },
         )
 
     @app.get("/audience-network/report.xlsx")

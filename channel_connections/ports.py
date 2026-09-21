@@ -200,6 +200,16 @@ class YouTubeDataGateway(Protocol):
         max_results: int,
     ) -> ProviderPage: ...
 
+    def list_channel_subscriptions(
+        self,
+        workspace_id: str,
+        credential_slot_id: str,
+        *,
+        channel_id: str,
+        page_token: str | None,
+        max_results: int,
+    ) -> ProviderPage: ...
+
     def list_videos(
         self,
         workspace_id: str,
