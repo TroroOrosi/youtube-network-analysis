@@ -20,6 +20,7 @@ from typing import Any, Callable
 
 from channel_connections.errors import ChannelConnectionsError
 from channel_connections.models import (
+    ChannelSubscriptionRow,
     CommentAuthorRow,
     ExecutionAuthority,
     SubscriberRow,
@@ -29,6 +30,7 @@ from channel_connections.models import (
     ProviderOperationRequest,
 )
 from channel_connections.ports import CollectionTargetResolver, ConnectionExecutionBroker
+from channel_data.errors import ChannelDataError
 from channel_data.models import (
     CollectionKind,
     CollectionFailureCode,
@@ -50,6 +52,7 @@ from workspace_access.models import Permission, WorkspaceContext
 from . import snapshot
 from .errors import CollectionJobsError, ErrorCode
 from .memory import (
+    AudienceResumePoint,
     CursorRecord,
     IdempotencyRecord,
     MemoryState,
@@ -59,6 +62,9 @@ from .memory import (
 )
 from .models import (
     ACTIVE_STATUSES,
+    AudienceChannel,
+    AudienceNetworkSnapshot,
+    AudienceViewerSubscriptions,
     BACKOFF_SCHEDULE,
     CancelRun,
     CollectionRun,
@@ -198,6 +204,8 @@ def _merge_row(rows: dict[str, object], row: object) -> None:
         rows[row.author_channel_id] = row
     elif isinstance(row, SubscriberRow):
         rows.setdefault(row.subscriber_channel_id, row)
+    elif isinstance(row, ChannelSubscriptionRow):
+        rows.setdefault(row.channel_id, row)
     elif isinstance(row, VideoRow):
         rows.setdefault(row.video_id, row)
     else:
@@ -207,7 +215,10 @@ def _merge_row(rows: dict[str, object], row: object) -> None:
 class TraversalOutcome:
     """Rows gathered before a run stopped, with why it stopped."""
 
-    __slots__ = ("rows", "pages", "quota_spent", "reason", "paused", "new_pages", "new_spent", "retry_at")
+    __slots__ = (
+        "rows", "pages", "quota_spent", "reason", "paused",
+        "new_pages", "new_spent", "retry_at", "accessible",
+    )
 
     def __init__(
         self,
@@ -220,8 +231,10 @@ class TraversalOutcome:
         new_pages: int | None = None,
         new_spent: int | None = None,
         retry_at: datetime | None = None,
+        accessible: bool = True,
     ) -> None:
         self.retry_at = retry_at
+        self.accessible = accessible
         self.paused = paused
         self.new_pages = pages if new_pages is None else new_pages
         self.new_spent = quota_spent if new_spent is None else new_spent
