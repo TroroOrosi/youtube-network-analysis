@@ -66,15 +66,32 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Stamp tested source into image, not runtime environment
+      - name: Prepare source through the production archive path
         run: |
+          git archive --format=tar --output=/tmp/yna-source.tar "$GITHUB_SHA"
+          mkdir -p /tmp/yna-source
           python3 - <<'PY'
           import os
           from pathlib import Path
-          Path('web_ui/build_info.py').write_text('SOURCE_REVISION = ' + repr(os.environ['GITHUB_SHA']) + '\n')
+          import tarfile
+
+          from scripts.release_production import normalize_release_source_permissions
+
+          os.umask(0o077)
+          source = Path('/tmp/yna-source')
+          with tarfile.open('/tmp/yna-source.tar') as archive:
+              archive.extractall(source, filter='data')
+          (source / 'web_ui' / 'build_info.py').write_text(
+              'SOURCE_REVISION = ' + repr(os.environ['GITHUB_SHA']) + '\n',
+              encoding='utf-8',
+          )
+          normalize_release_source_permissions(source)
+          assert (source / 'web_ui' / 'data').stat().st_mode & 0o777 == 0o755
+          assert (source / 'web_ui' / 'data' / 'audience-network-analysis.json').stat().st_mode & 0o777 == 0o644
+          assert (source / 'web_ui' / 'build_info.py').stat().st_mode & 0o777 == 0o644
           PY
-      - name: Build actual production Dockerfile
-        run: docker build --quiet -t yna-production-smoke .
+      - name: Build actual production Dockerfile from prepared release source
+        run: docker build --quiet -t yna-production-smoke /tmp/yna-source
       - name: Verify non-root image and real HTTP startup
         run: |
           docker run -d --name yna-smoke -p 127.0.0.1:18080:8080 yna-production-smoke

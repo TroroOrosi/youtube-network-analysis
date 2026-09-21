@@ -207,6 +207,51 @@ class ReleaseTests(unittest.TestCase):
             self.assertIn('already exists', str(caught.exception))
 
 
+    def test_release_source_permissions_are_readable_by_non_root_runtime(self):
+        module = self.module()
+        normalizer = getattr(module, 'normalize_release_source_permissions', None)
+        self.assertIsNotNone(normalizer)
+
+        with tempfile.TemporaryDirectory() as parent:
+            root = Path(parent) / 'source'
+            data = root / 'web_ui' / 'data'
+            data.mkdir(parents=True)
+            report = data / 'audience-network-analysis.json'
+            report.write_text('{}', encoding='utf-8')
+            executable = root / 'tool.sh'
+            executable.write_text('#!/bin/sh\n', encoding='utf-8')
+
+            root.chmod(0o700)
+            (root / 'web_ui').chmod(0o700)
+            data.chmod(0o700)
+            report.chmod(0o600)
+            executable.chmod(0o700)
+
+            normalizer(root)
+
+            self.assertEqual(root.stat().st_mode & 0o777, 0o755)
+            self.assertEqual((root / 'web_ui').stat().st_mode & 0o777, 0o755)
+            self.assertEqual(data.stat().st_mode & 0o777, 0o755)
+            self.assertEqual(report.stat().st_mode & 0o777, 0o644)
+            self.assertEqual(executable.stat().st_mode & 0o777, 0o755)
+
+
+    def test_ready_no_traffic_candidate_does_not_replace_serving_revision(self):
+        module = self.module()
+        service = service_fixture()
+        service['status']['latestReadyRevisionName'] = 'yna-web-candidate'
+        service['status']['latestCreatedRevisionName'] = 'yna-web-candidate'
+
+        checked = self.inspect(
+            service=service,
+            stopped=True,
+            expected_revision='yna-web-old',
+        )
+
+        self.assertEqual(checked['revision'], 'yna-web-old')
+        self.assertEqual(checked['latest_ready_revision'], 'yna-web-candidate')
+
+
 class ReleaseBoundaryTests(unittest.TestCase):
     def test_unready_newer_revision_is_not_mistaken_for_serving_config(self):
         from scripts import release_production as module
