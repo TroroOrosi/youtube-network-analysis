@@ -354,14 +354,18 @@ class GuidedFlowTests(WebFixture):
             self.assertIn(label, analysis.text)
         self.assertIn("登録を公開している人", analysis.text)
 
-    def test_audience_network_report_is_linked_and_source_labelled(self) -> None:
+    def test_audience_network_demo_is_explicit_not_the_default(self) -> None:
         self.login()
         self.create_workspace()
 
         dashboard = self.client.get("/")
-        report = self.client.get("/audience-network")
+        live = self.client.get("/audience-network")
+        report = self.client.get("/audience-network?demo=true")
 
         self.assertIn('href="/audience-network"', dashboard.text)
+        self.assertEqual(live.status_code, 200)
+        self.assertIn("ライブ分析はまだありません", live.text)
+        self.assertNotIn("匿名化済み既存調査データ（デモ）", live.text)
         self.assertEqual(report.status_code, 200)
         self.assertIn("匿名化済み既存調査データ（デモ）", report.text)
         self.assertIn("106,568", report.text)
@@ -409,7 +413,7 @@ class GuidedFlowTests(WebFixture):
         )
 
         with mock.patch("web_ui.app.AUDIENCE_REPORT", empty_report):
-            report = self.client.get("/audience-network")
+            report = self.client.get("/audience-network?demo=true")
 
         self.assertEqual(report.status_code, 200)
         self.assertEqual(report.text.count("該当する集計結果はありません。"), 7)
@@ -448,6 +452,31 @@ class GuidedFlowTests(WebFixture):
             workbook.headers["content-disposition"],
         )
         self.assertTrue(workbook.content.startswith(b"PK"))
+
+    def test_live_audience_network_can_be_collected_and_rendered(self) -> None:
+        self.login()
+        self.create_workspace()
+        self.connect_channel()
+
+        dashboard = self.client.get("/")
+        connection_id = dashboard.text.split("/connections/")[1].split("/collect")[0]
+        self.collect_now(connection_id)
+
+        started = self.post(
+            f"/connections/{connection_id}/audience-network/collect"
+        )
+        self.assertEqual(started.status_code, 303)
+        self.assertEqual(started.headers["location"], "/collecting")
+        drive_collection(self, self.client)
+
+        report = self.client.get(
+            "/audience-network?channel_id=UC_demo_channel"
+        )
+
+        self.assertEqual(report.status_code, 200)
+        self.assertIn("接続チャンネルの最新ライブ収集", report.text)
+        self.assertNotIn("匿名化済み既存調査データ（デモ）", report.text)
+        self.assertIn("共通チャンネル", report.text)
 
     def test_analysis_before_collection_explains_the_next_step(self) -> None:
         self.login()
