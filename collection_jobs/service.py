@@ -563,6 +563,16 @@ class CollectionJobsService:
                 for key, point in self._state.resume.items()
                 if point.workspace_id != workspace_id
             }
+            self._state.audience_resume = {
+                key: point
+                for key, point in self._state.audience_resume.items()
+                if point.workspace_id != workspace_id
+            }
+            self._state.audience_snapshots = {
+                key: value
+                for key, value in self._state.audience_snapshots.items()
+                if value.workspace_id != workspace_id
+            }
             self._state.page_checkpoints = {
                 key: point for key, point in self._state.page_checkpoints.items()
                 if point.workspace_id != workspace_id
@@ -590,7 +600,13 @@ class CollectionJobsService:
                 and run.finished_at is not None
                 and run.finished_at + RETENTION_TTL <= reference_time
             ]:
-                del self._state.runs[key]
+                removed = self._state.runs.pop(key)
+                self._state.audience_snapshots.pop(
+                    _key(removed.workspace_id, removed.run_id), None
+                )
+                self._state.audience_resume.pop(
+                    _key(removed.workspace_id, removed.run_id), None
+                )
                 runs_removed += 1
 
             quota_removed = 0
@@ -902,6 +918,33 @@ class CollectionJobsService:
                     "connection_id": query.connection_id,
                     "kind": None if query.kind is None else query.kind.value,
                 },
+            )
+
+    def latest_audience_network(
+        self,
+        context: WorkspaceContext,
+        channel_id: str,
+    ) -> AudienceNetworkSnapshot | None:
+        """Newest completed aggregate source for one connected channel."""
+
+        _require(context, Permission.ANALYSIS_READ)
+        if (
+            not isinstance(channel_id, str)
+            or not channel_id
+            or len(channel_id) > MAX_IDENTIFIER_LENGTH
+        ):
+            raise _safe_error(ErrorCode.INVALID_INPUT, field="channel_id")
+        with self._lock:
+            rows = [
+                snapshot
+                for snapshot in self._state.audience_snapshots.values()
+                if snapshot.workspace_id == context.workspace_id
+                and snapshot.channel_id == channel_id
+            ]
+            return max(
+                rows,
+                key=lambda item: (item.captured_at, item.run_id),
+                default=None,
             )
 
     def list_schedules(
@@ -1465,8 +1508,10 @@ class CollectionJobsService:
         )
 
     def _forget_resume(self, run: CollectionRun) -> None:
-        self._state.resume.pop(_key(run.workspace_id, run.run_id), None)
-        self._state.page_checkpoints.pop(_key(run.workspace_id, run.run_id), None)
+        key = _key(run.workspace_id, run.run_id)
+        self._state.resume.pop(key, None)
+        self._state.audience_resume.pop(key, None)
+        self._state.page_checkpoints.pop(key, None)
 
     def _pause_traversal(
         self, run: CollectionRun, now: datetime, outcome: TraversalOutcome
