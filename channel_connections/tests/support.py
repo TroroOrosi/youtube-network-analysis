@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 from channel_connections.models import (
     APPROVED_SCOPES,
     CommentAuthorRow,
+    ChannelSubscriptionRow,
     CompleteAuthorization,
     ConnectionProvider,
     ProviderPage,
@@ -270,6 +271,7 @@ class DataCall:
     credential_slot_id: str
     page_token: str | None
     video_id: str | None
+    channel_id: str | None = None
 
 
 class FakeYouTubeDataGateway:
@@ -306,6 +308,16 @@ class FakeYouTubeDataGateway:
             ),
             "video-3": (),
         }
+        self.channel_subscriptions: dict[str, tuple[ChannelSubscriptionRow, ...] | None] = {
+            "UC_sub_1": (
+                ChannelSubscriptionRow("UC_other_1", "登録先1"),
+                ChannelSubscriptionRow("UC_shared", "共通チャンネル"),
+            ),
+            "UC_sub_2": (
+                ChannelSubscriptionRow("UC_other_2", "登録先2"),
+                ChannelSubscriptionRow("UC_shared", "共通チャンネル"),
+            ),
+        }
 
     def list_subscribers(
         self,
@@ -315,8 +327,33 @@ class FakeYouTubeDataGateway:
         page_token: str | None,
         max_results: int,
     ) -> ProviderPage:
-        self._record("LIST_SUBSCRIBERS", workspace_id, credential_slot_id, page_token, None)
+        self._record("LIST_SUBSCRIBERS", workspace_id, credential_slot_id, page_token, None, None)
         return self._page(self.subscribers, page_token, max_results)
+
+    def list_channel_subscriptions(
+        self,
+        workspace_id: str,
+        credential_slot_id: str,
+        *,
+        channel_id: str,
+        page_token: str | None,
+        max_results: int,
+    ) -> ProviderPage:
+        self._record(
+            "LIST_CHANNEL_SUBSCRIPTIONS",
+            workspace_id,
+            credential_slot_id,
+            page_token,
+            None,
+            channel_id,
+        )
+        rows = self.channel_subscriptions.get(channel_id)
+        if rows is None:
+            return ProviderPage(
+                rows=(), next_page_token=None,
+                quota_cost=self.QUOTA_COST, accessible=False,
+            )
+        return self._page(rows, page_token, max_results)
 
     def list_videos(
         self,
@@ -326,7 +363,7 @@ class FakeYouTubeDataGateway:
         page_token: str | None,
         max_results: int,
     ) -> ProviderPage:
-        self._record("LIST_VIDEOS", workspace_id, credential_slot_id, page_token, None)
+        self._record("LIST_VIDEOS", workspace_id, credential_slot_id, page_token, None, None)
         return self._page(self.videos, page_token, max_results)
 
     def list_video_comment_authors(
@@ -344,6 +381,7 @@ class FakeYouTubeDataGateway:
             credential_slot_id,
             page_token,
             video_id,
+            None,
         )
         return self._page(self.comment_authors.get(video_id, ()), page_token, max_results)
 
@@ -354,9 +392,13 @@ class FakeYouTubeDataGateway:
         credential_slot_id: str,
         page_token: str | None,
         video_id: str | None,
+        channel_id: str | None,
     ) -> None:
         self.calls.append(
-            DataCall(operation, workspace_id, credential_slot_id, page_token, video_id)
+            DataCall(
+                operation, workspace_id, credential_slot_id,
+                page_token, video_id, channel_id
+            )
         )
         if self.failure is not None:
             raise self.failure
