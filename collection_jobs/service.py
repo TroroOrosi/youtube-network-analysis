@@ -1095,7 +1095,7 @@ class CollectionJobsService:
         resuming = self._state.audience_resume.get(resume_key)
         if resuming is None:
             try:
-                dataset = self._channel_data.load_silent_analysis_dataset(
+                pending = self._channel_data.load_audience_network_viewers(
                     context, run.provider_channel_id
                 )
             except ChannelDataError as error:
@@ -1108,9 +1108,6 @@ class CollectionJobsService:
                         next_attempt_at=now + timedelta(minutes=5),
                     )
                 raise
-            pending = tuple(
-                sorted({row.author_channel_id for row in dataset.author_activity})
-            )
             viewers: tuple[AudienceViewerSubscriptions, ...] = ()
         else:
             pending = resuming.pending_viewer_ids
