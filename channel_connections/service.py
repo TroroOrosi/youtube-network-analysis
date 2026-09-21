@@ -464,6 +464,11 @@ class ChannelConnectionsService:
             and request.video_id is None
         ):
             raise _safe_error(ErrorCode.INVALID_INPUT, field="video_id")
+        if (
+            request.operation is ProviderOperation.LIST_CHANNEL_SUBSCRIPTIONS
+            and request.channel_id is None
+        ):
+            raise _safe_error(ErrorCode.INVALID_INPUT, field="channel_id")
 
         with self._lock:
             now = self._now()
@@ -498,6 +503,7 @@ class ChannelConnectionsService:
                 rows=tuple(page.rows),
                 next_page_token=page.next_page_token,
                 quota_cost=page.quota_cost,
+                accessible=page.accessible,
             )
 
     def _authorized_slot(
@@ -540,6 +546,14 @@ class ChannelConnectionsService:
             return gateway.list_videos(
                 workspace_id,
                 slot_id,
+                page_token=request.page_token,
+                max_results=request.max_results,
+            )
+        if request.operation is ProviderOperation.LIST_CHANNEL_SUBSCRIPTIONS:
+            return gateway.list_channel_subscriptions(
+                workspace_id,
+                slot_id,
+                channel_id=request.channel_id or "",
                 page_token=request.page_token,
                 max_results=request.max_results,
             )
