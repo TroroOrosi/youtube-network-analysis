@@ -9,7 +9,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from .models import CollectionRun, CollectionSchedule
+from .models import (
+    AudienceNetworkSnapshot,
+    AudienceViewerSubscriptions,
+    CollectionRun,
+    CollectionSchedule,
+)
 
 
 @dataclass(slots=True)
@@ -54,6 +59,19 @@ class ResumePoint:
 
 
 @dataclass(frozen=True, slots=True)
+class AudienceResumePoint:
+    """Completed audience viewers plus the viewers still to traverse."""
+
+    workspace_id: str
+    run_id: str
+    pending_viewer_ids: tuple[str, ...]
+    viewers: tuple[AudienceViewerSubscriptions, ...]
+    pages_fetched: int
+    quota_spent: int
+    saved_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class PageCheckpoint:
     """Minimized rows and the next cursor of an unfinished provider traversal.
 
@@ -70,6 +88,7 @@ class PageCheckpoint:
     visited_tokens: tuple[str | None, ...]
     pages_fetched: int
     quota_spent: int
+    channel_id: str | None = None
 
 
 @dataclass(slots=True)
@@ -89,4 +108,6 @@ class MemoryState:
     cursors: dict[str, CursorRecord] = field(default_factory=dict)
     revisions: dict[str, int] = field(default_factory=dict)
     resume: dict[str, ResumePoint] = field(default_factory=dict)
+    audience_resume: dict[str, AudienceResumePoint] = field(default_factory=dict)
+    audience_snapshots: dict[str, AudienceNetworkSnapshot] = field(default_factory=dict)
     page_checkpoints: dict[str, PageCheckpoint] = field(default_factory=dict)
