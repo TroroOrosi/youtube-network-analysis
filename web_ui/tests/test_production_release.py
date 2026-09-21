@@ -173,6 +173,40 @@ class ReleaseTests(unittest.TestCase):
             self.assertFalse((target / 'manifest.json').exists())
 
 
+    def test_backup_retries_a_transient_firestore_read_without_weakening_hash_check(self):
+        module = self.module()
+        from web_ui.gcp import GcpUnavailable
+
+        with tempfile.TemporaryDirectory() as parent:
+            calls = {name: 0 for name in module.STATE_MODULES}
+
+            def intermittently_unavailable(name):
+                calls[name] += 1
+                if name == 'channel_data' and calls[name] == 2:
+                    raise GcpUnavailable('transport failed')
+                return '{"module":"' + name + '"}'
+
+            target = Path(parent) / 'backup'
+            module.backup_state(target, intermittently_unavailable)
+
+            self.assertTrue((target / 'manifest.json').is_file())
+            self.assertEqual(calls['channel_data'], 3)
+            self.assertEqual(calls['workspace_access'], 2)
+            self.assertEqual(calls['channel_connections'], 2)
+            self.assertEqual(calls['collection_jobs'], 2)
+            self.assertEqual(calls['analysis_api'], 2)
+
+
+    def test_existing_backup_directory_is_rejected_with_actionable_error(self):
+        module = self.module()
+        with tempfile.TemporaryDirectory() as parent:
+            target = Path(parent) / 'already-there'
+            target.mkdir()
+            with self.assertRaises(module.ReleaseError) as caught:
+                module.backup_state(target, lambda name: '{}')
+            self.assertIn('already exists', str(caught.exception))
+
+
 class ReleaseBoundaryTests(unittest.TestCase):
     def test_unready_newer_revision_is_not_mistaken_for_serving_config(self):
         from scripts import release_production as module
