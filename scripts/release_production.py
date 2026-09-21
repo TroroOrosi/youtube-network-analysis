@@ -61,17 +61,19 @@ def inspect_service(service: dict, jobs: list, *, stopped: bool = False,
                         name + ' must use a Secret Manager reference, not a plaintext value.')
             environment[name] = '__secret_reference__' if reference else entry.get('value', '')
         validate_production_environment(environment)
-        revision = service['status']['latestReadyRevisionName']
-        require(service['status'].get('latestCreatedRevisionName', revision) == revision,
+        latest_ready = service['status']['latestReadyRevisionName']
+        require(service['status'].get('latestCreatedRevisionName', latest_ready) == latest_ready,
                 'A newer revision is not ready; inspect its configuration before releasing.')
-        require(bool(re.fullmatch(r'[a-z0-9-]{1,128}', revision)), 'Invalid ready revision.')
-        if expected_revision is not None:
-            require(revision == expected_revision, 'Live revision changed; inspect again.')
+        require(bool(re.fullmatch(r'[a-z0-9-]{1,128}', latest_ready)), 'Invalid ready revision.')
         traffic = service['status'].get('traffic', [])
         routed = [item for item in traffic if int(item.get('percent', 0)) > 0]
-        require(len(routed) == 1 and int(routed[0]['percent']) == 100
-                and routed[0].get('revisionName') == revision,
-                'Traffic must target the single expected ready revision; no split/canary.')
+        require(len(routed) == 1 and int(routed[0]['percent']) == 100,
+                'Traffic must target exactly one revision at 100%; no split/canary.')
+        revision = routed[0].get('revisionName')
+        require(isinstance(revision, str) and bool(re.fullmatch(r'[a-z0-9-]{1,128}', revision)),
+                'Traffic does not identify a valid serving revision.')
+        if expected_revision is not None:
+            require(revision == expected_revision, 'Serving revision changed; inspect again.')
         base = environment['YNA_BASE_URL'].rstrip('/')
         drain_url = base + '/internal/drain'
         matches = [job for job in jobs if job.get('httpTarget', {}).get('uri') == drain_url]
@@ -97,6 +99,7 @@ def inspect_service(service: dict, jobs: list, *, stopped: bool = False,
             require(scheduler.get('state') == 'PAUSED', 'Pause the Scheduler job before applying.')
         return {
             'base_url': base, 'revision': revision,
+            'latest_ready_revision': latest_ready,
             'database': environment['YNA_FIRESTORE_DATABASE'],
             'scheduler_name': scheduler['name'],
             'scheduler_state': scheduler.get('state', 'UNKNOWN'),
