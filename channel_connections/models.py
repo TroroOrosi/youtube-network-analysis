@@ -496,8 +496,8 @@ class ProviderOperationRequest:
     operation: ProviderOperation
     page_token: str | None = None
     video_id: str | None = None
-    channel_id: str | None = None
     max_results: int = 50
+    channel_id: str | None = None
 
     def __post_init__(self) -> None:
         _enum(self.operation, ProviderOperation, "operation")
