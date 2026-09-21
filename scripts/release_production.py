@@ -144,6 +144,25 @@ def _private_write(path: Path, text: str) -> None:
         os.fsync(handle.fileno())
 
 
+def normalize_release_source_permissions(root: Path) -> None:
+    """Make clean git-archive source readable by the non-root runtime image.
+
+    The operator uses umask 077 so backups stay private. That same umask must
+    not leak into the temporary build context: Docker preserves source modes,
+    while the runtime intentionally runs as nobody.
+    """
+    require(root.is_dir(), 'Release source directory is missing.')
+    for path in [root, *root.rglob('*')]:
+        if path.is_symlink():
+            raise ReleaseError('Release source must not contain symbolic links.')
+        if path.is_dir():
+            path.chmod(0o755)
+        elif path.is_file():
+            executable = bool(path.stat().st_mode & 0o111)
+            path.chmod(0o755 if executable else 0o644)
+        else:
+            raise ReleaseError('Release source contains an unsupported file type.')
+
 def _read_state_with_retry(load, module: str) -> str | None:
     """Retry bounded read-only storage failures without weakening consistency."""
     for attempt in range(1, BACKUP_READ_ATTEMPTS + 1):
@@ -328,6 +347,7 @@ def main(argv=None) -> int:
         (source / 'web_ui' / 'build_info.py').write_text(
             '# Immutable image source identity; generated from a clean Git archive.\n'
             + 'SOURCE_REVISION = ' + repr(source_sha) + '\n', encoding='utf-8')
+        normalize_release_source_permissions(source)
         suffix = 'p' + source_sha[:10] + '-' + datetime.now(UTC).strftime('%H%M%S')
         revision = deploy_prepared_source(
             checked, project=args.project, region=args.region, service=args.service,
