@@ -862,3 +862,56 @@ class CredentialLifecycleTests(DataGatewayFixture):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PublicChannelSubscriptionsTests(unittest.TestCase):
+    def build(self, reply):
+        transport = FakeTransport({"https://www.googleapis.com/youtube/v3/subscriptions": reply})
+        gateway = GoogleDataGateway(
+            CONFIG,
+            GoogleCredentialStore(),
+            transport=transport,
+            now=lambda: NOW,
+            api_key=API_KEY,
+        )
+        return gateway, transport
+
+    def test_public_channel_subscriptions_are_collected_with_channel_id(self) -> None:
+        payload = {
+            "items": [
+                {
+                    "snippet": {
+                        "title": "登録先A",
+                        "resourceId": {"channelId": "UC_destination_a"},
+                    }
+                }
+            ]
+        }
+        gateway, transport = self.build((200, json.dumps(payload).encode()))
+
+        page = gateway.list_channel_subscriptions(
+            "ws-1", "unused-slot", channel_id="UC_viewer",
+            page_token=None, max_results=50,
+        )
+
+        self.assertTrue(page.accessible)
+        self.assertEqual(page.rows[0].channel_id, "UC_destination_a")
+        query = parse_qs(urlsplit(transport.requests[0][1]).query)
+        self.assertEqual(query["channelId"], ["UC_viewer"])
+        self.assertEqual(query["key"], [API_KEY])
+        self.assertNotIn("Authorization", transport.requests[0][2])
+
+    def test_private_subscription_list_is_a_normal_inaccessible_page(self) -> None:
+        body = json.dumps({
+            "error": {"errors": [{"reason": "subscriptionForbidden"}]}
+        }).encode()
+        gateway, _ = self.build((403, body))
+
+        page = gateway.list_channel_subscriptions(
+            "ws-1", "unused-slot", channel_id="UC_private",
+            page_token=None, max_results=50,
+        )
+
+        self.assertFalse(page.accessible)
+        self.assertEqual(page.rows, ())
+        self.assertIsNone(page.next_page_token)
