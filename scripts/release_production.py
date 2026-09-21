@@ -20,12 +20,15 @@ import time
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
+from web_ui.gcp import GcpUnavailable
 from web_ui.runtime import validate_production_environment
 
 STATE_MODULES = (
     'workspace_access', 'channel_connections', 'channel_data',
     'collection_jobs', 'analysis_api',
 )
+BACKUP_READ_ATTEMPTS = 3
+BACKUP_RETRY_SECONDS = 1.0
 
 
 class ReleaseError(RuntimeError):
@@ -141,22 +144,42 @@ def _private_write(path: Path, text: str) -> None:
         os.fsync(handle.fileno())
 
 
+def _read_state_with_retry(load, module: str) -> str | None:
+    """Retry bounded read-only storage failures without weakening consistency."""
+    for attempt in range(1, BACKUP_READ_ATTEMPTS + 1):
+        try:
+            return load(module)
+        except GcpUnavailable:
+            if attempt == BACKUP_READ_ATTEMPTS:
+                raise ReleaseError(
+                    f'State backup could not read {module} after '
+                    f'{BACKUP_READ_ATTEMPTS} attempts; keep writers stopped '
+                    'and retry with a new backup directory.'
+                ) from None
+            time.sleep(BACKUP_RETRY_SECONDS * attempt)
+    raise AssertionError('unreachable')
+
+
 def backup_state(directory: Path, load) -> None:
     """Back up all five logical documents; verify stability before completion.
 
     No Secret Manager payload is fetched. These files STILL contain sensitive
     account/session metadata: keep them outside the repository, mode 0700/0600.
     """
+    require(
+        not directory.exists(),
+        'Backup directory already exists; choose a new backup directory.'
+    )
     directory.mkdir(mode=0o700, parents=False, exist_ok=False)
     digests = {}
     for module in STATE_MODULES:
-        document = load(module)
+        document = _read_state_with_retry(load, module)
         require(document is None or isinstance(document, str), 'Unsupported state document.')
         digests[module] = None if document is None else hashlib.sha256(document.encode()).hexdigest()
         if document is not None:
             _private_write(directory / (module + '.json'), document)
     for module in STATE_MODULES:
-        document = load(module)
+        document = _read_state_with_retry(load, module)
         digest = None if document is None else hashlib.sha256(document.encode()).hexdigest()
         require(digest == digests[module], 'State changed during backup; another writer may be active.')
     _private_write(directory / 'manifest.json', json.dumps({
