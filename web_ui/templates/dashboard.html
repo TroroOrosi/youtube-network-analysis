@@ -8,7 +8,7 @@
 <h2 id="analysis-heading">分析</h2>
 <p>
   <a href="/audience-network">視聴者ネットワーク分析を見る</a>
-  <span class="limits">— 匿名化済みの既存調査データで、共通購読・興味・コミュニティ・親和度を確認できます。</span>
+  <span class="limits">— コメント投稿者の公開登録先を収集し、接続チャンネルごとの共通購読・興味・ネットワーク関係を確認できます。</span>
 </p>
 
 <h2 id="connections-heading">接続中のチャンネル</h2>
@@ -37,7 +37,8 @@
           <button type="submit">再認可する</button>
         </form>
         {% endif %}
-        <a href="/analysis?channel_id={{ item.channel_id }}">分析を見る</a>
+        <a href="/analysis?channel_id={{ item.channel_id }}">登録者分析を見る</a>
+        <a href="/audience-network?channel_id={{ item.channel_id }}">視聴者ネットワークを見る</a>
         <form method="post" action="/connections/{{ item.connection_id }}/disconnect" class="inline">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <button type="submit" class="secondary">接続を解除</button>
