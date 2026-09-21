@@ -328,7 +328,6 @@ class OwnerContentExecutionTests(OwnerContentFixture):
         self.assertIsNotNone(network_kind)
         self.assertIsNotNone(row_type)
 
-        self.run_subscribers()
         self.run_owner_content()
         self.stack.data_gateway.channel_subscriptions = {
             "UC_sub_1": (
@@ -373,7 +372,6 @@ class OwnerContentExecutionTests(OwnerContentFixture):
         self.assertIsNotNone(network_kind)
         self.assertIsNotNone(row_type)
 
-        self.run_subscribers()
         self.run_owner_content()
         self.stack.data_gateway.channel_subscriptions = {
             "UC_sub_1": (row_type("UC_shared", "共通チャンネル"),),
