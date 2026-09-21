@@ -320,5 +320,88 @@ class OwnerContentExecutionTests(OwnerContentFixture):
         self.assertEqual(run.status, RunStatus.SUCCEEDED)
 
 
+    def test_audience_network_run_uses_comment_authors_and_persists_public_edges(self) -> None:
+        from channel_connections import models as connection_models
+
+        network_kind = getattr(RunKind, "AUDIENCE_NETWORK", None)
+        row_type = getattr(connection_models, "ChannelSubscriptionRow", None)
+        self.assertIsNotNone(network_kind)
+        self.assertIsNotNone(row_type)
+
+        self.run_subscribers()
+        self.run_owner_content()
+        self.stack.data_gateway.channel_subscriptions = {
+            "UC_sub_1": (
+                row_type("UC_other_a", "登録先A"),
+                row_type("UC_shared", "共通チャンネル"),
+            ),
+            "UC_sub_2": (
+                row_type("UC_other_b", "登録先B"),
+                row_type("UC_shared", "共通チャンネル"),
+            ),
+        }
+
+        queued = self.stack.jobs.enqueue_run(
+            self.owner,
+            EnqueueRun(
+                connection_id=self.connection.connection_id,
+                kind=network_kind,
+                idempotency_key="network-1",
+            ),
+        )
+        finished = self.stack.jobs.execute_run(
+            self.owner,
+            ExecuteRun(run_id=queued.run_id, idempotency_key="network-exec-1"),
+        )
+
+        self.assertEqual(finished.status, RunStatus.SUCCEEDED)
+        snapshot = self.stack.jobs.latest_audience_network(
+            self.owner, "UC_channel_1"
+        )
+        self.assertEqual(snapshot.run_id, queued.run_id)
+        self.assertEqual(len(snapshot.viewers), 2)
+        self.assertEqual(
+            {row.channel_id for viewer in snapshot.viewers for row in viewer.subscriptions},
+            {"UC_other_a", "UC_other_b", "UC_shared"},
+        )
+
+    def test_private_comment_author_is_skipped_without_failing_network_run(self) -> None:
+        from channel_connections import models as connection_models
+
+        network_kind = getattr(RunKind, "AUDIENCE_NETWORK", None)
+        row_type = getattr(connection_models, "ChannelSubscriptionRow", None)
+        self.assertIsNotNone(network_kind)
+        self.assertIsNotNone(row_type)
+
+        self.run_subscribers()
+        self.run_owner_content()
+        self.stack.data_gateway.channel_subscriptions = {
+            "UC_sub_1": (row_type("UC_shared", "共通チャンネル"),),
+            "UC_sub_2": None,
+        }
+
+        queued = self.stack.jobs.enqueue_run(
+            self.owner,
+            EnqueueRun(
+                connection_id=self.connection.connection_id,
+                kind=network_kind,
+                idempotency_key="network-private",
+            ),
+        )
+        finished = self.stack.jobs.execute_run(
+            self.owner,
+            ExecuteRun(run_id=queued.run_id, idempotency_key="network-private-exec"),
+        )
+
+        self.assertEqual(finished.status, RunStatus.SUCCEEDED)
+        snapshot = self.stack.jobs.latest_audience_network(
+            self.owner, "UC_channel_1"
+        )
+        public = [viewer for viewer in snapshot.viewers if viewer.public]
+        private = [viewer for viewer in snapshot.viewers if not viewer.public]
+        self.assertEqual(len(public), 1)
+        self.assertEqual(len(private), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
