@@ -401,5 +401,42 @@ class OwnerContentExecutionTests(OwnerContentFixture):
         self.assertEqual(len(private), 1)
 
 
+    def test_scheduler_collection_context_can_continue_audience_network(self) -> None:
+        from channel_connections import models as connection_models
+        from workspace_access.models import Permission
+
+        network_kind = RunKind.AUDIENCE_NETWORK
+        row_type = connection_models.ChannelSubscriptionRow
+
+        self.run_owner_content()
+        self.stack.data_gateway.channel_subscriptions = {
+            "UC_sub_1": (row_type("UC_shared", "共通チャンネル"),),
+            "UC_sub_2": (row_type("UC_shared", "共通チャンネル"),),
+        }
+        queued = self.stack.jobs.enqueue_run(
+            self.owner,
+            EnqueueRun(
+                connection_id=self.connection.connection_id,
+                kind=network_kind,
+                idempotency_key="scheduler-network",
+            ),
+        )
+        scheduler = context(
+            self.owner.workspace_id,
+            Permission.COLLECTION_RUN,
+            user_id="job:workspace-1",
+        )
+
+        finished = self.stack.jobs.execute_run(
+            scheduler,
+            ExecuteRun(
+                run_id=queued.run_id,
+                idempotency_key="scheduler-network-exec",
+            ),
+        )
+
+        self.assertEqual(finished.status, RunStatus.SUCCEEDED)
+
+
 if __name__ == "__main__":
     unittest.main()
