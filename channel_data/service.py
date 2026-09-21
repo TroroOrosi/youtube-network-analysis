@@ -575,7 +575,7 @@ class ChannelDataService:
         feed and may validly contain zero rows.
         """
 
-        self._require(context, Permission.ANALYSIS_READ)
+        self._require(context, Permission.COLLECTION_RUN)
         SubscriberRegistryQuery(channel_id)
         with self._lock:
             channel_key = (context.workspace_id, channel_id)
