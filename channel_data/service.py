@@ -561,6 +561,46 @@ class ChannelDataService:
                 page,
             )
 
+    def load_audience_network_viewers(
+        self,
+        context: WorkspaceContext,
+        channel_id: str,
+    ) -> tuple[str, ...]:
+        """Return the distinct comment-author ids from accepted complete coverage.
+
+        Audience-network collection deliberately does not depend on the owner's
+        public-subscriber snapshot. The two datasets answer different questions:
+        this panel is comment authors whose own public subscription lists may be
+        traversed, while the subscriber snapshot is the owner's public subscriber
+        feed and may validly contain zero rows.
+        """
+
+        self._require(context, Permission.ANALYSIS_READ)
+        SubscriberRegistryQuery(channel_id)
+        with self._lock:
+            channel_key = (context.workspace_id, channel_id)
+            inventory_id = self._state.accepted_video_inventory.get(channel_key)
+            if inventory_id is None:
+                raise _dataset_not_ready(DatasetReadinessCode.NO_VIDEO_INVENTORY)
+            inventory_key = (context.workspace_id, channel_id, inventory_id)
+            inventory = self._state.video_inventories[inventory_key]
+            if inventory.coverage_scope is not VideoCoverageScope.OWNER_VIDEOS:
+                raise _dataset_not_ready(DatasetReadinessCode.PUBLIC_VIDEO_SCOPE_ONLY)
+            coverage = self._state.comment_coverage.get(inventory_key)
+            if (
+                coverage is None
+                or coverage.inventory_id != inventory_id
+                or coverage.coverage_scope is not VideoCoverageScope.OWNER_VIDEOS
+                or not coverage.is_complete
+            ):
+                raise _dataset_not_ready(DatasetReadinessCode.COMMENTS_INCOMPLETE)
+            return tuple(
+                sorted({
+                    row.author_channel_id
+                    for row in self._state.comment_activity.get(inventory_key, ())
+                })
+            )
+
     def load_silent_analysis_dataset(
         self,
         context: WorkspaceContext,
