@@ -978,6 +978,8 @@ class CollectionJobsService:
 
         if run.kind is RunKind.SUBSCRIBERS:
             return self._run_subscribers(context, run, authority, now, deadline)
+        if run.kind is RunKind.AUDIENCE_NETWORK:
+            return self._run_audience_network(context, run, authority, now, deadline)
         return self._run_owner_content(context, run, authority, now, deadline)
 
     def _run_subscribers(
@@ -1034,6 +1036,151 @@ class CollectionJobsService:
         self._finish_collection(context, run, collection_id, now, outcome)
         return self._terminal(
             run, now, None, pages=outcome.pages, spent=outcome.quota_spent
+        )
+
+    def _run_audience_network(
+        self,
+        context: WorkspaceContext,
+        run: CollectionRun,
+        authority: ExecutionAuthority,
+        now: datetime,
+        deadline: datetime | None,
+    ) -> CollectionRun:
+        """Collect public subscription lists for the latest comment-author panel."""
+
+        resume_key = _key(run.workspace_id, run.run_id)
+        resuming = self._state.audience_resume.get(resume_key)
+        if resuming is None:
+            try:
+                dataset = self._channel_data.load_silent_analysis_dataset(
+                    context, run.provider_channel_id
+                )
+            except ChannelDataError as error:
+                if error.code == "DATASET_NOT_READY":
+                    return replace(
+                        run,
+                        status=RunStatus.QUEUED,
+                        finished_at=None,
+                        failure_reason=None,
+                        next_attempt_at=now + timedelta(minutes=5),
+                    )
+                raise
+            pending = tuple(
+                sorted({row.author_channel_id for row in dataset.author_activity})
+            )
+            viewers: tuple[AudienceViewerSubscriptions, ...] = ()
+        else:
+            pending = resuming.pending_viewer_ids
+            viewers = resuming.viewers
+
+        completed = list(viewers)
+        for index, viewer_channel_id in enumerate(pending):
+            if deadline is not None and self._now() >= deadline:
+                progress = self._run(run.workspace_id, run.run_id)
+                self._state.audience_resume[resume_key] = AudienceResumePoint(
+                    workspace_id=run.workspace_id,
+                    run_id=run.run_id,
+                    pending_viewer_ids=pending[index:],
+                    viewers=tuple(completed),
+                    pages_fetched=progress.pages_fetched,
+                    quota_spent=progress.quota_spent,
+                    saved_at=self._now(),
+                )
+                return replace(
+                    progress,
+                    status=RunStatus.QUEUED,
+                    finished_at=None,
+                    failure_reason=None,
+                    next_attempt_at=now,
+                )
+
+            outcome = self._traverse(
+                context,
+                authority,
+                ProviderOperation.LIST_CHANNEL_SUBSCRIPTIONS,
+                None,
+                run,
+                deadline,
+                channel_id=viewer_channel_id,
+            )
+            progress = self._run(run.workspace_id, run.run_id)
+            if outcome.paused or outcome.reason is RunFailureReason.QUOTA_EXHAUSTED:
+                self._state.audience_resume[resume_key] = AudienceResumePoint(
+                    workspace_id=run.workspace_id,
+                    run_id=run.run_id,
+                    pending_viewer_ids=pending[index:],
+                    viewers=tuple(completed),
+                    pages_fetched=progress.pages_fetched,
+                    quota_spent=progress.quota_spent,
+                    saved_at=self._now(),
+                )
+                return replace(
+                    progress,
+                    status=RunStatus.QUEUED,
+                    finished_at=None,
+                    failure_reason=outcome.reason,
+                    next_attempt_at=outcome.retry_at or now,
+                )
+            if outcome.reason is not None:
+                self._state.audience_resume[resume_key] = AudienceResumePoint(
+                    workspace_id=run.workspace_id,
+                    run_id=run.run_id,
+                    pending_viewer_ids=pending[index:],
+                    viewers=tuple(completed),
+                    pages_fetched=progress.pages_fetched,
+                    quota_spent=progress.quota_spent,
+                    saved_at=self._now(),
+                )
+                if (
+                    outcome.reason is RunFailureReason.PROVIDER_UNAVAILABLE
+                    and run.attempt < MAX_ATTEMPTS
+                ):
+                    return replace(
+                        progress,
+                        status=RunStatus.QUEUED,
+                        attempt=run.attempt + 1,
+                        started_at=run.started_at,
+                        finished_at=None,
+                        failure_reason=None,
+                        next_attempt_at=now + BACKOFF_SCHEDULE[run.attempt - 1],
+                    )
+                self._forget_resume(run)
+                return self._terminal(
+                    progress,
+                    now,
+                    outcome.reason,
+                    pages=progress.pages_fetched,
+                    spent=progress.quota_spent,
+                )
+
+            subscriptions = tuple(
+                AudienceChannel(row.channel_id, row.title)
+                for row in outcome.rows
+                if isinstance(row, ChannelSubscriptionRow)
+            )
+            completed.append(
+                AudienceViewerSubscriptions(
+                    viewer_channel_id=viewer_channel_id,
+                    public=outcome.accessible,
+                    subscriptions=subscriptions if outcome.accessible else (),
+                )
+            )
+
+        progress = self._run(run.workspace_id, run.run_id)
+        self._state.audience_snapshots[resume_key] = AudienceNetworkSnapshot(
+            run_id=run.run_id,
+            workspace_id=run.workspace_id,
+            channel_id=run.provider_channel_id,
+            captured_at=self._now(),
+            viewers=tuple(completed),
+        )
+        self._state.audience_resume.pop(resume_key, None)
+        return self._terminal(
+            progress,
+            now,
+            None,
+            pages=progress.pages_fetched,
+            spent=progress.quota_spent,
         )
 
     def _run_owner_content(
