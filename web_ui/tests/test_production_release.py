@@ -236,6 +236,22 @@ class ReleaseTests(unittest.TestCase):
             self.assertEqual(executable.stat().st_mode & 0o777, 0o755)
 
 
+    def test_ready_no_traffic_candidate_does_not_replace_serving_revision(self):
+        module = self.module()
+        service = service_fixture()
+        service['status']['latestReadyRevisionName'] = 'yna-web-candidate'
+        service['status']['latestCreatedRevisionName'] = 'yna-web-candidate'
+
+        checked = self.inspect(
+            service=service,
+            stopped=True,
+            expected_revision='yna-web-old',
+        )
+
+        self.assertEqual(checked['revision'], 'yna-web-old')
+        self.assertEqual(checked['latest_ready_revision'], 'yna-web-candidate')
+
+
 class ReleaseBoundaryTests(unittest.TestCase):
     def test_unready_newer_revision_is_not_mistaken_for_serving_config(self):
         from scripts import release_production as module
