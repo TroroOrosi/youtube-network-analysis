@@ -88,7 +88,7 @@ LOGIN_COOKIE = "yna_login"
 
 CONSENT_ORIGIN = "https://accounts.google.com"
 WRITE_LIMIT_PER_MINUTE = 30
-COLLECT_LIMIT_PER_MINUTE = 3
+COLLECT_LIMIT_PER_MINUTE = 6
 COLLECTION_WRITE_PATHS = frozenset({"/collecting/step"})
 # How long one call may spend collecting. The browser's slice is short
 # because a person is watching a page that is not answering yet; the
