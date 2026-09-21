@@ -19,7 +19,12 @@ from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any
 
-from channel_connections.models import CommentAuthorRow, SubscriberRow, VideoRow
+from channel_connections.models import (
+    ChannelSubscriptionRow,
+    CommentAuthorRow,
+    SubscriberRow,
+    VideoRow,
+)
 
 from . import memory, models
 from .memory import MemoryState
@@ -37,7 +42,7 @@ def _known_types() -> dict[str, type]:
                 found[value.__name__] = value
     # Only these minimized, validated provider DTOs may enter a checkpoint.
     # In particular, never register credential or execution-authority types.
-    for value in (CommentAuthorRow, SubscriberRow, VideoRow):
+    for value in (ChannelSubscriptionRow, CommentAuthorRow, SubscriberRow, VideoRow):
         found[value.__name__] = value
     return found
 
