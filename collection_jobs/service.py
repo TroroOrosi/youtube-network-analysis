@@ -1518,10 +1518,16 @@ class CollectionJobsService:
         video_id: str | None,
         run: CollectionRun,
         deadline: datetime | None,
+        *,
+        channel_id: str | None = None,
     ) -> TraversalOutcome:
         checkpoint_key = _key(run.workspace_id, run.run_id)
         point = self._state.page_checkpoints.get(checkpoint_key)
-        if point is not None and (point.operation != operation.value or point.video_id != video_id):
+        if point is not None and (
+            point.operation != operation.value
+            or point.video_id != video_id
+            or point.channel_id != channel_id
+        ):
             raise ValueError("provider checkpoint does not match the active traversal")
         rows: dict[str, object] = {}
         for row in point.rows if point is not None else ():
@@ -1532,6 +1538,7 @@ class CollectionJobsService:
         page_token = point.next_page_token if point is not None else None
         visited = list(point.visited_tokens) if point is not None else []
         seen = set(visited)
+        accessible = True
 
         def outcome(reason=None, *, pause=False, keep=False, retry_at=None):
             if keep:
@@ -1539,6 +1546,7 @@ class CollectionJobsService:
                     workspace_id=run.workspace_id, run_id=run.run_id,
                     operation=operation.value, video_id=video_id,
                     rows=tuple(rows.values()), next_page_token=page_token,
+                    channel_id=channel_id,
                     visited_tokens=tuple(visited), pages_fetched=pages, quota_spent=spent,
                 )
             else:
@@ -1547,6 +1555,7 @@ class CollectionJobsService:
                 tuple(rows.values()), pages, spent, reason, paused=pause,
                 new_pages=pages - initial_pages, new_spent=spent - initial_spent,
                 retry_at=retry_at,
+                accessible=accessible,
             )
 
         while True:
@@ -1569,6 +1578,7 @@ class CollectionJobsService:
                         operation=operation,
                         page_token=page_token,
                         video_id=video_id,
+                        channel_id=channel_id,
                         max_results=self._page_size,
                     ),
                 )
@@ -1608,6 +1618,7 @@ class CollectionJobsService:
                 return outcome(RunFailureReason.UNEXPECTED_FAILURE)
 
             self._spend(context.workspace_id, result.quota_cost)
+            accessible = accessible and result.accessible
             progress = self._run(run.workspace_id, run.run_id)
             self._store(replace(
                 progress, pages_fetched=progress.pages_fetched + 1,
