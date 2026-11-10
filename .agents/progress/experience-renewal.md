@@ -94,12 +94,33 @@ unlabelled demo data; aliases enter Google login on the configured callback host
   graph misses nested routes and partly parses HTML; exact source and tests were
   read for those areas. Build packaging already includes the new CSS file.
 
+## Linux CI milestone
+
+- Implementation commit: `c83e2a2f63c1cafe59a37396a158c86a2dc361bb`.
+  [PR #16](https://github.com/TroroOrosi/youtube-network-analysis/pull/16) is open,
+  unmerged, and mergeable. Subsequent checkpoint changes are documentation only.
+- [Run 42775956242](https://github.com/TroroOrosi/youtube-network-analysis/actions/runs/42775956242):
+  `gh pr checks 16 --repo TroroOrosi/youtube-network-analysis` reported
+  `tests pass 51s`, `operator-tool pass 6s`, `container-smoke pass 19s`.
+- CI command `python -m pytest -q --import-mode=importlib analysis_api/tests channel_connections/tests channel_data/tests collection_jobs/tests subscriber_analytics/tests web_ui/tests workspace_access/tests`:
+  **723 passed, 203 subtests passed in 14.22s**, Python 3.14 / Ubuntu. This includes
+  the Windows-only failures and skips above. No failing or skipped tests remain
+  in this Linux run.
+- `node --test web_ui/tests/collecting.test.cjs`: 6 passed, 0 failed.
+- Production archive + actual Dockerfile produced a non-root image. HTTP smoke
+  output: `Docker: non-root startup, immutable source identity, ready and login passed`.
+  Missing hosted configuration check output:
+  `Cloud Run environment: incomplete configuration fails closed`.
+- Compile/critical ruff step: `All checks passed!`; standalone release-operator
+  checks also passed on Python 3.12. These are CI checks, not production rollout.
+
 ## Next steps
 
-1. Commit/push the scoped change and open a reviewable PR under standing GitHub
-   authorization. Verify the existing three-job Linux workflow and record its
-   exact result in the PR. Do not merge.
-2. Production rollout requires the existing single-writer maintenance/backup
+1. Request task-specific approval to merge PR #16 into `main` and deploy its
+   resulting source to `yna-web`, project `snappy-byway-498603-v9`, region
+   `asia-northeast1`. The standing authorization covers the completed normal
+   commit/push/PR operations, not merge or production changes.
+2. After approval, production rollout requires the existing single-writer maintenance/backup
    procedure. Obtain approval for the exact deployment after presenting the
    concrete tested change. No deployment has been performed.
 
