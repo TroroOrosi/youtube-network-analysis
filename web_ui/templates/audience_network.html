@@ -1,20 +1,22 @@
 {% extends "base.html" %}
 {% block title %}視聴者ネットワーク分析 | YouTube 分析{% endblock %}
 {% block content %}
-<h2>視聴者ネットワーク分析</h2>
+<p class="eyebrow">AUDIENCE NETWORK</p>
+<h1>視聴者ネットワーク分析</h1>
+<p class="page-lead">視聴者が他に登録しているチャンネルから、企画やコラボレーションのヒントを探します。</p>
 
 {% if connections and not demo %}
 <nav class="report-nav" aria-label="分析チャンネル">
   <ul>
   {% for item in connections %}
-    <li><a href="/audience-network?channel_id={{ item.channel_id }}">{{ item.title }}</a></li>
+    <li><a href="/audience-network?channel_id={{ item.channel_id }}" {% if selected_channel_id == item.channel_id %}aria-current="page"{% endif %}>{{ item.title }}</a></li>
   {% endfor %}
   </ul>
 </nav>
 {% endif %}
 
 {% if demo %}
-<p class="limits">これは参考用の既存調査デモです。<a href="/audience-network{% if selected_channel_id %}?channel_id={{ selected_channel_id }}{% endif %}">ライブ分析へ戻る</a></p>
+<p class="notice" role="note"><strong>参考デモ</strong>：接続中チャンネルの結果ではありません。<a href="/audience-network{% if selected_channel_id %}?channel_id={{ selected_channel_id }}{% endif %}">ライブ分析へ戻る</a></p>
 {% endif %}
 
 {% if report %}
@@ -22,7 +24,8 @@
 
 <div class="source-note" role="note">
   <strong>{{ report.source_label }}</strong><br>
-  {{ report.coverage_period }}。{{ report.methodology }}
+  {{ report.coverage_period }}。
+  <details><summary>データの範囲と集計方法</summary><p>{{ report.methodology }}</p></details>
 </div>
 
 {% if demo %}
@@ -32,9 +35,16 @@
 </div>
 {% else %}
 <p class="limits">ライブ版は接続チャンネルの収集結果を表示しています。個々の視聴者IDや行単位の登録履歴は画面へ出しません。</p>
+{% if selected_connection_id %}
+<form method="post" action="/connections/{{ selected_connection_id }}/audience-network/collect">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <button type="submit" class="secondary">視聴者ネットワークを更新する</button>
+  <p class="limits">収集済みのコメント投稿者の公開登録先を再収集します。最新の動画・コメントを対象にする場合は、先にホームで基本データを更新してください。</p>
+</form>
+{% endif %}
 {% endif %}
 
-<div class="cards" aria-label="データ概要">
+<div class="cards report-metrics" aria-label="データ概要">
   <div class="card"><div>視聴者</div><div class="value number">{{ "{:,}".format(report.summary.viewers) }}</div></div>
   <div class="card"><div>登録チャンネル</div><div class="value number">{{ "{:,}".format(report.summary.channels) }}</div></div>
   <div class="card"><div>視聴者・チャンネル関係</div><div class="value number">{{ "{:,}".format(report.summary.viewer_channel_edges) }}</div></div>
@@ -42,6 +52,16 @@
   <div class="card"><div>ネットワークエッジ</div><div class="value number">{{ "{:,}".format(report.summary.network_edges) }}</div></div>
   <div class="card"><div>コミュニティ</div><div class="value number">{{ "{:,}".format(report.summary.communities) }}</div></div>
 </div>
+
+<details class="panel">
+  <summary>この結果の読み方</summary>
+  <ul>
+    <li><strong>共通購読</strong>：一緒に登録されているチャンネルから、企画テーマやコラボ候補を探します。</li>
+    <li><strong>興味カテゴリ・コミュニティ</strong>：関心のまとまりを見て、どのテーマを深めるか考えます。</li>
+    <li><strong>ネットワーク関係</strong>：共通の視聴者がいるチャンネル同士の組み合わせを確認します。</li>
+  </ul>
+  <p class="limits">登録は実際の視聴を示すものではありません。公開登録のあるコメント投稿者に限られ、視聴者全体の代表性や施策の効果は保証しません。</p>
+</details>
 
 <nav class="report-nav" aria-label="分析内メニュー">
   <ul>
@@ -56,7 +76,7 @@
 </nav>
 
 <section id="top-channels" class="report-section" aria-labelledby="top-channels-heading">
-<h3 id="top-channels-heading">よく一緒に登録されているチャンネル</h3>
+<h2 id="top-channels-heading">よく一緒に登録されているチャンネル</h2>
 <p class="limits">観測した視聴者のうち、そのチャンネルを登録している人数と割合です。</p>
 {% if report.top_channels %}
 <div class="table-scroll" role="region" aria-labelledby="top-channels-heading" tabindex="0">
@@ -69,17 +89,17 @@
 </section>
 
 <section id="breadth" class="report-section" aria-labelledby="breadth-heading">
-<h3 id="breadth-heading">視聴者ごとの登録チャンネル数</h3>
+<h2 id="breadth-heading">視聴者ごとの登録チャンネル数</h2>
 <p>中央値は <strong class="number">{{ "{:,}".format(report.summary.median_breadth) }} チャンネル</strong>です。</p>
 {% if report.viewer_breadth %}
 <figure class="segment-chart bar-list" aria-labelledby="breadth-heading">
-<dl>{% for row in report.viewer_breadth %}<div class="chart-row"><dt>{{ row.label }}</dt><dd><meter min="0" max="1" value="{{ row.share }}">{{ row.share }}</meter><span class="number">{{ "{:,}".format(row.viewers) }}人（{{ "{:.1%}".format(row.share) }}）</span></dd></div>{% endfor %}</dl>
+<dl>{% for row in report.viewer_breadth %}<div class="chart-row"><dt>{{ row.label }}</dt><dd><meter aria-label="{{ row.label }}" min="0" max="1" value="{{ row.share }}">{{ row.share }}</meter><span class="number">{{ "{:,}".format(row.viewers) }}人（{{ "{:.1%}".format(row.share) }}）</span></dd></div>{% endfor %}</dl>
 </figure>
 {% else %}<p class="empty-state" role="status">該当する集計結果はありません。</p>{% endif %}
 </section>
 
 <section id="categories" class="report-section" aria-labelledby="categories-heading">
-<h3 id="categories-heading">興味カテゴリ</h3>
+<h2 id="categories-heading">興味カテゴリ</h2>
 <p class="limits">登録上位300チャンネルを名称キーワードで分類した、関心領域の参考値です。</p>
 {% if report.categories %}
 <div class="table-scroll" role="region" aria-labelledby="categories-heading" tabindex="0">
@@ -92,7 +112,7 @@
 </section>
 
 <section id="communities" class="report-section" aria-labelledby="communities-heading">
-<h3 id="communities-heading">コミュニティ</h3>
+<h2 id="communities-heading">コミュニティ</h2>
 <p class="limits">{% if demo %}共通購読ネットワークをLouvain法でまとめたグループです。{% else %}ライブ収集で強い関係として残ったチャンネルの連結グループです。{% endif %}</p>
 {% if report.communities %}
 <div class="table-scroll" role="region" aria-labelledby="communities-heading" tabindex="0">
@@ -105,7 +125,7 @@
 </section>
 
 <section id="relationships" class="report-section" aria-labelledby="relationships-heading">
-<h3 id="relationships-heading">強いネットワーク関係</h3>
+<h2 id="relationships-heading">強いネットワーク関係</h2>
 <p class="limits">同じ視聴者が登録している回数が多いチャンネルの組み合わせです。</p>
 {% if report.network_relationships %}
 <div class="table-scroll" role="region" aria-labelledby="relationships-heading" tabindex="0">
@@ -118,7 +138,7 @@
 </section>
 
 <section id="affinity" class="report-section" aria-labelledby="affinity-heading">
-<h3 id="affinity-heading">親和度</h3>
+<h2 id="affinity-heading">親和度</h2>
 <p class="limits">{% if demo %}チャンネル全体の規模で補正したリフトです。1より大きいほど、この視聴者層に固有の関連が強いことを示します。{% else %}ライブ版では外部の総登録者数を追加取得していないため、規模補正リフトは表示しません。{% endif %}</p>
 {% if report.affinity %}
 <div class="table-scroll" role="region" aria-labelledby="affinity-heading" tabindex="0">
@@ -131,7 +151,7 @@
 </section>
 
 <section id="popularity-affinity" class="report-section" aria-labelledby="popularity-affinity-heading">
-<h3 id="popularity-affinity-heading">人気度と親和度の差</h3>
+<h2 id="popularity-affinity-heading">人気度と親和度の差</h2>
 <p class="limits">{% if demo %}単純な登録割合では見えにくく、規模補正後に特徴が強くなるチャンネルです。{% else %}ライブ版では外部人気度との比較を行っていません。{% endif %}</p>
 {% if report.popularity_affinity %}
 <div class="table-scroll" role="region" aria-labelledby="popularity-affinity-heading" tabindex="0">
@@ -146,6 +166,11 @@
 <p class="empty-state" role="status">ライブ分析はまだありません。</p>
 {% if selected_connection_id %}
 <p>最新のコメント投稿者を対象に、公開されている登録チャンネルを収集するとライブ分析を作成できます。</p>
+<ol class="journey" aria-label="ネットワーク分析の準備">
+  <li><span>STEP 01</span><b>動画とコメントを収集</b><p><a href="/#connections-heading">ホームで基本データを収集</a>します。</p></li>
+  <li class="current"><span>STEP 02</span><b>公開登録先を収集</b><p>下のボタンで開始します。データ量により複数日にまたがる場合があります。</p></li>
+  <li><span>STEP 03</span><b>集計結果を確認</b><p>完了後、このページでライブ分析を確認できます。</p></li>
+</ol>
 <form method="post" action="/connections/{{ selected_connection_id }}/audience-network/collect">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   <button type="submit">視聴者ネットワークを収集する</button>

@@ -1,7 +1,9 @@
 {% extends "base.html" %}
 {% block title %}分析 | YouTube 分析{% endblock %}
 {% block content %}
-<h2>分析結果</h2>
+<p class="eyebrow">SUBSCRIBER ANALYSIS</p>
+<h1>分析結果</h1>
+<p class="page-lead">公開登録者のコメントへの参加状況を確認します。条件を絞り込み、必要な結果をCSVで保存できます。</p>
 <p class="notice" role="note">対象はYouTube APIが返した公開登録者です。
 取得処理が完了しても、チャンネルの全登録者を取得できたことは保証しません。
 API提供元の返却件数制限があり、非公開の登録者は含みません。</p>
@@ -12,6 +14,60 @@ API提供元の返却件数制限があり、非公開の登録者は含みま�
   <div class="card"><div>サイレント</div><div class="value">{{ summary.filtered_silent_count }}</div></div>
 </div>
 
+<figure class="segment-chart" aria-labelledby="segment-chart-title">
+  <figcaption id="segment-chart-title">セグメント分布</figcaption>
+  <dl>
+    {% for label, count in segment_counts %}
+    <div class="chart-row">
+      <dt>{{ label }}</dt>
+      <dd>
+        <meter aria-label="{{ label }}" min="0" max="{{ summary.filtered_count or 1 }}" value="{{ count }}">{{ count }}</meter>
+        <span>{{ count }} 人</span>
+      </dd>
+    </div>
+    {% endfor %}
+  </dl>
+</figure>
+
+<section class="panel" aria-labelledby="filters-heading">
+<h2 id="filters-heading">絞り込み</h2>
+<form method="get" action="/analysis">
+  <input type="hidden" name="channel_id" value="{{ channel_id }}">
+  <label for="segment">セグメント</label>
+  <select id="segment" name="segment">
+    <option value="">すべて</option>
+    {% for value, label in segment_options %}
+    <option value="{{ value }}" {% if filters.segment == value %}selected{% endif %}>{{ label }}</option>
+    {% endfor %}
+  </select>
+  <label for="subscribed_within_days">登録からの日数（以内）</label>
+  <input id="subscribed_within_days" name="subscribed_within_days" type="number"
+         min="1" max="3650" value="{{ filters.subscribed_within_days or '' }}">
+  <label for="never_commented">
+    <input id="never_commented" name="never_commented" type="checkbox" value="true"
+           {% if filters.never_commented %}checked{% endif %}>
+    コメントしたことがない人だけ
+  </label>
+  <p><button type="submit">この条件で表示</button></p>
+</form>
+
+<form method="post" action="/analysis/export">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <input type="hidden" name="channel_id" value="{{ channel_id }}">
+  <input type="hidden" name="never_commented" value="{{ 'true' if filters.never_commented else 'false' }}">
+  {% if filters.subscribed_within_days %}
+  <input type="hidden" name="subscribed_within_days" value="{{ filters.subscribed_within_days }}">
+  {% endif %}
+  {% if filters.segment %}
+  <input type="hidden" name="segment" value="{{ filters.segment }}">
+  {% endif %}
+  <p><button type="submit" class="secondary">CSV でダウンロード</button></p>
+</form>
+
+</section>
+
+<details class="panel">
+<summary>分析条件を保存・呼び出す</summary>
 <h2 id="saved-views-heading">保存した条件</h2>
 <form method="post" action="/views" class="form-row">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -54,54 +110,7 @@ API提供元の返却件数制限があり、非公開の登録者は含みま�
 <p>保存した条件はまだありません。</p>
 {% endif %}
 
-<figure class="segment-chart" aria-labelledby="segment-chart-title">
-  <figcaption id="segment-chart-title">セグメント分布</figcaption>
-  <dl>
-    {% for label, count in segment_counts %}
-    <div class="chart-row">
-      <dt>{{ label }}</dt>
-      <dd>
-        <meter min="0" max="{{ summary.filtered_count or 1 }}" value="{{ count }}">{{ count }}</meter>
-        <span>{{ count }} 人</span>
-      </dd>
-    </div>
-    {% endfor %}
-  </dl>
-</figure>
-
-<h2>絞り込み</h2>
-<form method="get" action="/analysis">
-  <input type="hidden" name="channel_id" value="{{ channel_id }}">
-  <label for="segment">セグメント</label>
-  <select id="segment" name="segment">
-    <option value="">すべて</option>
-    {% for value, label in segment_options %}
-    <option value="{{ value }}" {% if filters.segment == value %}selected{% endif %}>{{ label }}</option>
-    {% endfor %}
-  </select>
-  <label for="subscribed_within_days">登録からの日数（以内）</label>
-  <input id="subscribed_within_days" name="subscribed_within_days" type="number"
-         min="1" max="3650" value="{{ filters.subscribed_within_days or '' }}">
-  <label for="never_commented">
-    <input id="never_commented" name="never_commented" type="checkbox" value="true"
-           {% if filters.never_commented %}checked{% endif %}>
-    コメントしたことがない人だけ
-  </label>
-  <p><button type="submit">この条件で表示</button></p>
-</form>
-
-<form method="post" action="/analysis/export">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-  <input type="hidden" name="channel_id" value="{{ channel_id }}">
-  <input type="hidden" name="never_commented" value="{{ 'true' if filters.never_commented else 'false' }}">
-  {% if filters.subscribed_within_days %}
-  <input type="hidden" name="subscribed_within_days" value="{{ filters.subscribed_within_days }}">
-  {% endif %}
-  {% if filters.segment %}
-  <input type="hidden" name="segment" value="{{ filters.segment }}">
-  {% endif %}
-  <p><button type="submit" class="secondary">CSV でダウンロード</button></p>
-</form>
+</details>
 
 <h2 id="subscribers-heading">登録者一覧</h2>
 {% if rows %}

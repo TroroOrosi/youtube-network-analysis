@@ -22,6 +22,18 @@ Stack approved on 2026-08-21: FastAPI, Uvicorn, Jinja2 templates, no frontend
 build step. Domain modules stay standard-library only; the dependencies in
 [`requirements.txt`](requirements.txt) serve this layer alone.
 
+## 使い始める手順
+
+1. Googleでログインし、ワークスペースを作成または選択します。
+2. ホームで所有するチャンネルを接続し、「データを収集する」から動画とコメントを取得します。収集の進捗・継続は共通メニューから確認できます。
+3. 「視聴者ネットワークを見る」を開き、コメント投稿者の公開登録先を収集します。基本データの更新とネットワークの更新は別の操作です。
+4. 登録者の参加状況は「登録者分析を見る」で絞り込み・CSV出力、複数チャンネルは「チャンネル比較」で確認できます。分析条件の保存は絞り込みの下にあります。
+
+「参考デモ」は接続中チャンネルの結果ではありません。各レポートにデータの範囲と集計方法を表示し、公開登録から実際の視聴や施策の効果を断定しない構成です。
+接続の再認可・解除は各チャンネルの「接続の管理」、ワークスペースの切り替えはホームの「ワークスペース」にあります。
+
+画面は自己ホストのCSSだけで構成し、スマートフォンではメニューを折り返し、横長の表だけを横スクロールできます。フロントエンドのビルドや外部フォントは不要です。
+
 ## Running locally
 
 ```powershell
@@ -112,6 +124,11 @@ finish their own consent and hand the callback URL to the owner, leaving the
 owner signed in as them and connecting a channel into their workspace. A refused
 consent, a replayed state, a state from another browser and an unreachable
 Google all end in the same message on purpose.
+
+Google sign-in opens `/login` on the configured `YNA_BASE_URL` origin before
+issuing state cookies, including when the service is reached through a Cloud Run
+alias. Successful sign-in clears the previous workspace selection so switching
+accounts cannot leave the browser pointing at an inaccessible workspace.
 
 ## Security controls in this layer
 
