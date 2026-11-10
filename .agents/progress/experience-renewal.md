@@ -93,12 +93,20 @@ unlabelled demo data; aliases enter Google login on the configured callback host
 - Final source/impact review found no remaining required changes. Structural
   graph misses nested routes and partly parses HTML; exact source and tests were
   read for those areas. Build packaging already includes the new CSS file.
+- Final screenshot review caught desktop navigation height applying before login.
+  Scoped the sticky full-height header to `.app-shell` (authenticated pages).
+  Chrome DOM check at 1440px then reported header height 80px, main top 80px,
+  document width 1440px. Login, workspace creation, and reference-report navigation
+  worked afterwards; authenticated header/main boundary remained 224px.
+  Updated report evidence and saved `login-desktop.jpg` in the same evidence
+  directory. This is a CSS-only follow-up to the implementation tested below.
 
 ## Linux CI milestone
 
-- Implementation commit: `c83e2a2f63c1cafe59a37396a158c86a2dc361bb`.
+- Initial implementation commit: `c83e2a2f63c1cafe59a37396a158c86a2dc361bb`.
   [PR #16](https://github.com/TroroOrosi/youtube-network-analysis/pull/16) is open,
-  unmerged, and mergeable. Subsequent checkpoint changes are documentation only.
+  unmerged, and mergeable. Follow-ups contain documentation and the public-login
+  header scoping correction above. Consult the PR's current checks for final CI.
 - [Run 42775956242](https://github.com/TroroOrosi/youtube-network-analysis/actions/runs/42775956242):
   `gh pr checks 16 --repo TroroOrosi/youtube-network-analysis` reported
   `tests pass 51s`, `operator-tool pass 6s`, `container-smoke pass 19s`.

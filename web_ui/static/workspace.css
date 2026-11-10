@@ -103,7 +103,7 @@ caption { text-align: left; padding: .75rem 1rem; }
 :focus-visible { outline: 3px solid #2378bb; outline-offset: 3px; }
 @media (min-width: 68rem) {
   .app-shell { display: grid; grid-template-columns: 14rem minmax(0, 1fr); min-height: 100vh; }
-  .app-header { position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; padding: 2rem 1.25rem; }
+  .app-shell .app-header { position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; padding: 2rem 1.25rem; }
   .main-nav { flex-direction: column; }
   .sign-out { margin-top: auto; }
   .login-layout { grid-template-columns: 1.15fr 1fr; }
