@@ -1,62 +1,101 @@
 {% extends "base.html" %}
 {% block title %}ホーム | YouTube 分析{% endblock %}
 {% block content %}
-<h2 id="workspace-heading">ワークスペース</h2>
-<p><a href="/members">メンバーを管理する</a></p>
-{% include "_workspace_controls.html" %}
+<p class="eyebrow">WORKSPACE OVERVIEW</p>
+<div class="page-heading">
+  <div>
+    <h1>視聴者を知るためのホーム</h1>
+    <p class="page-lead">チャンネルを選んで収集し、視聴者の関心を次の企画へつなげましょう。</p>
+  </div>
+  <a class="button secondary" href="/collecting">収集の進捗を確認</a>
+</div>
+<p class="limits">表示中：{% for workspace in workspaces %}{% if workspace.workspace_id == current_workspace_id %}<strong>{{ workspace.name }}</strong>{% endif %}{% endfor %} · <a href="#workspace-heading">切り替え・管理</a></p>
 
-<h2 id="analysis-heading">分析</h2>
-<p>
-  <a href="/audience-network">視聴者ネットワーク分析を見る</a>
-  <span class="limits">— コメント投稿者の公開登録先を収集し、接続チャンネルごとの共通購読・興味・ネットワーク関係を確認できます。</span>
-</p>
+<ol class="journey" aria-label="分析を始める3ステップ">
+  <li {% if not connections %}class="current"{% endif %}><span>STEP 01</span><b>チャンネルを接続</b><p>所有する Google アカウントで認可します。</p></li>
+  <li {% if connections and not runs %}class="current"{% endif %}><span>STEP 02</span><b>動画とコメントを収集</b><p>下のチャンネルから「データを収集する」を選びます。</p></li>
+  <li><span>STEP 03</span><b>視聴者の関心を分析</b><p>コメント収集後、ネットワーク用の公開登録先を収集します。</p></li>
+</ol>
 
-<h2 id="connections-heading">接続中のチャンネル</h2>
-<p><a href="/compare">複数チャンネルを比較する</a></p>
+<div class="cards" aria-label="ワークスペースの概要">
+  <div class="card"><div>接続中のチャンネル</div><div class="value">{{ connections|length }}</div></div>
+  <div class="card"><div>定期収集の設定</div><div class="value">{{ schedules|length }}</div></div>
+  <div class="card"><div>最近の収集記録</div><p>{% if runs %}<time datetime="{{ runs[0].timestamp_iso }}">{{ runs[0].timestamp_label }}</time>{% else %}まだ収集していません{% endif %}</p></div>
+</div>
+
+<section class="panel" aria-labelledby="connections-heading">
+<div class="section-heading">
+  <h2 id="connections-heading">接続中のチャンネル</h2>
+  <form method="post" action="/connections/start" class="inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit">チャンネルを接続する</button>
+  </form>
+</div>
+<p class="limits">基本データを収集したら、目的に合わせて分析を選択してください。</p>
 {% if connections %}
-<div class="table-scroll" role="region" aria-labelledby="connections-heading" tabindex="0">
-<table>
-  <caption class="limits">接続の状態と次にできる操作</caption>
-  <thead>
-    <tr><th scope="col">チャンネル</th><th scope="col">状態</th><th scope="col">操作</th></tr>
-  </thead>
-  <tbody>
-  {% for item in connections %}
-    <tr>
-      <th scope="row">{{ item.title }}</th>
-      <td>{{ item.status_label }}</td>
-      <td><div class="actions">
-        {% if item.status == "ACTIVE" %}
-        <form method="post" action="/connections/{{ item.connection_id }}/collect" class="inline">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          <button type="submit">データを収集する</button>
-        </form>
-        {% else %}
-        <form method="post" action="/connections/{{ item.connection_id }}/reauthorize" class="inline">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          <button type="submit">再認可する</button>
-        </form>
-        {% endif %}
-        <a href="/analysis?channel_id={{ item.channel_id }}">登録者分析を見る</a>
-        <a href="/audience-network?channel_id={{ item.channel_id }}">視聴者ネットワークを見る</a>
-        <form method="post" action="/connections/{{ item.connection_id }}/disconnect" class="inline">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          <button type="submit" class="secondary">接続を解除</button>
-        </form>
-      </div></td>
-    </tr>
-  {% endfor %}
-  </tbody>
-</table>
+<div class="channel-list">
+{% for item in connections %}
+<article class="channel" aria-labelledby="channel-{{ loop.index }}">
+  <div class="section-heading">
+    <h3 id="channel-{{ loop.index }}">{{ item.title }}</h3>
+    <span class="badge {% if item.status != 'ACTIVE' %}warning{% endif %}">{{ item.status_label }}</span>
+  </div>
+  <div class="actions">
+    {% if item.status == "ACTIVE" %}
+    <form method="post" action="/connections/{{ item.connection_id }}/collect" class="inline">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit">データを収集する</button>
+    </form>
+    {% else %}
+    <form method="post" action="/connections/{{ item.connection_id }}/reauthorize" class="inline">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit">再認可する</button>
+    </form>
+    {% endif %}
+    <a class="button secondary" href="/audience-network?channel_id={{ item.channel_id }}">視聴者ネットワークを見る</a>
+    <a href="/analysis?channel_id={{ item.channel_id }}">登録者分析を見る</a>
+  </div>
+  <details>
+    <summary>接続の管理</summary>
+    <p class="limits">接続の解除は分析を更新する操作ではありません。認可をやり直す場合は「再認可する」を使用してください。</p>
+    {% if item.status == "ACTIVE" %}
+    <form method="post" action="/connections/{{ item.connection_id }}/reauthorize" class="inline">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="secondary">再認可する</button>
+    </form>
+    {% endif %}
+    <form method="post" action="/connections/{{ item.connection_id }}/disconnect" class="inline">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <p><button type="submit" class="danger">接続を解除</button></p>
+    </form>
+  </details>
+</article>
+{% endfor %}
 </div>
 {% else %}
-<p>まだチャンネルを接続していません。次の手順は「チャンネルを接続する」です。</p>
+<div class="empty-state">
+  <h3>最初のチャンネルを接続しましょう</h3>
+  <p>まだチャンネルを接続していません。次の手順は「チャンネルを接続する」です。</p>
+  <p class="limits">接続だけでは収集を開始しません。接続後に収集するタイミングを選べます。</p>
+</div>
 {% endif %}
+</section>
 
-<form method="post" action="/connections/start">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-  <p><button type="submit">チャンネルを接続する</button></p>
-</form>
+<section class="panel panel-subtle" aria-labelledby="analysis-heading">
+<h2 id="analysis-heading">分析で分かること</h2>
+<p><a href="/audience-network">視聴者ネットワーク分析を見る</a> — コメント投稿者の公開登録先から、一緒に登録されているチャンネルや関心のまとまりを探ります。</p>
+<p><a href="/compare">複数チャンネルを比較する</a> — 2～5件のチャンネルへ同じ条件を適用して、登録者の参加状況を比べます。</p>
+<p class="limits"><a href="/audience-network?demo=true">参考デモで分析の見方を確認</a> — 接続中チャンネルの結果ではありません。</p>
+</section>
+
+<section class="panel" aria-labelledby="workspace-heading">
+<h2 id="workspace-heading">ワークスペース</h2>
+<details>
+  <summary>切り替え・新規作成</summary>
+  {% include "_workspace_controls.html" %}
+</details>
+<p><a href="/members">メンバーを管理する</a></p>
+</section>
 
 <h2 id="schedules-heading">定期収集</h2>
 {% if connections %}

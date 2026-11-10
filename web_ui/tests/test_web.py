@@ -4,6 +4,7 @@ import csv
 import inspect
 import io
 import os
+import re
 import shutil
 import stat
 import tempfile
@@ -42,6 +43,14 @@ from workspace_access.models import (
 )
 
 BASE_URL = "https://testserver"
+
+
+def collection_connection_id(html: str) -> str:
+    """Find the collection form independently of connect/management links."""
+    match = re.search(r'action="/connections/([^/"<>]+)/collect"', html)
+    if match is None:
+        raise AssertionError("No channel collection form found")
+    return match[1]
 
 
 def drive_collection(test: unittest.TestCase, client: TestClient) -> str:
@@ -257,7 +266,7 @@ class RateLimitTests(WebFixture):
         self.create_workspace()
         self.connect_channel()
         connection_id = (
-            self.client.get("/").text.split("/connections/")[1].split("/collect")[0]
+            collection_connection_id(self.client.get("/").text)
         )
 
         statuses = [
@@ -338,7 +347,7 @@ class GuidedFlowTests(WebFixture):
         self.assertIn("デモチャンネル", dashboard.text)
         self.assertIn("チャンネルを接続しました", dashboard.text)
 
-        connection_id = dashboard.text.split("/connections/")[1].split("/collect")[0]
+        connection_id = collection_connection_id(dashboard.text)
         self.assertIn("msg=collected", self.collect_now(connection_id))
 
         analysis = self.client.get("/analysis?channel_id=UC_demo_channel")
@@ -459,7 +468,7 @@ class GuidedFlowTests(WebFixture):
         self.connect_channel()
 
         dashboard = self.client.get("/")
-        connection_id = dashboard.text.split("/connections/")[1].split("/collect")[0]
+        connection_id = collection_connection_id(dashboard.text)
         self.collect_now(connection_id)
 
         started = self.post(
@@ -475,6 +484,7 @@ class GuidedFlowTests(WebFixture):
 
         self.assertEqual(report.status_code, 200)
         self.assertIn("接続チャンネルの最新ライブ収集", report.text)
+        self.assertIn("視聴者ネットワークを更新する", report.text)
         self.assertNotIn("匿名化済み既存調査データ（デモ）", report.text)
         self.assertIn("共通チャンネル", report.text)
 
@@ -493,7 +503,7 @@ class GuidedFlowTests(WebFixture):
         self.login()
         self.create_workspace()
         self.connect_channel()
-        connection_id = self.client.get("/").text.split("/connections/")[1].split("/collect")[0]
+        connection_id = collection_connection_id(self.client.get("/").text)
         self.collect_now(connection_id)
 
         filtered = self.client.get(
@@ -508,7 +518,7 @@ class GuidedFlowTests(WebFixture):
         self.login()
         self.create_workspace()
         self.connect_channel()
-        connection_id = self.client.get("/").text.split("/connections/")[1].split("/collect")[0]
+        connection_id = collection_connection_id(self.client.get("/").text)
         self.collect_now(connection_id)
 
         page = self.client.get(
@@ -525,11 +535,12 @@ class GuidedFlowTests(WebFixture):
         self.create_workspace()
         self.connect_channel()
         dashboard = self.client.get("/")
-        connection_id = dashboard.text.split("/connections/")[1].split("/collect")[0]
+        connection_id = collection_connection_id(dashboard.text)
         self.collect_now(connection_id)
 
         analysis = self.client.get("/analysis?channel_id=UC_demo_channel")
 
+        dashboard = self.client.get("/")
         self.assertIn('class="table-scroll"', dashboard.text)
         self.assertIn('role="region"', dashboard.text)
         self.assertIn('class="table-scroll"', analysis.text)
@@ -556,7 +567,7 @@ class GuidedFlowTests(WebFixture):
         self.login()
         self.create_workspace()
         self.connect_channel()
-        connection_id = self.client.get("/").text.split("/connections/")[1].split("/collect")[0]
+        connection_id = collection_connection_id(self.client.get("/").text)
         self.collect_now(connection_id)
 
         page = self.client.get(
@@ -574,7 +585,7 @@ class GuidedFlowTests(WebFixture):
         self.login()
         self.create_workspace()
         self.connect_channel()
-        connection_id = self.client.get("/").text.split("/connections/")[1].split("/collect")[0]
+        connection_id = collection_connection_id(self.client.get("/").text)
         self.collect_now(connection_id)
 
         home = self.client.get("/").text
@@ -588,7 +599,7 @@ class GuidedFlowTests(WebFixture):
         self.login()
         self.create_workspace()
         self.connect_channel()
-        connection_id = self.client.get("/").text.split("/connections/")[1].split("/collect")[0]
+        connection_id = collection_connection_id(self.client.get("/").text)
         self.collect_now(connection_id)
 
         page = self.client.get(
@@ -616,7 +627,7 @@ class GuidedFlowTests(WebFixture):
         self.login()
         self.create_workspace()
         self.connect_channel()
-        connection_id = self.client.get("/").text.split("/connections/")[1].split("/collect")[0]
+        connection_id = collection_connection_id(self.client.get("/").text)
         self.collect_now(connection_id)
 
         export = self.post(
@@ -633,7 +644,7 @@ class GuidedFlowTests(WebFixture):
         self.login()
         self.create_workspace()
         self.connect_channel()
-        connection_id = self.client.get("/").text.split("/connections/")[1].split("/collect")[0]
+        connection_id = collection_connection_id(self.client.get("/").text)
         self.collect_now(connection_id)
 
         export = self.post(
@@ -655,7 +666,7 @@ class GuidedFlowTests(WebFixture):
         self.login()
         self.create_workspace()
         self.connect_channel()
-        connection_id = self.client.get("/").text.split("/connections/")[1].split("/collect")[0]
+        connection_id = collection_connection_id(self.client.get("/").text)
         self.collect_now(connection_id)
 
         response = self.post(f"/connections/{connection_id}/disconnect")
@@ -669,7 +680,7 @@ class GuidedFlowTests(WebFixture):
         self.login()
         self.create_workspace()
         self.connect_channel()
-        connection_id = self.client.get("/").text.split("/connections/")[1].split("/collect")[0]
+        connection_id = collection_connection_id(self.client.get("/").text)
         session = self.services.access.authenticate_session(
             SessionEvidence(AccessSecret(self.client.cookies["yna_session"]))
         )
@@ -709,7 +720,7 @@ class GuidedFlowTests(WebFixture):
         self.login()
         self.create_workspace()
         self.connect_channel()
-        connection_id = self.client.get("/").text.split("/connections/")[1].split("/collect")[0]
+        connection_id = collection_connection_id(self.client.get("/").text)
         self.collect_now(connection_id)
 
         dashboard = self.client.get("/").text
@@ -721,7 +732,7 @@ class GuidedFlowTests(WebFixture):
         self.login()
         self.create_workspace()
         self.connect_channel()
-        connection_id = self.client.get("/").text.split("/connections/")[1].split("/collect")[0]
+        connection_id = collection_connection_id(self.client.get("/").text)
         self.post(f"/connections/{connection_id}/collect")
         session = self.services.access.authenticate_session(
             SessionEvidence(AccessSecret(self.client.cookies["yna_session"]))
@@ -750,7 +761,7 @@ class GuidedFlowTests(WebFixture):
         self.create_workspace()
         self.connect_channel()
         dashboard = self.client.get("/").text
-        connection_id = dashboard.split("/connections/")[1].split("/collect")[0]
+        connection_id = collection_connection_id(dashboard)
 
         created = self.post(
             "/schedules",
@@ -780,7 +791,7 @@ class GuidedFlowTests(WebFixture):
         self.create_workspace()
         self.connect_channel()
         dashboard = self.client.get("/").text
-        connection_id = dashboard.split("/connections/")[1].split("/collect")[0]
+        connection_id = collection_connection_id(dashboard)
         self.collect_now(connection_id)
 
         comparison = self.client.get(
@@ -805,7 +816,7 @@ class GuidedFlowTests(WebFixture):
         self.create_workspace()
         self.connect_channel()
         dashboard = self.client.get("/").text
-        connection_id = dashboard.split("/connections/")[1].split("/collect")[0]
+        connection_id = collection_connection_id(dashboard)
         self.collect_now(connection_id)
 
         saved = self.post(
@@ -962,7 +973,7 @@ class CollectionDriverTests(WebFixture):
         self.login()
         self.create_workspace()
         self.connect_channel()
-        return self.client.get("/").text.split("/connections/")[1].split("/collect")[0]
+        return collection_connection_id(self.client.get("/").text)
 
     def test_pressing_collect_only_queues_and_hands_over_the_driving(self) -> None:
         """Nothing is collected in the POST, because a run may outlive it."""
@@ -1036,7 +1047,7 @@ class ScheduledDrainTests(WebFixture):
         self.create_workspace()
         self.connect_channel()
         connection_id = (
-            self.client.get("/").text.split("/connections/")[1].split("/collect")[0]
+            collection_connection_id(self.client.get("/").text)
         )
         started = self.post(f"/connections/{connection_id}/collect")
         self.assertEqual(started.status_code, 303)
@@ -1087,7 +1098,7 @@ class ScheduledDrainTests(WebFixture):
         self.create_workspace()
         self.connect_channel()
         dashboard = self.client.get("/").text
-        connection_id = dashboard.split("/connections/")[1].split("/collect")[0]
+        connection_id = collection_connection_id(dashboard)
         created = self.post(
             "/schedules",
             {
@@ -1170,6 +1181,16 @@ class GoogleFixture(unittest.TestCase):
 
 class GoogleLoginTests(GoogleFixture):
     """Signing in is the provider's word, not a name typed into a box."""
+
+    def test_alias_login_redirects_before_setting_host_bound_cookies(self) -> None:
+        alias = TestClient(
+            self.client.app, base_url="https://alias.example", follow_redirects=False
+        )
+        response = alias.get("/login?next=https://untrusted.example")
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(response.headers["location"], f"{BASE_URL}/login")
+        self.assertNotIn("yna_csrf", alias.cookies)
+        self.assertEqual(self.client.get("/login").status_code, 200)
 
     def test_the_login_page_offers_google_instead_of_a_display_name(self) -> None:
         page = self.client.get("/login")
@@ -1286,7 +1307,7 @@ class GoogleModeTests(GoogleFixture):
         state = parse_qs(urlsplit(self.start()).query)["state"][0]
         self.client.get(f"/oauth/callback?state={state}&code=auth-code")
         home = self.client.get("/").text
-        connection_id = home.split("/connections/")[1].split("/collect")[0]
+        connection_id = collection_connection_id(home)
 
         started = self.client.post(
             f"/connections/{connection_id}/collect",
@@ -1374,7 +1395,7 @@ class SafetyTests(WebFixture):
         self.login()
         self.create_workspace()
         self.connect_channel()
-        connection_id = self.client.get("/").text.split("/connections/")[1].split("/collect")[0]
+        connection_id = collection_connection_id(self.client.get("/").text)
         self.collect_now(connection_id)
 
         pages = [
@@ -1551,7 +1572,7 @@ class RequestSafetyTests(WebFixture):
         self.login()
         self.create_workspace()
         self.connect_channel()
-        return self.client.get("/").text.split("/connections/")[1].split("/collect")[0]
+        return collection_connection_id(self.client.get("/").text)
 
     def runs(self):
         return list(self.services.jobs._state.runs.values())
@@ -1669,7 +1690,7 @@ class RetentionSweepTests(WebFixture):
         self.login()
         self.create_workspace()
         self.connect_channel()
-        return self.client.get("/").text.split("/connections/")[1].split("/collect")[0]
+        return collection_connection_id(self.client.get("/").text)
 
     def test_a_finished_collection_drops_what_has_aged_out(self) -> None:
         """The cutoffs live in `purge_retention`, so they only hold if it runs.

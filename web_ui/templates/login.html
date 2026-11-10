@@ -1,14 +1,29 @@
 {% extends "base.html" %}
 {% block title %}ログイン | YouTube 分析{% endblock %}
 {% block content %}
-<h2>ログイン</h2>
+<div class="login-layout">
+<section aria-labelledby="welcome-heading">
+  <p class="eyebrow">AUDIENCE INSIGHTS</p>
+  <h1 id="welcome-heading">視聴者を知る。<br>次の企画が見えてくる。</h1>
+  <p class="page-lead">公開されている登録情報とコメントから、あなたのチャンネルの視聴者像を読み解きます。</p>
+  <ul class="feature-list">
+    <li>視聴者が一緒に登録しているチャンネルを発見</li>
+    <li>コメントへの参加状況をセグメントで把握</li>
+    <li>複数チャンネルを同じ条件で比較</li>
+  </ul>
+  <p class="limits">非公開の登録情報は取得しません。分析は観測できた範囲の参考値です。</p>
+</section>
+<section class="login-panel" aria-labelledby="login-heading">
+<h2 id="login-heading">ログイン</h2>
 {% if google_login %}
 <p>チャンネルを所有する Google アカウントでログインします。</p>
 <form method="post" action="/login/google">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   <p><button type="submit">Google でログイン</button></p>
 </form>
+<p class="limits">ログイン後にチャンネルを接続します。YouTube の認可は、その際に確認できます。</p>
 {% else %}
+<p class="badge">デモ環境・合成データ</p>
 <p>表示名を入力すると、この端末用の作業セッションを開始します。</p>
 <form method="post" action="/login">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -18,4 +33,7 @@
   <p><button type="submit">はじめる</button></p>
 </form>
 {% endif %}
+<p class="limits">接続 → データ収集 → 分析の3ステップで始められます。</p>
+</section>
+</div>
 {% endblock %}

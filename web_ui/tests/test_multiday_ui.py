@@ -1,6 +1,5 @@
 """Quota waits show useful state without promising an unconfigured scheduler."""
 from datetime import UTC, datetime
-import unittest
 
 from web_ui.app import _display_datetime
 from collection_jobs.service import _next_utc_day
@@ -12,7 +11,7 @@ class MultiDayUiTests(helpers.WebFixture):
         self.login()
         self.create_workspace()
         self.connect_channel()
-        return self.client.get('/').text.split('/connections/')[1].split('/collect')[0]
+        return helpers.collection_connection_id(self.client.get('/').text)
 
     def test_waiting_dashboard_names_reason_progress_time_and_manual_resume(self):
         connection = self.prepare()

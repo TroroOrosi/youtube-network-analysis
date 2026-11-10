@@ -504,6 +504,7 @@ def _login_provider(request: Request) -> GoogleLogin:
 def _session_response(request: Request, identity: VerifiedIdentity) -> Response:
     issued = _services(request).access.establish_session(identity)
     response = _redirect("/")
+    response.delete_cookie(WORKSPACE_COOKIE, path="/")
     response.set_cookie(
         SESSION_COOKIE,
         issued.secret.reveal(),
@@ -627,8 +628,15 @@ def _register_routes(app: FastAPI) -> None:
     # `GoogleCredentialStore`, whose vault would otherwise interleave two saves.
     @app.get("/login", response_class=HTMLResponse)
     def login_form(request: Request) -> Response:
+        services = _services(request)
+        # OAuth's state cookie must be issued on the callback's configured host.
+        if (
+            services.login is not None
+            and str(request.base_url).rstrip("/") != services.base_url.rstrip("/")
+        ):
+            return _redirect(f"{services.base_url.rstrip('/')}/login")
         return _render(
-            request, "login.html", {"google_login": _services(request).login is not None}
+            request, "login.html", {"google_login": services.login is not None}
         )
 
     @app.post("/login")
@@ -1133,6 +1141,13 @@ def _register_routes(app: FastAPI) -> None:
     @app.get("/assets/favicon.svg", include_in_schema=False)
     def favicon() -> Response:
         return Response(FAVICON_SVG, media_type="image/svg+xml")
+
+    @app.get("/assets/workspace.css", include_in_schema=False)
+    def workspace_styles() -> Response:
+        return FileResponse(
+            Path(__file__).parent / "static" / "workspace.css",
+            media_type="text/css",
+        )
 
     @app.post("/internal/drain")
     def drain(request: Request) -> Response:

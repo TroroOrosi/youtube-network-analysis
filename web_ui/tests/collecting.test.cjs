@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const path = require('node:path');
 const {execFileSync} = require('node:child_process');
-const source = execFileSync('python', ['-c',
+const source = execFileSync('python', ['-X', 'utf8', '-c',
   "from fastapi.testclient import TestClient; from web_ui.app import create_app; " +
   "print(TestClient(create_app()).get('/assets/collecting.js').text)"
 ], {cwd: path.resolve(__dirname, '../..'), encoding: 'utf8'});
